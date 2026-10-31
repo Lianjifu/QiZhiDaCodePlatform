@@ -17,10 +17,11 @@ os.environ.setdefault("WORKSPACE_ROOT", os.path.join(tempfile.gettempdir(), "qzd
 # API Key 加密主密钥：每个测试会话现生成一把，不依赖本机 .env
 os.environ.setdefault("API_KEY_ENCRYPTION_KEY", Fernet.generate_key().decode())
 
-from app.capabilities.registry import CapabilityRegistry
+from app.capabilities.registration.registry import CapabilityRegistry
 from app.db.session import Base, get_db  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.models import Example  # noqa: E402,F401  # 确保模型已注册到 Base.metadata
+from app.models.invocation import Invocation  # noqa: E402,F401
 
 
 @pytest_asyncio.fixture

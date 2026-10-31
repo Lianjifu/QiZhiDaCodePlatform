@@ -11,12 +11,12 @@
 
 from __future__ import annotations
 
-from app.capabilities.entry import CapabilityEntry
+from app.capabilities.registration.spec import CapabilitySpec
 
 
 def assemble_prompt(
     base_prompt: str,
-    skills: list[CapabilityEntry] | None = None,
+    skills: list[CapabilitySpec] | None = None,
     runtime_notes: list[str] | None = None,
 ) -> str:
     """组装最终的系统提示词。"""
@@ -32,7 +32,7 @@ def assemble_prompt(
     return "\n\n".join(part for part in parts if part)
 
 
-def _skill_block(skill: CapabilityEntry) -> str:
+def _skill_block(skill: CapabilitySpec) -> str:
     """一个技能的知识块。"""
     title = skill.display_name or skill.key
     lines: list[str] = [f"【{title}】"]

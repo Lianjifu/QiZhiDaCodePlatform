@@ -1,6 +1,9 @@
 """能力层服务：统一能力清单的对外出口。
 
 编排层和前端都从这里拿能力，不再各自去拼 tool / mcp / skill 三张表。
+
+执行走**执行层流水线**（`app.capabilities.execution.pipeline`），与 agent 内部
+的调用同一条路径 —— 所以这里不需要自己写日志、留痕。
 """
 
 from __future__ import annotations
@@ -10,21 +13,30 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.capabilities.adapter import get_adapter
-from app.capabilities.context import ExecutionContext
-from app.capabilities.entry import KIND_SKILL, KIND_TOOL, SOURCE_MCP, CapabilityEntry
+from app.capabilities.execution.context import ExecutionContext
+from app.capabilities.execution.pipeline import execute
+from app.capabilities.intent.resolver import resolve
 from app.capabilities.prompt import assemble_prompt
-from app.capabilities.registry import CapabilityRegistry
+from app.capabilities.registration.registry import CapabilityRegistry
+from app.capabilities.registration.spec import (
+    KIND_SKILL,
+    KIND_TOOL,
+    SOURCE_MCP,
+    CapabilitySpec,
+)
 from app.core.config import settings
 from app.core.exceptions import NotFoundError, ValidationError
-from app.models.execution_log import ExecutionLog
 from app.repositories.mcp_server import MCPServerRepository
 from app.schemas.capability import (
     CapabilityInvokeOut,
     CapabilityListOut,
     CapabilityOut,
+    CapabilitySpecOut,
     SkillPreviewOut,
 )
+
+# 说明：调用记录由执行层统一写（`app.capabilities.execution.pipeline`），
+# 这里不再单独记日志 —— 早先只有"直接调用"这条路会记，agent 内部调用漏了。
 
 
 class CapabilityService:
@@ -33,7 +45,7 @@ class CapabilityService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def load(self) -> list[CapabilityEntry]:
+    async def load(self) -> list[CapabilitySpec]:
         return await CapabilityRegistry.load(self.session)
 
     async def list_capabilities(
@@ -43,24 +55,31 @@ class CapabilityService:
         tag: str | None = None,
         enabled: bool | None = None,
     ) -> CapabilityListOut:
-        entries = await self.load()
+        specs = await self.load()
         if kind:
-            entries = [entry for entry in entries if entry.kind == kind]
+            specs = [spec for spec in specs if spec.kind == kind]
         if tag:
-            entries = [entry for entry in entries if tag in entry.tags]
+            specs = [spec for spec in specs if tag in spec.tags]
         if enabled is not None:
-            entries = [entry for entry in entries if entry.enabled is enabled]
+            specs = [spec for spec in specs if spec.enabled == enabled]
         return CapabilityListOut(
-            items=[_to_out(entry) for entry in entries],
-            total=len(entries),
-            kinds=sorted({entry.kind for entry in entries}),
+            items=[_to_out(spec) for spec in specs],
+            total=len(specs),
+            kinds=sorted({spec.kind for spec in specs}),
         )
 
     async def get_capability(self, key: str) -> CapabilityOut:
-        entry = await CapabilityRegistry.get(self.session, key)
-        if entry is None:
+        spec = await CapabilityRegistry.get(self.session, key)
+        if spec is None:
             raise NotFoundError(f"能力 {key} 不存在")
-        return _to_out(entry)
+        return _to_out(spec)
+
+    async def get_spec(self, key: str) -> CapabilitySpecOut:
+        """能力的完整声明：契约、风险、权限、策略。"""
+        spec = await CapabilityRegistry.get(self.session, key)
+        if spec is None:
+            raise NotFoundError(f"能力 {key} 不存在")
+        return _to_spec_out(spec)
 
     async def invoke(
         self,
@@ -70,29 +89,44 @@ class CapabilityService:
         workspace: str | Path | None = None,
     ) -> CapabilityInvokeOut:
         """直接调一次能力（调试用）。"""
-        entry = await CapabilityRegistry.get(self.session, key)
-        if entry is None:
+        spec = await CapabilityRegistry.get(self.session, key)
+        if spec is None:
             raise NotFoundError(f"能力 {key} 不存在")
-        if entry.kind != KIND_TOOL:
+        if spec.kind != KIND_TOOL:
             raise ValidationError(f"{key} 不是可直接调用的原子能力")
-        context = await self._build_context(workspace, [entry])
-        result = await get_adapter(entry.source_type).invoke(entry, arguments or {}, context)
-        await self._record(thread_id, entry, arguments or {}, result)
+
+        specs = await self.load()
+        context = await self._build_context(workspace, [spec])
+        context.thread_id = thread_id or ""
+        # 参数校验交给执行层（权威校验）：失败会带着 SCHEMA_INVALID 落进调用记录，
+        # 而不是在这里抛出去变成 500
+        intent = resolve(
+            {"name": key, "args": arguments or {}},
+            specs,
+            thread_id=thread_id or "",
+            workspace=context.workspace,
+            trust_mode=settings.capability_trust_mode,
+            validate=False,
+        )
+        result = await execute(intent, context)
+        await self.session.commit()
         return CapabilityInvokeOut(
             ok=result.ok,
-            key=entry.key,
+            key=key,
             content=result.content,
-            error_code=result.error.code if result.error else None,
+            error_code=result.error.code.value if result.error else None,
             error_message=result.error.message if result.error else None,
             retryable=result.error.retryable if result.error else False,
             duration_ms=result.duration_ms,
+            invocation_id=result.invocation_id,
+            status="pending" if _is_pending(result) else ("succeeded" if result.ok else "failed"),
         )
 
     async def preview_skill(self, skill_id: int) -> SkillPreviewOut:
         """预览一个技能挂上去会带来什么。"""
-        entries = await self.load()
+        specs = await self.load()
         skill = next(
-            (entry for entry in entries if entry.kind == KIND_SKILL and entry.db_id == skill_id),
+            (spec for spec in specs if spec.kind == KIND_SKILL and spec.db_id == skill_id),
             None,
         )
         if skill is None:
@@ -108,74 +142,72 @@ class CapabilityService:
         )
 
     async def _build_context(
-        self, workspace: str | Path | None, entries: list[CapabilityEntry]
+        self, workspace: str | Path | None, specs: list[CapabilitySpec]
     ) -> ExecutionContext:
         """执行上下文：带上要用到的 MCP 供给通道。"""
         mcp_servers = {}
         repo = MCPServerRepository(self.session)
-        for entry in entries:
-            if entry.kind != KIND_TOOL or entry.source_type != SOURCE_MCP:
+        for spec in specs:
+            if spec.kind != KIND_TOOL or spec.source_type != SOURCE_MCP:
                 continue
-            name = entry.locator.get("server") or ""
+            name = spec.locator.get("server") or ""
             server = await repo.get_by_name(name)
             if server is not None and server.enabled:
                 mcp_servers[server.name] = server
-        return ExecutionContext.build(workspace or settings.workspace_root, mcp_servers)
-
-    async def _record(
-        self,
-        thread_id: str | None,
-        entry: CapabilityEntry,
-        arguments: dict[str, Any],
-        result,
-    ) -> None:
-        """写一条执行轨迹。"""
-        self.session.add(
-            ExecutionLog(
-                thread_id=thread_id,
-                capability_key=entry.key,
-                arguments=_summarize(arguments),
-                ok=result.ok,
-                error_code=result.error.code if result.error else None,
-                error_message=result.error.message if result.error else None,
-                duration_ms=result.duration_ms,
-            )
-        )
-        await self.session.commit()
+        context = ExecutionContext.build(workspace or settings.workspace_root, mcp_servers)
+        context.session = self.session
+        return context
 
 
-def _to_out(entry: CapabilityEntry) -> CapabilityOut:
+def _is_pending(result) -> bool:
+    return result.error is not None and result.error.code.value == "APPROVAL_REQUIRED"
+
+
+def _to_out(spec: CapabilitySpec) -> CapabilityOut:
     return CapabilityOut(
-        key=entry.key,
-        kind=entry.kind,
-        db_id=entry.db_id,
-        display_name=entry.display_name,
-        description=entry.description,
-        tags=list(entry.tags),
-        permission=entry.permission,
-        enabled=entry.enabled,
-        origin=entry.origin,
-        version=entry.version,
-        source_type=entry.source_type,
-        parameters=dict(entry.parameters),
-        locator=dict(entry.locator),
-        members=list(entry.members),
-        knowledge=entry.knowledge,
-        checklist=list(entry.checklist),
-        examples=list(entry.examples),
-        constraints=entry.constraints,
+        key=spec.key,
+        kind=spec.kind,
+        db_id=spec.db_id,
+        display_name=spec.display_name,
+        description=spec.description,
+        tags=list(spec.tags),
+        permission=spec.permission,
+        enabled=spec.enabled,
+        origin=spec.origin,
+        version=spec.version,
+        source_type=spec.source_type,
+        parameters=dict(spec.input_schema),
+        output_schema=dict(spec.output_schema) if spec.output_schema else None,
+        risk=spec.risk,
+        timeout_s=spec.timeout_s,
+        retry_policy=spec.retry.to_dict(),
+        annotations=spec.annotations.to_dict(),
+        locator=dict(spec.locator),
+        members=list(spec.members),
+        knowledge=spec.knowledge,
+        checklist=list(spec.checklist),
+        examples=list(spec.examples),
+        constraints=spec.constraints,
     )
 
 
-def _summarize(arguments: dict[str, Any]) -> dict[str, Any]:
-    """参数摘要：长文本截断，避免轨迹表被大段代码撑爆。"""
-    summarized: dict[str, Any] = {}
-    for key, value in (arguments or {}).items():
-        if isinstance(value, str) and len(value) > 500:
-            summarized[key] = value[:500] + f"... (共 {len(value)} 字符)"
-        else:
-            summarized[key] = value
-    return summarized
+def _to_spec_out(spec: CapabilitySpec) -> CapabilitySpecOut:
+    return CapabilitySpecOut(
+        key=spec.key,
+        kind=spec.kind,
+        display_name=spec.display_name,
+        description=spec.description,
+        enabled=spec.enabled,
+        source_type=spec.source_type,
+        input_schema=dict(spec.input_schema),
+        output_schema=dict(spec.output_schema) if spec.output_schema else None,
+        risk=spec.risk,
+        permission=spec.permission,
+        timeout_s=spec.timeout_s,
+        retry_policy=spec.retry.to_dict(),
+        annotations=spec.annotations.to_dict(),
+        trust_mode=settings.capability_trust_mode,
+    )
 
 
 __all__ = ["CapabilityService"]

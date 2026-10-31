@@ -1,11 +1,14 @@
 """Agent 组装：能力清单 → 可执行的 agent。
 
-工具**只从注册层来**（`app.capabilities.registry`），不再保留硬编码的第二条路径。
-原因：两条路径并存时，同名能力会被 LangGraph 的 `tools_by_name` 静默覆盖
-（后者胜），模型看到的能力集就不可预期了。现在冲突会显式报错。
+工具**只从注册层来**（`app.capabilities.registration.registry`），不再保留硬编码
+的第二条路径。原因：两条路径并存时，同名能力会被 LangGraph 的 `tools_by_name`
+静默覆盖（后者胜），模型看到的能力集就不可预期了。现在冲突会显式报错。
 
 LangChain v1 用 `create_agent` 一站式创建 agent，它内部是一张 LangGraph 图：
 模型思考 → 调工具 → 结果回灌 → 再思考，直到模型不再要求调工具。
+
+工具的 coroutine 走**执行层流水线**（`app.capabilities.execution.tooling`），
+不直接执行能力 —— 这样 agent 内部的调用和直接调 API 走的是同一条路。
 """
 
 from __future__ import annotations
@@ -16,56 +19,40 @@ from typing import Any
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
-from langchain_core.tools import BaseTool
 
-from app.agents.llm import get_chat_model
-from app.agents.prompts import CODE_AGENT_PROMPT
-from app.capabilities.adapter import get_adapter
-from app.capabilities.context import ExecutionContext
-from app.capabilities.entry import KIND_TOOL, CapabilityEntry
-from app.capabilities.orchestration import CapabilityMiddleware
+from app.capabilities.execution.context import ExecutionContext
+from app.capabilities.execution.tooling import build_tools
+from app.capabilities.intent.middleware import CapabilityMiddleware
+from app.capabilities.registration.spec import CapabilitySpec
 
 logger = logging.getLogger(__name__)
 
 
-async def build_tools(entries: list[CapabilityEntry], context: ExecutionContext) -> list[BaseTool]:
-    """把清单里的原子能力变成模型可调用的工具。
-
-    单个能力构造失败（配置写错、MCP 连不上）只跳过这一个，不拖垮整个 agent。
-    """
-    tools: list[BaseTool] = []
-    for entry in entries:
-        if entry.kind != KIND_TOOL or not entry.enabled:
-            continue
-        adapter = get_adapter(entry.source_type)
-        try:
-            tools.append(await adapter.build_tool(entry, context))
-        except Exception as exc:
-            logger.warning("能力 %s 不可用，已跳过: %s", entry.key, exc)
-    return tools
-
-
 async def build_agent(
     *,
-    entries: list[CapabilityEntry],
+    specs: list[CapabilitySpec],
     context: ExecutionContext,
     checkpointer: Any = None,
     model: BaseChatModel | None = None,
     system_prompt: str | None = None,
     allowed_tool_keys: set[str] | None = None,
+    thread_id: str = "",
+    trust_mode: str = "balanced",
 ) -> Any:
     """组装 agent。
 
     Args:
-        entries: 注册层给出的统一能力清单。
-        context: 执行上下文（工作区、沙箱配置等）。
+        specs: 注册层给出的统一能力清单。
+        context: 执行上下文（工作区、沙箱配置、数据库会话等）。
         checkpointer: LangGraph checkpointer，用于多轮对话的上下文持久化。
         model: 覆盖默认模型（测试时注入假模型用）。
         system_prompt: 组装好的系统提示词。
-        allowed_tool_keys: 限定暴露给模型的工具（编排层检索后的候选集）；
+        allowed_tool_keys: 限定暴露给模型的工具（意图层检索后的候选集）；
             为 None 表示全量暴露。
+        thread_id: 会话 ID，调用记录按它归集。
+        trust_mode: 会话信任模式，决定哪些能力需要人工审批。
     """
-    tools = await build_tools(entries, context)
+    tools = await build_tools(specs, context, allowed_tool_keys)
 
     # 同名能力必须显式报错，不能让 LangGraph 静默覆盖
     seen: set[str] = set()
@@ -74,17 +61,35 @@ async def build_agent(
             raise ValueError(f"能力名重复：{tool.name}")
         seen.add(tool.name)
 
-    middleware = []
-    if allowed_tool_keys is not None:
-        middleware.append(CapabilityMiddleware(entries, allowed_tool_keys))
+    middleware = [
+        CapabilityMiddleware(
+            specs,
+            allowed_tool_keys=allowed_tool_keys,
+            context=context,
+            thread_id=thread_id,
+            trust_mode=trust_mode,
+        )
+    ]
 
     return create_agent(
-        model=model or get_chat_model(),
+        model=model or _default_model(),
         tools=tools,
-        system_prompt=system_prompt or CODE_AGENT_PROMPT,
+        system_prompt=system_prompt or _default_prompt(),
         checkpointer=checkpointer,
         middleware=middleware,
     )
+
+
+def _default_model() -> BaseChatModel:
+    from app.agents.llm import get_chat_model
+
+    return get_chat_model()
+
+
+def _default_prompt() -> str:
+    from app.agents.prompts import CODE_AGENT_PROMPT
+
+    return CODE_AGENT_PROMPT
 
 
 def default_workspace() -> Path:

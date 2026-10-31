@@ -7,7 +7,7 @@ TOOLS = "/api/v1/tools"
 MCP = "/api/v1/mcp-servers"
 SKILLS = "/api/v1/skills"
 
-BUILTIN_SOURCE = "app.capabilities.builtin.fs:make_read_file"
+BUILTIN_SOURCE = "app.capabilities.registration.builtin.fs:make_read_file"
 
 
 def _tool_payload(**overrides):

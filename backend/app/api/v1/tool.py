@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, Response, status
 
 from app.api.deps import get_tool_service
-from app.capabilities.builtin import list_builtin_specs
+from app.capabilities.registration.builtin import list_builtin_specs
 from app.schemas.common import ResponseModel
 from app.schemas.tool import (
     BuiltinToolOut,
@@ -37,7 +37,12 @@ async def list_builtins() -> ResponseModel[list[BuiltinToolOut]]:
             description=spec.description,
             tags=list(spec.tags),
             permission=spec.permission,
-            parameters=dict(spec.parameters),
+            risk=spec.risk,
+            timeout_s=spec.timeout_s,
+            retry_policy=spec.retry.to_dict(),
+            annotations=spec.annotations.to_dict(),
+            parameters=dict(spec.input_schema),
+            output_schema=dict(spec.output_schema) if spec.output_schema else None,
         )
         for spec in list_builtin_specs()
     ]

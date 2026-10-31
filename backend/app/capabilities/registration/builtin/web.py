@@ -15,7 +15,8 @@ from typing import Any
 
 import httpx
 
-from app.capabilities.context import ExecutionContext
+from app.capabilities.errors import CapabilityError, ErrorCode
+from app.capabilities.execution.context import ExecutionContext
 
 _MAX_CONTENT = 50000
 _SCRIPT_STYLE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
@@ -33,26 +34,37 @@ def _html_to_text(raw: str) -> str:
     return text.strip()
 
 
-def make_web_fetch(context: ExecutionContext) -> Callable[..., str]:
+def make_web_fetch(context: ExecutionContext) -> Callable[..., Any]:
     """抓取网页内容。"""
 
-    async def web_fetch(url: str) -> str:
+    async def web_fetch(url: str) -> dict[str, Any]:
         """抓取一个 URL 的内容并转成纯文本返回。
 
         只支持 http/https；返回的是网页正文，不含脚本与样式。
         """
         if not url.startswith(("http://", "https://")):
-            return f"只支持 http/https 链接: {url}"
+            raise CapabilityError(
+                f"只支持 http/https 链接: {url}", code=ErrorCode.INVALID_ARGUMENTS
+            )
         try:
             async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
                 response = await client.get(url, headers={"User-Agent": "QiZhiDa-Agent/1.0"})
-        except httpx.TimeoutException:
-            return f"抓取超时: {url}"
+        except httpx.TimeoutException as exc:
+            raise CapabilityError(
+                f"抓取超时: {url}", code=ErrorCode.NETWORK_ERROR, retryable=True
+            ) from exc
         except Exception as exc:
-            return f"抓取失败: {exc}"
+            raise CapabilityError(
+                f"抓取失败: {exc}", code=ErrorCode.NETWORK_ERROR, retryable=True
+            ) from exc
 
         if response.status_code >= 400:
-            return f"抓取失败: HTTP {response.status_code} {url}"
+            raise CapabilityError(
+                f"抓取失败: HTTP {response.status_code} {url}",
+                code=ErrorCode.HTTP_ERROR,
+                retryable=True,
+                status=response.status_code,
+            )
 
         content_type = response.headers.get("content-type", "")
         raw = response.text
@@ -62,15 +74,20 @@ def make_web_fetch(context: ExecutionContext) -> Callable[..., str]:
             text = raw
         if len(text) > _MAX_CONTENT:
             text = text[:_MAX_CONTENT] + f"... (内容过长，已截断，共 {len(text)} 字符)"
-        return f"来源: {url}\n\n{text}"
+        return {
+            "content": f"来源: {url}\n\n{text}",
+            "url": url,
+            "status": response.status_code,
+            "bytes": len(raw.encode("utf-8")),
+        }
 
     return web_fetch
 
 
-def make_web_search(context: ExecutionContext) -> Callable[..., str]:
+def make_web_search(context: ExecutionContext) -> Callable[..., Any]:
     """联网搜索。"""
 
-    async def web_search(query: str, max_results: int = 5) -> str:
+    async def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
         """在互联网上搜索，返回标题、链接与摘要。
 
         需要配置搜索服务商的 API Key（WEB_SEARCH_PROVIDER + WEB_SEARCH_API_KEY）。
@@ -78,16 +95,25 @@ def make_web_search(context: ExecutionContext) -> Callable[..., str]:
         provider = (settings_web_provider() or "").strip().lower()
         api_key = settings_web_key()
         if not provider or not api_key:
-            return (
+            raise CapabilityError(
                 "联网搜索没有配置。请在 .env 里设置 WEB_SEARCH_PROVIDER"
-                "（tavily / serper / bing）和 WEB_SEARCH_API_KEY。"
+                "（tavily / serper / bing）和 WEB_SEARCH_API_KEY。",
+                code=ErrorCode.EXECUTION_ERROR,
             )
         try:
             results = await _search(provider, api_key, query, max_results)
+        except CapabilityError:
+            raise
         except Exception as exc:
-            return f"搜索失败: {exc}"
+            raise CapabilityError(
+                f"搜索失败: {exc}", code=ErrorCode.NETWORK_ERROR, retryable=True
+            ) from exc
         if not results:
-            return f"没有找到与 {query!r} 相关的结果"
+            return {
+                "content": f"没有找到与 {query!r} 相关的结果",
+                "query": query,
+                "results": [],
+            }
         lines = []
         for index, item in enumerate(results, start=1):
             lines.append(
@@ -95,7 +121,11 @@ def make_web_search(context: ExecutionContext) -> Callable[..., str]:
                 f"   {item.get('url', '')}\n"
                 f"   {item.get('snippet', '')}"
             )
-        return "\n".join(lines)
+        return {
+            "content": "\n".join(lines),
+            "query": query,
+            "results": results,
+        }
 
     return web_search
 
@@ -165,4 +195,4 @@ async def _search(
                 }
                 for item in pages
             ]
-    raise ValueError(f"不支持的搜索服务商: {provider}")
+    raise CapabilityError(f"不支持的搜索服务商: {provider}", code=ErrorCode.INVALID_ARGUMENTS)

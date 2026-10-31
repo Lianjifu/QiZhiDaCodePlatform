@@ -14,9 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.checkpointer import open_checkpointer
 from app.agents.llm import build_model_for_provider
 from app.agents.runner import AgentRunner, AgentRunResult
-from app.capabilities.context import ExecutionContext
-from app.capabilities.entry import KIND_TOOL, SOURCE_MCP, CapabilityEntry
-from app.capabilities.registry import CapabilityRegistry
+from app.capabilities.execution.context import ExecutionContext
+from app.capabilities.registration.registry import CapabilityRegistry
+from app.capabilities.registration.spec import KIND_TOOL, SOURCE_MCP, CapabilitySpec
 from app.core.config import settings
 from app.core.exceptions import AgentError, AppError, NotFoundError, ValidationError
 from app.repositories.llm_provider import LLMProviderRepository
@@ -81,27 +81,30 @@ class AgentService:
             raise ValidationError(f"供应商配置 {provider.name} 已停用")
         return build_model_for_provider(provider)
 
-    async def load_capabilities(self) -> list[CapabilityEntry]:
+    async def load_capabilities(self) -> list[CapabilitySpec]:
         """统一能力清单 —— 只能从注册层来。"""
         if self.session is None:
             return []
         return await CapabilityRegistry.load(self.session)
 
     async def _build_context(
-        self, workspace: Path, entries: list[CapabilityEntry]
+        self, workspace: Path, specs: list[CapabilitySpec], thread_id: str = ""
     ) -> ExecutionContext:
         """执行上下文：带上本次要用到的 MCP 供给通道。"""
         mcp_servers = {}
         if self.session is not None:
             repo = MCPServerRepository(self.session)
-            for entry in entries:
-                if entry.kind != KIND_TOOL or entry.source_type != SOURCE_MCP:
+            for spec in specs:
+                if spec.kind != KIND_TOOL or spec.source_type != SOURCE_MCP:
                     continue
-                name = entry.locator.get("server") or ""
+                name = spec.locator.get("server") or ""
                 server = await repo.get_by_name(name)
                 if server is not None and server.enabled:
                     mcp_servers[server.name] = server
-        return ExecutionContext.build(workspace, mcp_servers)
+        context = ExecutionContext.build(workspace, mcp_servers)
+        context.session = self.session
+        context.thread_id = thread_id
+        return context
 
     async def chat(
         self,
@@ -115,17 +118,21 @@ class AgentService:
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(provider_id)
-                entries = await self.load_capabilities()
-                context = await self._build_context(workspace, entries)
+                specs = await self.load_capabilities()
+                context = await self._build_context(workspace, specs, thread_id)
                 runner = self._runner or AgentRunner(checkpointer=checkpointer, model=model)
-                return await runner.run(
+                result = await runner.run(
                     message,
                     thread_id,
                     workspace,
-                    entries=entries,
+                    specs=specs,
                     context=context,
                     skill_ids=skill_ids,
                 )
+                # 执行层写的调用记录要落库
+                if self.session is not None:
+                    await self.session.commit()
+                return result
             except AppError:
                 raise
             except Exception as exc:
@@ -144,18 +151,21 @@ class AgentService:
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(provider_id)
-                entries = await self.load_capabilities()
-                context = await self._build_context(workspace, entries)
+                specs = await self.load_capabilities()
+                context = await self._build_context(workspace, specs, thread_id)
                 runner = self._runner or AgentRunner(checkpointer=checkpointer, model=model)
                 async for text in runner.stream(
                     message,
                     thread_id,
                     workspace,
-                    entries=entries,
+                    specs=specs,
                     context=context,
                     skill_ids=skill_ids,
                 ):
                     yield text
+                # 执行层写的调用记录要落库
+                if self.session is not None:
+                    await self.session.commit()
             except AppError:
                 raise
             except Exception as exc:

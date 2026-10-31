@@ -68,6 +68,23 @@ class Settings(BaseSettings):
     web_search_provider: str = ""
     web_search_api_key: str = ""
 
+    # ---- 能力治理 ----
+    # 信任模式：strict（按声明逐条审批）| balanced（读写放行、执行/联网需确认）
+    #           | permissive（只有破坏性操作需确认）
+    capability_trust_mode: str = "balanced"
+    # 能力没声明超时时的兜底（秒）
+    capability_default_timeout: int = 30
+    # 审批请求超时自动拒绝（秒）
+    capability_approval_timeout: int = 300
+    # 单会话并发执行上限
+    capability_max_concurrency: int = 4
+    # 能力没声明重试策略时的兜底
+    capability_retry_max_attempts: int = 1
+    # 额外的脱敏正则（逗号分隔）
+    capability_redact_patterns: str = ""
+    # 内部域名后缀（SSRF 判定用，逗号分隔）
+    capability_internal_domains: str = "localhost,.internal,.local"
+
     # API Key 加密主密钥（Fernet），用 scripts/gen_encryption_key.py 生成
     api_key_encryption_key: str = ""
     # Azure OpenAI 专用

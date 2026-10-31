@@ -1,7 +1,9 @@
 # 能力层 v2 架构方案（注册 / 意图 / 执行）
 
-> 状态：**方案，未实施**。本文描述目标架构与迁移路径，供评审后决定是否开工。
-> 当前实现见 `app/capabilities/`，与本文的差异在 §2 逐条列出。
+> 状态：**已实施（P0–P4、P5a/P5b、P6）**。
+> P5c（agent 挂起等待审批，用 LangGraph interrupt）**未做** —— 审批改为由审批接口
+> 直接执行挂起的调用，不依赖 agent 还活着，够用了。
+> 本文是设计文档，实现与文中描述的差异见 §14「实施情况」。
 
 ---
 
@@ -116,21 +118,22 @@ v2 要解决的是一件事：**让每一次能力调用都经过同一条可声
 # app/capabilities/registration/spec.py
 from dataclasses import dataclass, field
 
+
 @dataclass(frozen=True)
 class CapabilitySpec:
     """一个能力的完整声明。"""
 
     key: str
-    kind: str                      # tool | mcp | skill
+    kind: str  # tool | mcp | skill
     display_name: str = ""
     description: str = ""
 
     # ---- 契约 ----
-    input_schema: dict = field(default_factory=dict)    # JSON Schema
-    output_schema: dict | None = None                   # None = 自由文本
+    input_schema: dict = field(default_factory=dict)  # JSON Schema
+    output_schema: dict | None = None  # None = 自由文本
 
     # ---- 治理 ----
-    risk: str = RiskLevel.READ       # read|write|execute|network|destructive
+    risk: str = RiskLevel.READ  # read|write|execute|network|destructive
     permission: str = PermissionLevel.NONE  # none|confirm|admin
     timeout_s: int = 30
     retry: RetryPolicy = field(default_factory=RetryPolicy)
@@ -150,12 +153,15 @@ class CapabilitySpec:
 ```python
 # app/capabilities/registration/policy.py
 
+
 @dataclass(frozen=True)
 class RetryPolicy:
     """重试策略。与运行时错误的 retryable 取交集后才生效。"""
-    max_attempts: int = 1                 # 含首次调用
+
+    max_attempts: int = 1  # 含首次调用
     backoff_s: float = 0.0
-    retry_on: tuple[str, ...] = ()        # ErrorCode 白名单
+    retry_on: tuple[str, ...] = ()  # ErrorCode 白名单
+
 
 @dataclass(frozen=True)
 class Annotations:
@@ -165,6 +171,7 @@ class Annotations:
     risk 是"平台判定这次调用有多危险"。注册时按 annotations 推导 risk 下界，
     平台可以上调，不允许下调。
     """
+
     read_only: bool = False
     destructive: bool = False
     idempotent: bool = False
@@ -288,7 +295,9 @@ class CapabilityIntent:
         """意图指纹，用于去重与审计。"""
         payload = json.dumps(
             {"key": self.capability_key, "args": self.arguments},
-            sort_keys=True, ensure_ascii=False, default=str,
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
         )
         return hashlib.sha256(payload.encode()).hexdigest()[:32]
 ```
@@ -646,10 +655,50 @@ P5a 规则自动审批 + `invocation` 状态机 → P5b 人工审批 API → P5c
 | `capabilities/orchestration.py` 检索部分 | `intent/planner.py` |
 | `capabilities/orchestration.py` middleware | `intent/middleware.py` |
 | `capabilities/orchestration.py` `validate_arguments` | `registration/validator.py`（换成 jsonschema，意图层与执行层共用） |
-| `capabilities/adapter.py` | `execution/adapters/` |
-| `capabilities/result.py` | `execution/result.py`（扩错误码） |
-| `capabilities/context.py` | `execution/context.py`（加并发/配额上下文） |
+| `capabilities/adapter.py` | `execution/adapters.py`（只保留"执行"这一件事，工具构造挪到 `execution/tooling.py`） |
+| `capabilities/result.py` | `execution/result.py`；错误码与 `CapabilityError` 提到 `capabilities/errors.py`（三层共用，避免注册层反向依赖执行层） |
+| `capabilities/context.py` | `execution/context.py`（加 session / thread_id） |
 | — | `intent/intent.py` `CapabilityIntent`（新增） |
 | — | `execution/pipeline.py` 七阶段（新增） |
-| — | `execution/approval.py`（新增） |
+| — | `execution/risk.py` `execution/redaction.py` `execution/tooling.py`（新增） |
+| — | `services/invocation.py` + `api/v1/invocation.py`（审批与查询，新增） |
 | `models/execution_log.py` | `models/invocation.py`（改名扩列） |
+
+---
+
+## 14. 实施情况
+
+### 已实现
+
+| 期 | 内容 | 落点 |
+| --- | --- | --- |
+| P0 | 声明式契约：risk / permission / output_schema / timeout_s / retry_policy / annotations | `registration/`、`models/tool.py`、迁移 `0003`/`0004` |
+| P1 | 调用记录下沉：`execution_log` → `invocation`，扩成完整生命周期 | `models/invocation.py`、`repositories/invocation.py` |
+| P2 | 七阶段流水线，**执行层成为唯一路径** | `execution/pipeline.py`、`execution/tooling.py` |
+| P3 | 14 个内置能力改结构化输出 + 输出契约校验 | `registration/builtin/*`、`registration/builtin/__init__.py` |
+| P4 | 意图层：`CapabilityIntent` + resolver + middleware 改造 | `intent/` |
+| P5a | 规则自动审批 + `invocation` 状态机 | `execution/pipeline.py::_decide_approval` |
+| P5b | 人工审批接口（approve / deny / cancel + 查询） | `services/invocation.py`、`api/v1/invocation.py` |
+| P6 | 结果脱敏、参数级风险规则、错误码扩展 | `execution/redaction.py`、`execution/risk.py`、`capabilities/errors.py` |
+
+### 与设计文档的偏差
+
+| 偏差 | 原因 |
+| --- | --- |
+| **审批返回 202**（不是 200 + status 字段） | 语义更准：202 表示"已受理，等审批"。响应体里仍有 `status` 字段 |
+| **批准后由审批接口直接执行**，不挂起 agent | 挂起要靠 LangGraph `interrupt`，恢复时会重放节点，复杂度高。改为"审批接口按记录里的参数执行"后，agent 不必还活着 |
+| **审批超时自动拒绝**（`CAPABILITY_APPROVAL_TIMEOUT`）目前只在配置里，没有后台任务去扫 | 待审批记录由查询接口暴露（`GET /invocations?status=pending`），超时清扫需要常驻任务 |
+| **并发配额**（`CAPABILITY_MAX_CONCURRENCY`）目前只在配置里，没有生效 | 执行层还没做并发闸门 |
+| **MCP annotations 继承**没有实现 | `langchain-mcp-adapters` 是否透传 annotations 未验证，先按"不继承"处理，风险等级人工填 |
+| **`execution/approval.py` 没有单独成文件** | 审批逻辑就三个决策分支，放在 `pipeline.py` 里更直白；状态流转在 `services/invocation.py` |
+
+### 已知限制
+
+- **并发配额未生效**：一个 agent 循环理论上可以并发开很多沙箱进程。docker 模式有
+  `--memory 512m --cpus 1 --pids-limit 256` 兜着，但那是单个容器的限制，不是会话级的。
+- **审批无自动过期**：pending 记录不会自己变成 expired，需要人工处理或加后台清扫。
+- **待审批记录的 `payload` 存的是原始参数**（不脱敏），因为批准后要按它执行。
+  它不对外暴露（接口返回的是脱敏后的 `arguments`），但库里是明文。
+- **结构化输出的 `content` 字段是给模型看的文本**，与改造前逐字一致；模型的行为不会因为
+  返回结构变了而变化。
+

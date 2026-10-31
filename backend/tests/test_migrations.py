@@ -106,7 +106,10 @@ async def test_migration_upgrades_legacy_data_without_loss(tmp_path) -> None:
 
     conn = sqlite3.connect(db_path)
     skill = conn.execute("select name, knowledge, version, tags from skill").fetchone()
-    tool = conn.execute("select name, origin, permission, version, tags from tool").fetchone()
+    tool = conn.execute("select name, origin, permission, risk, version, tags from tool").fetchone()
+    has_invocation = conn.execute(
+        "select count(*) from sqlite_master where name='invocation'"
+    ).fetchone()[0]
     has_log = conn.execute(
         "select count(*) from sqlite_master where name='execution_log'"
     ).fetchone()[0]
@@ -117,9 +120,12 @@ async def test_migration_upgrades_legacy_data_without_loss(tmp_path) -> None:
     assert skill[1] == "旧的知识"
     # 新列都回填了默认值
     assert skill[2] == 1 and skill[3] == "[]"
-    assert tool[1] == "user" and tool[2] == "low" and tool[3] == 1 and tool[4] == "[]"
-    # 新表建出来了
-    assert has_log == 1
+    assert tool[1] == "user" and tool[3] == "read" and tool[4] == 1 and tool[5] == "[]"
+    # 权限取值域迁移了：low → none
+    assert tool[2] == "none"
+    # execution_log 改名成 invocation
+    assert has_invocation == 1
+    assert has_log == 0
 
 
 @pytest.mark.asyncio

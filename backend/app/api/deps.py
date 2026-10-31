@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.services.agent import AgentService
 from app.services.capability import CapabilityService
 from app.services.example import ExampleService
+from app.services.invocation import InvocationService
 from app.services.llm_provider import LLMProviderService
 from app.services.mcp_server import MCPServerService
 from app.services.skill import SkillService
@@ -52,3 +53,8 @@ def get_skill_service(session: DbSession) -> SkillService:
 def get_capability_service(session: DbSession) -> CapabilityService:
     """构造统一能力清单服务实例。"""
     return CapabilityService(session)
+
+
+def get_invocation_service(session: DbSession) -> InvocationService:
+    """构造调用记录（审批）服务实例。"""
+    return InvocationService(session)

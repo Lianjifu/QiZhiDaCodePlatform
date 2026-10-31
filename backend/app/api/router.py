@@ -4,7 +4,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import agent, capability, example, health, llm_provider, mcp_server, skill, tool
+from app.api.v1 import (
+    agent,
+    capability,
+    example,
+    health,
+    invocation,
+    llm_provider,
+    mcp_server,
+    skill,
+    tool,
+)
 
 api_router = APIRouter()
 api_router.include_router(health.router)
@@ -15,3 +25,4 @@ api_router.include_router(mcp_server.router)
 api_router.include_router(tool.router)
 api_router.include_router(skill.router)
 api_router.include_router(capability.router)
+api_router.include_router(invocation.router)

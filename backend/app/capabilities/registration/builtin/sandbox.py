@@ -18,11 +18,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Awaitable, Callable
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
-from app.capabilities.context import ExecutionContext
+from app.capabilities.errors import CapabilityError, ErrorCode
+from app.capabilities.execution.context import ExecutionContext
 
 _MAX_OUTPUT = 20000
 
@@ -39,31 +42,47 @@ _DOCKER_ENV_KEYS = (
 # ---------- 对外的工厂函数（注册表的入口点） ----------
 
 
-def make_run_python(context: ExecutionContext) -> Callable[[str], Awaitable[str]]:
+def make_run_python(context: ExecutionContext) -> Callable[[str], Awaitable[dict[str, Any]]]:
     """在工作区沙箱里执行一段 Python 代码。"""
 
-    async def run_python(code: str) -> str:
+    async def run_python(code: str) -> dict[str, Any]:
         """在工作区的沙箱里执行一段 Python 代码，返回退出码、标准输出和标准错误。
 
         代码在当前目录下运行。
         """
+        started = time.perf_counter()
         exit_code, stdout, stderr = await exec_python(code, context)
-        return _format(exit_code, stdout, stderr)
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        return {
+            "content": _format(exit_code, stdout, stderr),
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+        }
 
     return run_python
 
 
-def make_run_bash(context: ExecutionContext) -> Callable[[str], Awaitable[str]]:
+def make_run_bash(context: ExecutionContext) -> Callable[[str], Awaitable[dict[str, Any]]]:
     """在工作区沙箱里执行一条 shell 命令。"""
 
-    async def run_bash(command: str) -> str:
+    async def run_bash(command: str) -> dict[str, Any]:
         """在工作区的沙箱里执行一条 shell 命令，返回退出码、标准输出和标准错误。
 
         命令在当前目录下运行。隔离程度取决于沙箱模式：docker 模式下断网且只能
         看到工作区，local 模式没有隔离，命令能访问本机的一切。
         """
+        started = time.perf_counter()
         exit_code, stdout, stderr = await exec_command(command, context)
-        return _format(exit_code, stdout, stderr)
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        return {
+            "content": _format(exit_code, stdout, stderr),
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+        }
 
     return run_bash
 
@@ -161,14 +180,21 @@ async def _spawn(argv: list[str], context: ExecutionContext) -> tuple[int, str, 
             env=_child_env(context),
         )
     except FileNotFoundError as exc:
-        return -1, "", f"找不到可执行文件: {argv[0]}（{exc}）"
+        raise CapabilityError(
+            f"找不到可执行文件: {argv[0]}（{exc}）",
+            code=ErrorCode.EXECUTION_ERROR,
+        ) from exc
 
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=context.sandbox_timeout)
-    except TimeoutError:
+    except TimeoutError as exc:
         proc.kill()
         await proc.wait()
-        return -1, "", f"执行超时（>{context.sandbox_timeout}s），已终止"
+        raise CapabilityError(
+            f"执行超时（>{context.sandbox_timeout}s），已终止",
+            code=ErrorCode.TIMEOUT,
+            retryable=True,
+        ) from exc
     return (
         proc.returncode or 0,
         stdout.decode("utf-8", errors="replace"),

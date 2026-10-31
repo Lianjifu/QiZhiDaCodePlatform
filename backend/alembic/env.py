@@ -18,7 +18,15 @@ from app.core.config import settings
 from app.db.session import Base
 
 # 导入所有模型，确保 Base.metadata 收集到全部表
-from app.models import Example, ExecutionLog, LLMProvider, MCPServer, Skill, SkillTool, Tool  # noqa: F401
+from app.models import (  # noqa: F401
+    Example,
+    Invocation,
+    LLMProvider,
+    MCPServer,
+    Skill,
+    SkillTool,
+    Tool,
+)
 
 config = context.config
 

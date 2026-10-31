@@ -5,6 +5,9 @@
 - builtin：``source`` 必须在内置能力白名单里（否则等于允许执行任意 Python 代码）；
 - http：``config.url`` 必填，``parameters`` 必须是一份合法的入参 JSON Schema；
 - mcp：``source`` 是 MCP 服务器名，``config.tool_name`` 必填。
+
+声明字段（``permission`` / ``risk`` / ``output_schema`` / ``timeout_s`` /
+``retry_policy`` / ``annotations``）是**注册层的声明**，不是运行时判定。
 """
 
 from __future__ import annotations
@@ -15,10 +18,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.capabilities.builtin import get_builtin_by_source
+from app.capabilities.registration.builtin import get_builtin_by_source
 from app.schemas.common import PageMeta
 
 ToolType = Literal["builtin", "http", "mcp"]
+
+# 权限要求：谁能放行这次调用（与风险等级 risk 是两个维度）
+Permission = Literal["none", "confirm", "admin"]
+# 风险等级：能力最坏能造成什么
+Risk = Literal["read", "write", "execute", "network", "destructive"]
 
 # 工具名会直接进 LLM 的 tool schema，必须是像标识符的名字
 _NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
@@ -47,7 +55,19 @@ class ToolBase(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict, description="类型相关的细节")
     parameters: dict[str, Any] = Field(default_factory=dict, description="入参 JSON Schema")
     tags: list[str] = Field(default_factory=list, description="检索用的领域标签")
-    permission: Literal["low", "high"] = Field(default="low", description="风险等级")
+    permission: Permission = Field(default="none", description="权限要求：谁能放行这次调用")
+    risk: Risk = Field(default="read", description="风险等级：能力最坏能造成什么")
+    output_schema: dict[str, Any] | None = Field(
+        default=None, description="出参 JSON Schema；为空表示返回自由文本"
+    )
+    timeout_s: int = Field(default=30, ge=1, le=600, description="单次调用超时（秒）")
+    retry_policy: dict[str, Any] = Field(
+        default_factory=dict, description="重试策略 {max_attempts, backoff_s, retry_on}"
+    )
+    annotations: dict[str, Any] = Field(
+        default_factory=dict,
+        description="工具注解 {read_only, destructive, idempotent, open_world}",
+    )
     enabled: bool = Field(default=True)
 
     @model_validator(mode="after")
@@ -93,7 +113,12 @@ class ToolUpdate(BaseModel):
     config: dict[str, Any] | None = None
     parameters: dict[str, Any] | None = None
     tags: list[str] | None = None
-    permission: Literal["low", "high"] | None = None
+    permission: Permission | None = None
+    risk: Risk | None = None
+    output_schema: dict[str, Any] | None = None
+    timeout_s: int | None = Field(default=None, ge=1, le=600)
+    retry_policy: dict[str, Any] | None = None
+    annotations: dict[str, Any] | None = None
     enabled: bool | None = None
 
     @model_validator(mode="after")
@@ -132,6 +157,11 @@ class ToolOut(BaseModel):
     parameters: dict[str, Any]
     tags: list[str]
     permission: str
+    risk: str = "read"
+    output_schema: dict[str, Any] | None = None
+    timeout_s: int = 30
+    retry_policy: dict[str, Any] = Field(default_factory=dict)
+    annotations: dict[str, Any] = Field(default_factory=dict)
     origin: str = Field(default="user", description="builtin 出厂 / user 自建")
     version: int = 1
     enabled: bool
@@ -156,8 +186,13 @@ class BuiltinToolOut(BaseModel):
     display_name: str
     description: str
     tags: list[str] = Field(default_factory=list)
-    permission: str = "low"
-    parameters: dict[str, Any] = Field(default_factory=dict)
+    permission: str = "none"
+    risk: str = "read"
+    timeout_s: int = 30
+    retry_policy: dict[str, Any] = Field(default_factory=dict)
+    annotations: dict[str, Any] = Field(default_factory=dict)
+    parameters: dict[str, Any] = Field(default_factory=dict, description="入参 JSON Schema")
+    output_schema: dict[str, Any] | None = None
 
 
 class ToolTestOut(BaseModel):

@@ -51,8 +51,9 @@ async def init_db() -> None:
     - 内置能力同步：始终执行 —— 它是往已有表里补数据，不是改 schema。
     """
     # 导入模型以确保 Base.metadata 收集到所有表
-    from app.capabilities.registry import CapabilityRegistry
+    from app.capabilities.registration.registry import CapabilityRegistry
     from app.models import Example  # noqa: F401
+    from app.models.invocation import Invocation  # noqa: F401
 
     if settings.db_auto_create_tables:
         async with engine.begin() as conn:

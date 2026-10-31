@@ -73,20 +73,34 @@ backend/
 │   │   ├── runner.py        # 执行器（同步一轮 / 流式）
 │   │   └── checkpointer.py  # 多轮对话上下文持久化
 │   ├── capabilities/         # 能力层：tool / mcp / skill 的统一体系
-│   │   ├── builtin/          # 内置能力出厂源（白名单 + 出厂规格）
-│   │   │   ├── __init__.py   # 出厂规格清单（白名单）
-│   │   │   ├── paths.py      # 工作区路径校验（防穿越）
-│   │   │   ├── fs.py         # 文件类能力（读/写/改/移/拷/建目录/切目录/列/glob/grep）
-│   │   │   ├── sandbox.py    # 执行类能力（Python / shell，沙箱隔离）
-│   │   │   └── web.py        # 网络类能力（抓取 / 搜索）
-│   │   ├── registry.py       # 统一能力清单的唯一读取入口
-│   │   ├── entry.py          # 清单条目模型
-│   │   ├── adapter.py        # 执行适配器（builtin / http / mcp）
-│   │   ├── result.py         # 执行结果与失败分级
-│   │   ├── orchestration.py   # 编排层：检索 / 参数校验 / middleware
-│   │   ├── prompt.py         # 提示词组装器
-│   │   ├── context.py        # 执行上下文（工作区、沙箱、MCP 通道）
-│   │   └── mcp_client.py     # MCP 连接与能力拉取
+│   │   ├── errors.py          # 错误码与 CapabilityError（三层共用）
+│   │   ├── prompt.py          # 提示词组装器
+│   │   ├── mcp_client.py      # MCP 连接与能力拉取
+│   │   ├── registration/      # 注册层：声明、编目、安装
+│   │   │   ├── spec.py        # 能力声明（契约 + 策略）
+│   │   │   ├── policy.py      # 风险等级 / 权限要求 / 重试策略 / 工具注解
+│   │   │   ├── validator.py   # JSON Schema 校验（意图层与执行层共用）
+│   │   │   ├── args_model.py  # JSON Schema → 给模型看的参数模型
+│   │   │   ├── registry.py    # 统一能力清单的唯一读取入口
+│   │   │   └── builtin/       # 内置能力出厂源（白名单 + 出厂规格）
+│   │   │       ├── __init__.py# 出厂规格清单（白名单）
+│   │   │       ├── paths.py   # 工作区路径校验（防穿越）
+│   │   │       ├── fs.py      # 文件类能力（读/写/改/移/拷/建目录/切目录/列/glob/grep）
+│   │   │       ├── sandbox.py # 执行类能力（Python / shell，沙箱隔离）
+│   │   │       └── web.py     # 网络类能力（抓取 / 搜索）
+│   │   ├── intent/            # 意图层：模型的一次 tool call → 一条意图
+│   │   │   ├── intent.py      # CapabilityIntent（与执行层的唯一契约）
+│   │   │   ├── planner.py     # 检索技能、收敛能力集
+│   │   │   ├── resolver.py    # tool call → 意图（含前置参数校验）
+│   │   │   └── middleware.py  # LangChain middleware 挂钩
+│   │   └── execution/         # 执行层：七阶段流水线
+│   │       ├── pipeline.py    # 校验→授权→风险→审批→调用→验证→回写
+│   │       ├── adapters.py    # 执行适配器（builtin / http / mcp）
+│   │       ├── tooling.py     # 能力声明 → 模型可调用的工具
+│   │       ├── risk.py        # 参数级风险评估（SSRF / 破坏性命令）
+│   │       ├── redaction.py   # 结果脱敏
+│   │       ├── result.py      # 执行结果
+│   │       └── context.py     # 执行上下文（工作区、沙箱、MCP 通道）
 │   ├── schemas/             # 请求 / 响应模型
 │   ├── services/            # 业务层
 │   ├── repositories/        # 数据访问层
@@ -124,6 +138,9 @@ WORKSPACE_ROOT="./workspace"
 WEB_SEARCH_PROVIDER=""       # tavily | serper | bing（联网搜索用）
 WEB_SEARCH_API_KEY=""        # 对应服务商的 API Key
 DB_AUTO_CREATE_TABLES=false  # 用了 Alembic 就必须关掉
+
+CAPABILITY_TRUST_MODE="balanced"   # strict | balanced | permissive
+CAPABILITY_APPROVAL_TIMEOUT=300    # 审批请求超时自动拒绝（秒）
 ```
 
 ### ⚠️ 沙箱是这个平台的安全底线
@@ -188,11 +205,7 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 - 明文只在真正调模型前解密，绝不进响应体、日志。
 - 主密钥生成：`python scripts/gen_encryption_key.py`。**换密钥会让已存的 key 解不开，只能重录。**
 
-## 能力层（注册 / 编排 / 执行）
-
-> **v2 方案（未实施）**：能力层下一版要改成 **注册 / 意图 / 执行** 三层，
-> 补齐声明式契约、参数级风险评估、审批等待、结果验证与统一留痕。
-> 完整设计见 [`docs/capability-architecture.md`](docs/capability-architecture.md)。
+## 能力层（注册 / 意图 / 执行）
 
 能力层把 tool / mcp / skill 收成一套统一体系：
 
@@ -212,15 +225,55 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 
 | 层 | 职责 | 关键约束 |
 | --- | --- | --- |
-| **注册层** `app/capabilities/` | 声明、编目、安装 —— 产出**统一能力清单** | **唯一入口**：agent 只从注册表拿能力 |
-| **编排层** `app/capabilities/orchestration.py` | 检索技能 → 收敛工具 → 校验参数 → 组装提示词 | 选择粒度是 skill，暴露粒度是 tool |
-| **执行层** `app/capabilities/adapter.py` | 受控执行 → 结构化结果 → 失败分级 | 不做决策 |
+| **注册层** `app/capabilities/registration/` | 声明、编目、安装 —— 产出**统一能力清单** | **唯一入口**：agent 只从注册表拿能力 |
+| **意图层** `app/capabilities/intent/` | 检索技能 → 收敛工具 → 把模型的一次 tool call 变成一条意图 | 模型提议，意图层收敛；**不产生副作用** |
+| **执行层** `app/capabilities/execution/` | 七阶段流水线：校验 → 授权 → 风险 → 审批 → 调用 → 验证 → 留痕 | **所有调用的必经之路** |
+
+三层都是动词，正好是同一条流水线上的三步：**注册**声明能力，**意图**形成这次调用意图，
+**执行**真正动手。
+
+设计细节见 [`docs/capability-architecture.md`](docs/capability-architecture.md)。
+
+### 执行层是唯一的执行路径
+
+早先 agent 内部的工具调用**直接命中 LangChain 的工具函数**，绕开了执行层 ——
+于是没有日志、没有超时、没有重试、没有策略检查。现在工具的 coroutine 走
+`execution/pipeline.py`，agent 内部调用和直接调 API 走同一条路，留同一份痕。
+
+七个阶段的顺序是刻意的：便宜的确定性检查在前，昂贵的人介入在中，副作用在后。
+
+```text
+① schema 校验 → ② 权限校验 → ③ 风险评估 → ④ 审批等待
+→ ⑤ 实际调用 → ⑥ 结果验证 → ⑦ 结果回写
+```
+
+### 声明：契约与策略
+
+每个能力在注册时声明清楚：输入输出 schema、风险等级、权限要求、超时、重试策略、
+幂等标记。**风险与权限是两个维度**：
+
+| 字段 | 取值 | 含义 |
+| --- | --- | --- |
+| `risk` | read / write / execute / network / destructive | 最坏能造成什么 |
+| `permission` | none / confirm / admin | 谁能放行这次调用 |
+
+实际要不要审批，由**信任模式**（`CAPABILITY_TRUST_MODE`）在运行时决定：
+
+| 模式 | 放行范围 | 用途 |
+| --- | --- | --- |
+| `strict` | 完全按 `permission` 声明 | 生产 |
+| `balanced`（默认） | 读写自动放行；执行命令 / 联网抓取需确认 | 默认 |
+| `permissive` | 只有 `destructive` 需确认 | 本地开发 |
+
+风险还会被**参数级规则上调**：`run_bash` 命中 `rm -rf`、`dd`、`curl … | sh`，
+或 `web_fetch` 的 URL 指向内网地址（SSRF），都会把风险顶到 `destructive` 并要求
+管理员放行。
 
 ### 内置能力是"出厂源"，不是运行时直连
 
-`app/capabilities/builtin/` 是白名单，启动时**同步进数据库**（`origin=builtin`）。
-之后数据库就是唯一事实来源：运营可以改描述、调参数、单独禁用某个内置能力；
-同名冲突会**显式报错**，而不是像以前那样被 LangGraph 静默覆盖。
+`app/capabilities/registration/builtin/` 是白名单，启动时**同步进数据库**
+（`origin=builtin`）。之后数据库就是唯一事实来源：运营可以改描述、调参数、单独禁用
+某个内置能力；同名冲突会**显式报错**，而不是像以前那样被 LangGraph 静默覆盖。
 
 同步只补空字段 —— 运营改过的内容不会被启动流程冲掉。
 
@@ -228,31 +281,32 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 
 内置能力对标 Claude Code 的内置工具，全部限制在会话工作区内：
 
-| key | 名称 | 参数 | 权限 | 说明 |
-| --- | --- | --- | --- | --- |
-| `read_file` | 读取文件 | `path` `offset` `limit` | low | 读文本文件，带行号；offset/limit 用于分段读大文件 |
-| `write_file` | 写入文件 | `path` `content` | high | 写入（覆盖），自动建父目录 |
-| `edit_file` | 编辑文件 | `path` `old_string` `new_string` `replace_all` | high | 精确字符串替换；**原文必须唯一**，不唯一就报错并列出所有匹配行号 |
-| `move_file` | 移动文件 | `source` `destination` | high | 移动/重命名文件或目录，等价于 `mv` |
-| `copy_file` | 复制文件 | `source` `destination` | high | 复制文件或目录，等价于 `cp` |
-| `make_dir` | 创建目录 | `path` | high | `mkdir -p`，目录已存在也算成功 |
-| `change_directory` | 切换目录 | `path` | low | `cd`，切换后所有相对路径以新目录为起点 |
-| `list_files` | 列出文件 | `path` | low | 列目录下的文件与子目录 |
-| `glob` | 按模式找文件 | `pattern` `path` | low | 按 glob 模式找文件，如 `**/*.py` |
-| `grep` | 搜索文件内容 | `pattern` `path` `glob_pattern` | low | 按正则搜内容，返回 `文件:行号:内容` |
-| `run_python` | 执行 Python | `code` | high | 在沙箱里跑一段 Python，返回退出码 / stdout / stderr |
-| `run_bash` | 执行命令 | `command` | high | 在沙箱里跑一条 shell 命令 |
-| `web_fetch` | 抓取网页 | `url` | high | 抓 http/https 页面并转纯文本（去脚本、去样式） |
-| `web_search` | 联网搜索 | `query` `max_results` | high | 走 Tavily / Serper / Bing 搜索，需配 API Key |
+| key | 名称 | 参数 | 风险 | 权限 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `read_file` | 读取文件 | `path` `offset` `limit` | read | none | 读文本文件，带行号；offset/limit 用于分段读大文件 |
+| `write_file` | 写入文件 | `path` `content` | write | none | 写入（覆盖），自动建父目录 |
+| `edit_file` | 编辑文件 | `path` `old_string` `new_string` `replace_all` | write | none | 精确字符串替换；**原文必须唯一**，不唯一就报错并列出所有匹配行号 |
+| `move_file` | 移动文件 | `source` `destination` | write | none | 移动/重命名文件或目录，等价于 `mv` |
+| `copy_file` | 复制文件 | `source` `destination` | write | none | 复制文件或目录，等价于 `cp` |
+| `make_dir` | 创建目录 | `path` | write | none | `mkdir -p`，目录已存在也算成功 |
+| `change_directory` | 切换目录 | `path` | read | none | `cd`，切换后所有相对路径以新目录为起点 |
+| `list_files` | 列出文件 | `path` | read | none | 列目录下的文件与子目录 |
+| `glob` | 按模式找文件 | `pattern` `path` | read | none | 按 glob 模式找文件，如 `**/*.py` |
+| `grep` | 搜索文件内容 | `pattern` `path` `glob_pattern` | read | none | 按正则搜内容，返回 `文件:行号:内容` |
+| `run_python` | 执行 Python | `code` | execute | confirm | 在沙箱里跑一段 Python，返回退出码 / stdout / stderr |
+| `run_bash` | 执行命令 | `command` | execute | confirm | 在沙箱里跑一条 shell 命令 |
+| `web_fetch` | 抓取网页 | `url` | network | confirm | 抓 http/https 页面并转纯文本（去脚本、去样式） |
+| `web_search` | 联网搜索 | `query` `max_results` | network | confirm | 走 Tavily / Serper / Bing 搜索，需配 API Key |
 
 几个设计取舍：
 
 - **文件类只认相对路径**。绝对路径、`..` 穿越、指向工作区外的符号链接一律拒绝
-  （`builtin/paths.py`）。
-- **写与改是"高权限"能力**，写入类操作在 `tool.permission` 上标成 `high`，
-  便于后面接权限确认。
+  （`registration/builtin/paths.py`）。
+- **能力返回结构化结果**：dict，其中 `content` 是给模型看的文本，其余字段给程序看
+  （校验、日志、自动化消费）。失败抛 `CapabilityError`，带错误码和 `retryable`
+  标记，不再返回"看起来像成功"的字符串。
 - **执行类一律进沙箱**，且命令写进脚本文件再执行，不做 `sh -c "用户输入"` 拼接。
-- **联网搜索没配 Key 就明说**，返回"请设置 `WEB_SEARCH_PROVIDER` 和
+- **联网搜索没配 Key 就明说**，报"请设置 `WEB_SEARCH_PROVIDER` 和
   `WEB_SEARCH_API_KEY`"，而不是静默失败。
 
 ### 当前目录（cd）
@@ -271,12 +325,32 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 放在工作区外面有两个原因：模型的文件工具只看得到工作区内的东西，工作区也不该
 被状态文件污染。目录被删掉了就自动退回工作区根目录。
 
+### 审批
+
+需要审批的调用不会直接执行，而是生成一条 `pending` 的调用记录：
+
+```text
+调用 → 生成 pending 记录 → 返回"等待审批"
+                             ↓
+                   人工批准 ─┬─ approve → 按记录里的参数执行
+                            └─ deny    → 不执行
+```
+
+批准后由审批接口直接执行，**不依赖 agent 还活着**，所以不需要把 agent 挂起等审批。
+
 ### 接口
 
 ```text
 GET    /api/v1/capabilities             统一能力清单（跨三类成员，可按 kind/tag 过滤）
 GET    /api/v1/capabilities/{key}        按 key 取任意成员
+GET    /api/v1/capabilities/{key}/spec   能力的完整声明（契约 + 策略）
 POST   /api/v1/capabilities/{key}/invoke  直接调一次能力（调试用，返回结构化结果）
+
+GET    /api/v1/invocations               调用记录分页
+GET    /api/v1/invocations/{id}          调用详情（含各阶段结论）
+POST   /api/v1/invocations/{id}/approve  批准并执行待审批的调用
+POST   /api/v1/invocations/{id}/deny     拒绝待审批的调用
+POST   /api/v1/invocations/{id}/cancel   取消待审批的调用
 
 GET    /api/v1/tools/builtins           内置能力白名单
 GET    /api/v1/tools                    分页查询工具
@@ -364,12 +438,14 @@ alembic current / history / show  # 看状态
 
 ### 存量库怎么升级
 
-现在有两版迁移：
+现在有四版迁移：
 
 | 版本 | 内容 |
 | --- | --- |
 | `0001_baseline` | 脚手架初期的表结构（引入 Alembic 之前的快照） |
 | `0002_capability_layer` | 能力层重构：skill.prompt → knowledge、新增若干列、新建 execution_log |
+| `0003_capability_v2` | 声明式契约：tool 补 risk/output_schema/timeout_s/retry_policy/annotations；permission 取值域 low→none、high→confirm；execution_log 改名 invocation 并扩成完整生命周期 |
+| `0004_builtin_specs` | 内置能力出厂规格升级：模块路径迁移到注册层下，补齐风险等级与策略 |
 
 按你手上数据库的状态选一条：
 
@@ -442,7 +518,7 @@ pip install -r requirements.txt
 ```bash
 cd backend
 source ../.venv/bin/activate
-pytest -q          # 127 passed
+pytest -q          # 153 passed
 ```
 
 只想快速检查语法（不装依赖也能跑）：

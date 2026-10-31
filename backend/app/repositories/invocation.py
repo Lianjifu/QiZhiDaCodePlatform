@@ -1,0 +1,88 @@
+"""调用记录仓储。"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import select
+
+from app.models.invocation import Invocation
+from app.repositories.base import BaseRepository
+
+# 幂等去重窗口：只在这么短时间内认为"是同一次调用的重放"。
+# 窗口太短挡不住节点重放，太长会把用户隔一段时间的合法重复调用也吞掉。
+IDEMPOTENCY_WINDOW_SECONDS = 300
+
+
+class InvocationRepository(BaseRepository[Invocation]):
+    model = Invocation
+
+    async def list_page(
+        self,
+        *,
+        thread_id: str | None = None,
+        capability_key: str | None = None,
+        status: str | None = None,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> list[Invocation]:
+        stmt = select(Invocation).order_by(Invocation.id.desc())
+        if thread_id:
+            stmt = stmt.where(Invocation.thread_id == thread_id)
+        if capability_key:
+            stmt = stmt.where(Invocation.capability_key == capability_key)
+        if status:
+            stmt = stmt.where(Invocation.status == status)
+        stmt = stmt.offset(offset).limit(limit)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count_page(
+        self,
+        *,
+        thread_id: str | None = None,
+        capability_key: str | None = None,
+        status: str | None = None,
+    ) -> int:
+        stmt = select(Invocation)
+        if thread_id:
+            stmt = stmt.where(Invocation.thread_id == thread_id)
+        if capability_key:
+            stmt = stmt.where(Invocation.capability_key == capability_key)
+        if status:
+            stmt = stmt.where(Invocation.status == status)
+        result = await self.session.execute(stmt)
+        return len(list(result.scalars().all()))
+
+    async def find_recent_success(
+        self,
+        idempotency_key: str,
+        thread_id: str | None = None,
+        window_seconds: int = IDEMPOTENCY_WINDOW_SECONDS,
+    ) -> Invocation | None:
+        """找一条最近的、成功的同键调用。
+
+        命中说明这次调用是重放（比如审批挂起后节点重跑），直接复用它的结果，
+        不再执行一遍副作用。
+        """
+        since = datetime.now(UTC) - timedelta(seconds=window_seconds)
+        stmt = (
+            select(Invocation)
+            .where(Invocation.idempotency_key == idempotency_key)
+            .where(Invocation.status == "succeeded")
+            .where(Invocation.created_at >= since)
+            .order_by(Invocation.id.desc())
+            .limit(1)
+        )
+        if thread_id:
+            stmt = stmt.where(Invocation.thread_id == thread_id)
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def has_pending(self, thread_id: str | None) -> bool:
+        """这个会话有没有还在等审批的调用。"""
+        stmt = select(Invocation).where(Invocation.status == "pending").limit(1)
+        if thread_id:
+            stmt = stmt.where(Invocation.thread_id == thread_id)
+        result = await self.session.execute(stmt)
+        return result.scalars().first() is not None

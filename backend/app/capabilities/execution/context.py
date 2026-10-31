@@ -16,9 +16,13 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.core.config import settings
 from app.models.mcp_server import MCPServer
+
+if TYPE_CHECKING:  # pragma: no cover - 只用于类型标注
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +43,10 @@ class ExecutionContext:
     docker_mount: str = "/workspace"
     # 当前工作目录：相对路径的起点，默认等于工作区根目录
     cwd: Path | None = None
+    # 数据库会话：有会话才写调用记录（执行层统一留痕的落点）
+    session: AsyncSession | None = None
+    # 会话 ID：调用记录按它归集，幂等键也带上它
+    thread_id: str = ""
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace)

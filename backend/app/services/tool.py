@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from sqlalchemy.exc import IntegrityError
 
-from app.capabilities.adapter import get_adapter
-from app.capabilities.context import ExecutionContext
+from app.capabilities.execution.context import ExecutionContext
+from app.capabilities.execution.tooling import build_tools
 from app.core.exceptions import ConflictError, NotFoundError
 from app.models.mcp_server import MCPServer
 from app.models.tool import Tool
@@ -105,11 +105,16 @@ class ToolService(BaseService[ToolRepository]):
                 )
             servers[server.name] = server
         try:
-            entry = _entry_of(tool)
+            spec = _spec_of(tool)
             context = ExecutionContext.build(mcp_servers=servers)
-            built = await get_adapter(entry.source_type).build_tool(entry, context)
+            built_list = await build_tools([spec], context)
         except Exception as exc:
             return ToolTestOut(ok=False, tool_id=tool.id, name=tool.name, message=str(exc)[:500])
+        if not built_list:
+            return ToolTestOut(
+                ok=False, tool_id=tool.id, name=tool.name, message="能力不可用，已跳过"
+            )
+        built = built_list[0]
         properties = _schema_property_names(getattr(built, "args_schema", None))
         return ToolTestOut(
             ok=True,
@@ -126,11 +131,11 @@ class ToolService(BaseService[ToolRepository]):
             raise ConflictError(f"MCP 服务器 {source} 不存在")
 
 
-def _entry_of(tool: Tool):
-    """把 ORM 行转成清单条目（复用注册层的映射规则）。"""
-    from app.capabilities.registry import _tool_entry
+def _spec_of(tool: Tool):
+    """把 ORM 行转成能力声明（复用注册层的映射规则）。"""
+    from app.capabilities.registration.registry import _tool_spec
 
-    return _tool_entry(tool)
+    return _tool_spec(tool)
 
 
 def _schema_property_names(schema: object) -> list[str]:
