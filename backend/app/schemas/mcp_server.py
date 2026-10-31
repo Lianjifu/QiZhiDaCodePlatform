@@ -23,6 +23,7 @@ class MCPServerBase(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict, description="sse/http 形态的请求头")
     enabled: bool = Field(default=True)
     timeout: int = Field(default=30, ge=1, le=600, description="连接/调用超时（秒）")
+    tags: list[str] = Field(default_factory=list, description="检索用的领域标签")
 
     @model_validator(mode="after")
     def _check_transport_fields(self) -> MCPServerBase:
@@ -50,6 +51,7 @@ class MCPServerUpdate(BaseModel):
     headers: dict[str, str] | None = None
     enabled: bool | None = None
     timeout: int | None = Field(default=None, ge=1, le=600)
+    tags: list[str] | None = None
 
 
 class MCPServerOut(MCPServerBase):
@@ -58,6 +60,7 @@ class MCPServerOut(MCPServerBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    version: int = 1
     created_at: datetime
     updated_at: datetime
 

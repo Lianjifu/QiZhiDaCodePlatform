@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, Response, status
 
 from app.api.deps import get_tool_service
+from app.capabilities.builtin import list_builtin_specs
 from app.schemas.common import ResponseModel
 from app.schemas.tool import (
     BuiltinToolOut,
@@ -17,7 +18,6 @@ from app.schemas.tool import (
     ToolUpdate,
 )
 from app.services.tool import ToolService
-from app.skills.builtin import list_builtin_tools
 
 router = APIRouter(prefix="/tools", tags=["工具"])
 
@@ -25,18 +25,21 @@ ServiceDep = Annotated[ToolService, Depends(get_tool_service)]
 
 
 @router.get(
-    "/builtins", response_model=ResponseModel[list[BuiltinToolOut]], summary="内置工具白名单"
+    "/builtins", response_model=ResponseModel[list[BuiltinToolOut]], summary="内置能力白名单"
 )
 async def list_builtins() -> ResponseModel[list[BuiltinToolOut]]:
-    """列出可用的内置工具。builtin 类型的工具只能引用这里的入口点。"""
+    """列出可用的内置能力。builtin 类型的工具只能引用这里的入口点。"""
     items = [
         BuiltinToolOut(
             key=spec.key,
             source=spec.source,
             display_name=spec.display_name,
             description=spec.description,
+            tags=list(spec.tags),
+            permission=spec.permission,
+            parameters=dict(spec.parameters),
         )
-        for spec in list_builtin_tools()
+        for spec in list_builtin_specs()
     ]
     return ResponseModel[list[BuiltinToolOut]](data=items)
 

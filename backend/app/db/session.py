@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -41,12 +44,23 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """启动时建表（开发环境用，生产请用 Alembic 迁移）。"""
+    """启动时建表（开发环境用，生产请用 Alembic 迁移）。
+
+    建表之后同步内置能力的"出厂证" —— 让数据库成为能力清单的唯一事实来源，
+    代码里的出厂源只负责首次安装。
+    """
     # 导入模型以确保 Base.metadata 收集到所有表
+    from app.capabilities.registry import CapabilityRegistry
     from app.models import Example  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    async with SessionLocal() as session:
+        created = await CapabilityRegistry.sync_builtins(session)
+        await session.commit()
+        if created:
+            logger.info("已安装 %d 个内置能力", created)
 
 
 async def close_db() -> None:

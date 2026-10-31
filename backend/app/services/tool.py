@@ -1,9 +1,11 @@
-"""工具服务：CRUD + 可用性自测。"""
+"""工具（原子能力）服务：CRUD + 可用性自测。"""
 
 from __future__ import annotations
 
 from sqlalchemy.exc import IntegrityError
 
+from app.capabilities.adapter import get_adapter
+from app.capabilities.context import ExecutionContext
 from app.core.exceptions import ConflictError, NotFoundError
 from app.models.mcp_server import MCPServer
 from app.models.tool import Tool
@@ -13,8 +15,6 @@ from app.repositories.tool import ToolRepository
 from app.schemas.common import PageMeta
 from app.schemas.tool import ToolCreate, ToolTestOut, ToolUpdate
 from app.services.base import BaseService, PageResult
-from app.skills.context import build_runtime_context
-from app.skills.executor import ToolExecutor
 
 
 class ToolService(BaseService[ToolRepository]):
@@ -33,6 +33,8 @@ class ToolService(BaseService[ToolRepository]):
         page_size: int = 20,
         type: str | None = None,
         enabled: bool | None = None,
+        origin: str | None = None,
+        tag: str | None = None,
     ) -> PageResult:
         page = max(page, 1)
         page_size = min(max(page_size, 1), 100)
@@ -41,6 +43,10 @@ class ToolService(BaseService[ToolRepository]):
             items = [item for item in items if item.type == type]
         if enabled is not None:
             items = [item for item in items if item.enabled is enabled]
+        if origin:
+            items = [item for item in items if item.origin == origin]
+        if tag:
+            items = [item for item in items if tag in (item.tags or [])]
         total = len(items)
         start = (page - 1) * page_size
         window = items[start : start + page_size]
@@ -99,11 +105,12 @@ class ToolService(BaseService[ToolRepository]):
                 )
             servers[server.name] = server
         try:
-            built = await ToolExecutor(context=build_runtime_context()).build(tool, servers)
+            entry = _entry_of(tool)
+            context = ExecutionContext.build(mcp_servers=servers)
+            built = await get_adapter(entry.source_type).build_tool(entry, context)
         except Exception as exc:
             return ToolTestOut(ok=False, tool_id=tool.id, name=tool.name, message=str(exc)[:500])
-        schema = getattr(built, "args_schema", None)
-        properties = _schema_property_names(schema)
+        properties = _schema_property_names(getattr(built, "args_schema", None))
         return ToolTestOut(
             ok=True,
             tool_id=tool.id,
@@ -119,11 +126,18 @@ class ToolService(BaseService[ToolRepository]):
             raise ConflictError(f"MCP 服务器 {source} 不存在")
 
 
+def _entry_of(tool: Tool):
+    """把 ORM 行转成清单条目（复用注册层的映射规则）。"""
+    from app.capabilities.registry import _tool_entry
+
+    return _tool_entry(tool)
+
+
 def _schema_property_names(schema: object) -> list[str]:
     """取出工具的入参名。
 
-    schema 可能是 Pydantic 模型（内置工具自动推断的）或 JSON Schema 字典
-    （http 类型工具由用户登记的），两种都要兼容。
+    schema 可能是 Pydantic 模型（内置能力自动推断的）或 JSON Schema 字典
+    （http 能力由用户登记的），两种都要兼容。
     """
     if isinstance(schema, dict):
         return list((schema.get("properties") or {}).keys())

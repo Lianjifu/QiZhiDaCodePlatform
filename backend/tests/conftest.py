@@ -17,6 +17,7 @@ os.environ.setdefault("WORKSPACE_ROOT", os.path.join(tempfile.gettempdir(), "qzd
 # API Key 加密主密钥：每个测试会话现生成一把，不依赖本机 .env
 os.environ.setdefault("API_KEY_ENCRYPTION_KEY", Fernet.generate_key().decode())
 
+from app.capabilities.registry import CapabilityRegistry
 from app.db.session import Base, get_db  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.models import Example  # noqa: E402,F401  # 确保模型已注册到 Base.metadata
@@ -32,6 +33,12 @@ async def engine():
     )
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # 装上内置能力的"出厂证"，让注册层有东西可读
+    async with async_sessionmaker(
+        bind=test_engine, class_=AsyncSession, expire_on_commit=False
+    )() as setup_session:
+        await CapabilityRegistry.sync_builtins(setup_session)
+        await setup_session.commit()
     yield test_engine
     await test_engine.dispose()
 

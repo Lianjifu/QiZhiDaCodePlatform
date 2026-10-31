@@ -1,7 +1,7 @@
 """Agent 服务：平台侧的业务入口，负责工作区分配与 agent 生命周期。
 
 分层职责：
-- `app/agents/` 只管怎么跑（模型 + 工具 + 循环）；
+- `app/capabilities/` 管"能力清单与怎么执行"；
 - 这里管"用哪个模型""给这次会话分配哪个工作区""上下文怎么存""错误怎么翻译成 HTTP"。
 """
 
@@ -14,11 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.checkpointer import open_checkpointer
 from app.agents.llm import build_model_for_provider
 from app.agents.runner import AgentRunner, AgentRunResult
+from app.capabilities.context import ExecutionContext
+from app.capabilities.entry import KIND_TOOL, SOURCE_MCP, CapabilityEntry
+from app.capabilities.registry import CapabilityRegistry
 from app.core.config import settings
 from app.core.exceptions import AgentError, AppError, NotFoundError, ValidationError
 from app.repositories.llm_provider import LLMProviderRepository
-from app.services.skill import SkillService
-from app.skills.context import build_runtime_context
+from app.repositories.mcp_server import MCPServerRepository
 
 logger = logging.getLogger(__name__)
 
@@ -79,14 +81,27 @@ class AgentService:
             raise ValidationError(f"供应商配置 {provider.name} 已停用")
         return build_model_for_provider(provider)
 
-    async def _resolve_skills(self, skill_ids: list[int] | None, workspace: Path):
-        """把技能解析成 (工具, 附加提示词)。"""
-        if not skill_ids:
-            return [], ""
+    async def load_capabilities(self) -> list[CapabilityEntry]:
+        """统一能力清单 —— 只能从注册层来。"""
         if self.session is None:
-            raise ValidationError("未提供数据库会话，无法读取技能配置")
-        service = SkillService(self.session)
-        return await service.resolve_skills(skill_ids, build_runtime_context(workspace))
+            return []
+        return await CapabilityRegistry.load(self.session)
+
+    async def _build_context(
+        self, workspace: Path, entries: list[CapabilityEntry]
+    ) -> ExecutionContext:
+        """执行上下文：带上本次要用到的 MCP 供给通道。"""
+        mcp_servers = {}
+        if self.session is not None:
+            repo = MCPServerRepository(self.session)
+            for entry in entries:
+                if entry.kind != KIND_TOOL or entry.source_type != SOURCE_MCP:
+                    continue
+                name = entry.locator.get("server") or ""
+                server = await repo.get_by_name(name)
+                if server is not None and server.enabled:
+                    mcp_servers[server.name] = server
+        return ExecutionContext.build(workspace, mcp_servers)
 
     async def chat(
         self,
@@ -100,14 +115,16 @@ class AgentService:
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(provider_id)
-                extra_tools, extra_prompt = await self._resolve_skills(skill_ids, workspace)
+                entries = await self.load_capabilities()
+                context = await self._build_context(workspace, entries)
                 runner = self._runner or AgentRunner(checkpointer=checkpointer, model=model)
                 return await runner.run(
                     message,
                     thread_id,
                     workspace,
-                    extra_tools=extra_tools,
-                    extra_prompt=extra_prompt,
+                    entries=entries,
+                    context=context,
+                    skill_ids=skill_ids,
                 )
             except AppError:
                 raise
@@ -127,14 +144,16 @@ class AgentService:
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(provider_id)
-                extra_tools, extra_prompt = await self._resolve_skills(skill_ids, workspace)
+                entries = await self.load_capabilities()
+                context = await self._build_context(workspace, entries)
                 runner = self._runner or AgentRunner(checkpointer=checkpointer, model=model)
                 async for text in runner.stream(
                     message,
                     thread_id,
                     workspace,
-                    extra_tools=extra_tools,
-                    extra_prompt=extra_prompt,
+                    entries=entries,
+                    context=context,
+                    skill_ids=skill_ids,
                 ):
                     yield text
             except AppError:

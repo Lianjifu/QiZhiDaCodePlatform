@@ -6,14 +6,17 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query, Response, status
 
-from app.api.deps import get_skill_service
+from app.api.deps import get_capability_service, get_skill_service
+from app.schemas.capability import SkillPreviewOut
 from app.schemas.common import ResponseModel
 from app.schemas.skill import SkillCreate, SkillListOut, SkillOut, SkillUpdate
+from app.services.capability import CapabilityService
 from app.services.skill import SkillService
 
 router = APIRouter(prefix="/skills", tags=["技能"])
 
 ServiceDep = Annotated[SkillService, Depends(get_skill_service)]
+CapabilityDep = Annotated[CapabilityService, Depends(get_capability_service)]
 
 
 async def _to_out(service: SkillService, skill) -> SkillOut:
@@ -70,6 +73,20 @@ async def update_skill(
 ) -> ResponseModel[SkillOut]:
     skill = await service.update_skill(skill_id, payload)
     return ResponseModel[SkillOut](message="更新成功", data=await _to_out(service, skill))
+
+
+@router.get(
+    "/{skill_id}/preview",
+    response_model=ResponseModel[SkillPreviewOut],
+    summary="预览技能挂载后的效果",
+)
+async def preview_skill(
+    skill_id: Annotated[int, Path(ge=1)],
+    service: CapabilityDep,
+) -> ResponseModel[SkillPreviewOut]:
+    """看看这个技能会带哪些能力、往提示词里加什么。"""
+    preview = await service.preview_skill(skill_id)
+    return ResponseModel[SkillPreviewOut](data=preview)
 
 
 @router.delete("/{skill_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除技能")

@@ -73,12 +73,16 @@ backend/
 │   │   ├── runner.py        # 执行器（同步一轮 / 流式）
 │   │   ├── checkpointer.py  # 多轮对话上下文持久化
 │   │   └── tools/           # 工具集（文件读写 / 代码执行）
-│   ├── skills/              # 技能能力层：Tool / MCP / Skill 的执行
-│   │   ├── builtin/         # 内置工具白名单（read_file / write_file / run_python…）
-│   │   ├── executor.py      # 数据库定义 → 可执行 LangChain 工具
-│   │   ├── mcp_client.py    # MCP 连接与工具拉取
-│   │   ├── context.py       # 内置工具的运行时上下文
-│   │   └── prompt.py        # 技能提示词拼装
+│   ├── capabilities/         # 能力层：tool / mcp / skill 的统一体系
+│   │   ├── builtin/          # 内置能力出厂源（白名单 + 出厂规格）
+│   │   ├── registry.py       # 统一能力清单的唯一读取入口
+│   │   ├── entry.py          # 清单条目模型
+│   │   ├── adapter.py        # 执行适配器（builtin / http / mcp）
+│   │   ├── result.py         # 执行结果与失败分级
+│   │   ├── orchestration.py   # 编排层：检索 / 参数校验 / middleware
+│   │   ├── prompt.py         # 提示词组装器
+│   │   ├── context.py        # 执行上下文（工作区、沙箱、MCP 通道）
+│   │   └── mcp_client.py     # MCP 连接与能力拉取
 │   ├── schemas/             # 请求 / 响应模型
 │   ├── services/            # 业务层
 │   ├── repositories/        # 数据访问层
@@ -171,58 +175,85 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 - 明文只在真正调模型前解密，绝不进响应体、日志。
 - 主密钥生成：`python scripts/gen_encryption_key.py`。**换密钥会让已存的 key 解不开，只能重录。**
 
-## 技能模块（Tool / MCP / Skill）
+## 能力层（注册 / 编排 / 执行）
 
-三类实体，各自独立管理，最终组合成 agent 能用的能力包。
+能力层把 tool / mcp / skill 收成一套统一体系：
 
 ```text
-Skill（技能）= 一组 Tool + 一段提示词
-Tool（工具）  = builtin（内置函数）| http（外部接口）| mcp（来自 MCP server）
-MCP Server    = stdio（本地命令）| sse | streamable_http
+        skill（能力组合）= 知识 + 一组原子能力
+              │ 引用
+              ▼
+        tool（原子能力）  ── 执行方式 ──▶ builtin / http / mcp
+                                        （mcp 的供给通道是一张独立的表）
 ```
+
+- **tool** 是原子能力，最小可执行单元；
+- **mcp** 是供给通道，一个外部 server 提供的一组能力；
+- **skill** 是能力组合，**选择**的粒度是它，**执行**的粒度是 tool。
+
+### 三层怎么分工
+
+| 层 | 职责 | 关键约束 |
+| --- | --- | --- |
+| **注册层** `app/capabilities/` | 声明、编目、安装 —— 产出**统一能力清单** | **唯一入口**：agent 只从注册表拿能力 |
+| **编排层** `app/capabilities/orchestration.py` | 检索技能 → 收敛工具 → 校验参数 → 组装提示词 | 选择粒度是 skill，暴露粒度是 tool |
+| **执行层** `app/capabilities/adapter.py` | 受控执行 → 结构化结果 → 失败分级 | 不做决策 |
+
+### 内置能力是"出厂源"，不是运行时直连
+
+`app/capabilities/builtin/` 是白名单，启动时**同步进数据库**（`origin=builtin`）。
+之后数据库就是唯一事实来源：运营可以改描述、调参数、单独禁用某个内置能力；
+同名冲突会**显式报错**，而不是像以前那样被 LangGraph 静默覆盖。
+
+同步只补空字段 —— 运营改过的内容不会被启动流程冲掉。
 
 ### 接口
 
 ```text
-GET    /api/v1/tools/builtins        内置工具白名单
-GET    /api/v1/tools                 分页查询工具
-POST   /api/v1/tools                 新增工具
-GET    /api/v1/tools/{id}            详情
-PUT    /api/v1/tools/{id}            更新
-DELETE /api/v1/tools/{id}            删除（同时解除技能引用）
-POST   /api/v1/tools/{id}/test       测试工具配置能否被构造出来
+GET    /api/v1/capabilities             统一能力清单（跨三类成员，可按 kind/tag 过滤）
+GET    /api/v1/capabilities/{key}        按 key 取任意成员
+POST   /api/v1/capabilities/{key}/invoke  直接调一次能力（调试用，返回结构化结果）
 
-GET    /api/v1/mcp-servers           查询 MCP 服务器
-POST   /api/v1/mcp-servers           新增
-GET    /api/v1/mcp-servers/{id}      详情
-PUT    /api/v1/mcp-servers/{id}      更新
-DELETE /api/v1/mcp-servers/{id}      删除（有工具引用时拒绝）
-GET    /api/v1/mcp-servers/{id}/tools  探测该服务器上可用的工具
+GET    /api/v1/tools/builtins           内置能力白名单
+GET    /api/v1/tools                    分页查询工具
+POST   /api/v1/tools                    新增工具
+GET    /api/v1/tools/{id}               详情
+PUT    /api/v1/tools/{id}               更新
+DELETE /api/v1/tools/{id}               删除（同时解除技能引用）
+POST   /api/v1/tools/{id}/test          测试工具配置能否被构造出来
 
-GET    /api/v1/skills                分页查询技能
-POST   /api/v1/skills                新增
-GET    /api/v1/skills/{id}           详情
-PUT    /api/v1/skills/{id}           更新
-DELETE /api/v1/skills/{id}           删除
+GET    /api/v1/mcp-servers              查询 MCP 服务器
+POST   /api/v1/mcp-servers              新增
+GET    /api/v1/mcp-servers/{id}         详情
+PUT    /api/v1/mcp-servers/{id}         更新
+DELETE /api/v1/mcp-servers/{id}         删除（有工具引用时拒绝）
+GET    /api/v1/mcp-servers/{id}/tools   探测该服务器上可用的工具
+
+GET    /api/v1/skills                   分页查询技能
+POST   /api/v1/skills                   新增
+GET    /api/v1/skills/{id}              详情
+PUT    /api/v1/skills/{id}              更新
+DELETE /api/v1/skills/{id}              删除
+GET    /api/v1/skills/{id}/preview      预览挂载后带来哪些能力、什么提示词
 ```
 
-对话时用 `skill_ids` 挂载技能，技能里的工具与提示词会加到 agent 上：
+对话时用 `skill_ids` 挂载技能；不传则按用户输入自动检索相关技能：
 
 ```json
 POST /api/v1/agent/chat
 { "message": "帮我审查这段代码", "skill_ids": [1], "provider_id": 2 }
 ```
 
-### ⚠️ 内置工具是白名单，不是任意入口点
+### ⚠️ 内置能力是白名单，不是任意入口点
 
-`builtin` 类型的工具只能引用 `app/skills/builtin/__init__.py` 里登记过的
+`builtin` 类型的工具只能引用 `app/capabilities/builtin/__init__.py` 里登记过的
 `模块:工厂函数`。**如果允许任意 `模块:函数`，任何能调工具管理接口的人都能让平台
 import 并执行任意 Python 代码** —— 等价于远程代码执行。所以越界的 source 会在
 schema 校验层直接 422。
 
-新增内置工具的步骤：在 `builtin/__init__.py` 登记 → 写一个
-`factory(context) -> Callable` 的工厂函数（`context` 由运行时注入，不会进 LLM 的
-tool schema）→ `GET /tools/builtins` 就能看到它。
+新增内置能力的步骤：在 `builtin/__init__.py` 登记出厂规格 → 写一个
+`factory(context: ExecutionContext) -> Callable` 的工厂函数（`context` 由运行时
+注入，不会进 LLM 的 tool schema）→ 重启即自动安装。
 
 ### 工具的三种来源怎么用
 
@@ -234,6 +265,24 @@ tool schema）→ `GET /tools/builtins` 就能看到它。
 
 http 类型的 body 模板里可以用 `{占位符}` 引用模型给的参数；GET 类请求的参数进
 query string，其余进 JSON body。
+
+### 失败分级
+
+执行层不返回裸字符串，而是结构化结果，失败按类型分级 —— 模型据此判断
+"改参数重试"还是"换条路"：
+
+| error code | retryable | 含义 |
+| --- | --- | --- |
+| `CAPABILITY_NOT_FOUND` | false | 能力不存在 |
+| `INVALID_ARGUMENTS` | true | 参数不合法，修正后可重试 |
+| `EXECUTION_ERROR` | false | 代码本身错了 |
+| `SANDBOX_TIMEOUT` | true | 超时，缩小范围重试 |
+| `NETWORK_ERROR` | true | 外部服务问题 |
+| `PERMISSION_DENIED` | false | 越权，需人工介入 |
+
+参数校验发生在**进执行层之前**（编排层的 middleware），所以模型拿到的是
+`[INVALID_ARGUMENTS] 缺少必填参数：path（可以修正参数后重试）`，
+而不是一轮白跑的 traceback。
 
 ## 启动
 
@@ -273,7 +322,7 @@ pip install -r requirements.txt
 ```bash
 cd backend
 source ../.venv/bin/activate
-pytest -q          # 44 passed
+pytest -q          # 86 passed
 ```
 
 只想快速检查语法（不装依赖也能跑）：

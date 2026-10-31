@@ -1,20 +1,16 @@
-"""技能服务：CRUD + 把技能解析成 agent 可用的工具与提示词。"""
+"""技能（能力组合）服务：CRUD 与关联工具维护。"""
 
 from __future__ import annotations
 
 from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
-from app.models.mcp_server import MCPServer
 from app.models.skill import Skill
-from app.repositories.mcp_server import MCPServerRepository
 from app.repositories.skill import SkillRepository
 from app.repositories.tool import ToolRepository
 from app.schemas.common import PageMeta
 from app.schemas.skill import SkillCreate, SkillUpdate
 from app.services.base import BaseService, PageResult
-from app.skills.executor import ToolExecutor
-from app.skills.prompt import build_skill_prompt
 
 
 class SkillService(BaseService[SkillRepository]):
@@ -27,13 +23,20 @@ class SkillService(BaseService[SkillRepository]):
         return skill
 
     async def list_skills(
-        self, *, page: int = 1, page_size: int = 20, enabled: bool | None = None
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        enabled: bool | None = None,
+        tag: str | None = None,
     ) -> PageResult:
         page = max(page, 1)
         page_size = min(max(page_size, 1), 100)
         items = await self.repo.list_all()
         if enabled is not None:
             items = [item for item in items if item.enabled is enabled]
+        if tag:
+            items = [item for item in items if tag in (item.tags or [])]
         total = len(items)
         start = (page - 1) * page_size
         window = items[start : start + page_size]
@@ -60,7 +63,11 @@ class SkillService(BaseService[SkillRepository]):
             skill = await self.repo.create(
                 name=payload.name,
                 description=payload.description,
-                prompt=payload.prompt,
+                knowledge=payload.knowledge,
+                checklist=list(payload.checklist),
+                examples=list(payload.examples),
+                constraints=payload.constraints,
+                tags=list(payload.tags),
                 enabled=payload.enabled,
                 builtin=False,
             )
@@ -93,44 +100,6 @@ class SkillService(BaseService[SkillRepository]):
         await self.repo.replace_tools(skill.id, [])
         await self.repo.delete(skill)
         await self.session.commit()
-
-    # ---------- 给 agent 用 ----------
-
-    async def resolve_skills(self, skill_ids: list[int], context: dict) -> tuple[list, str]:
-        """把技能解析成 (可执行工具列表, 附加提示词)。
-
-        查不到的技能直接报错；单个工具构造失败则跳过，不影响其余工具。
-        """
-        if not skill_ids:
-            return [], ""
-        skills: list[Skill] = []
-        for skill_id in dict.fromkeys(skill_ids):
-            skill = await self.repo.get(skill_id)
-            if skill is None:
-                raise NotFoundError(f"技能 {skill_id} 不存在")
-            if not skill.enabled:
-                continue
-            skills.append(skill)
-
-        tool_repo = ToolRepository(self.session)
-        server_repo = MCPServerRepository(self.session)
-        servers: dict[str, MCPServer] = {}
-        tool_ids: list[int] = []
-        for skill in skills:
-            tool_ids.extend(await self.repo.list_tool_ids(skill.id))
-
-        tools = await tool_repo.list_by_ids(list(dict.fromkeys(tool_ids)))
-        enabled_tools = [tool for tool in tools if tool.enabled]
-
-        mcp_servers = [tool.source for tool in enabled_tools if tool.type == "mcp"]
-        for name in mcp_servers:
-            server = await server_repo.get_by_name(name or "")
-            if server is not None and server.enabled:
-                servers[server.name] = server
-
-        executor = ToolExecutor(context=context)
-        built = await executor.build_many(enabled_tools, servers)
-        return built, build_skill_prompt(skills)
 
     async def _assert_tools_exist(self, tool_ids: list[int]) -> None:
         if not tool_ids:

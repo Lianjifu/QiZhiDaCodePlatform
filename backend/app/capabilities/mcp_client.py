@@ -1,7 +1,7 @@
 """MCP 连接管理。
 
 把数据库里的 MCP 服务器配置翻译成 `langchain-mcp-adapters` 的连接参数，
-并负责把 server 上的工具取回来。
+并负责把 server 上的能力取回来。
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ class MCPManager:
     """
 
     async def list_tools(self, server: MCPServer) -> list[BaseTool]:
-        """列出某个 MCP server 上的全部工具。"""
+        """列出某个 MCP server 上的全部能力。"""
         from langchain_mcp_adapters.client import MultiServerMCPClient
 
         client = MultiServerMCPClient({server.name: build_connection(server)})
@@ -60,7 +60,7 @@ class MCPManager:
             raise MCPError(f"连接 MCP 服务器 {server.name} 失败: {exc}") from exc
 
     async def find_tool(self, server: MCPServer, tool_name: str) -> BaseTool | None:
-        """按名字找出 server 上的某个工具。"""
+        """按名字找出 server 上的某个能力。"""
         if not tool_name:
             return None
         for tool in await self.list_tools(server):

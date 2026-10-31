@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.services.agent import AgentService
+from app.services.capability import CapabilityService
 from app.services.example import ExampleService
 from app.services.llm_provider import LLMProviderService
 from app.services.mcp_server import MCPServerService
@@ -46,3 +47,8 @@ def get_tool_service(session: DbSession) -> ToolService:
 def get_skill_service(session: DbSession) -> SkillService:
     """构造技能服务实例。"""
     return SkillService(session)
+
+
+def get_capability_service(session: DbSession) -> CapabilityService:
+    """构造统一能力清单服务实例。"""
+    return CapabilityService(session)

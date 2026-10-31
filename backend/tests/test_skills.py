@@ -7,7 +7,7 @@ TOOLS = "/api/v1/tools"
 MCP = "/api/v1/mcp-servers"
 SKILLS = "/api/v1/skills"
 
-BUILTIN_SOURCE = "app.skills.builtin.fs:make_read_file"
+BUILTIN_SOURCE = "app.capabilities.builtin.fs:make_read_file"
 
 
 def _tool_payload(**overrides):
@@ -68,7 +68,10 @@ async def test_create_and_list_tools(client: AsyncClient) -> None:
 
     listing = await client.get(TOOLS)
     assert listing.status_code == 200
-    assert listing.json()["data"]["meta"]["total"] == 1
+    names = {item["name"] for item in listing.json()["data"]["items"]}
+    assert "read_workspace_file" in names
+    # 出厂内置能力也在清单里（注册层是唯一事实来源）
+    assert "read_file" in names
 
 
 @pytest.mark.asyncio
@@ -203,7 +206,7 @@ async def test_create_skill_with_tools(client: AsyncClient) -> None:
         json={
             "name": "代码审查",
             "description": "审查代码",
-            "prompt": "逐行检查潜在问题。",
+            "knowledge": "逐行检查潜在问题。",
             "tool_ids": [tool_id],
         },
     )
@@ -278,7 +281,8 @@ async def test_agent_can_use_skill_tools(app, client: AsyncClient, session, monk
     tool = await client.post(TOOLS, json=_tool_payload())
     tool_id = tool.json()["data"]["id"]
     skill = await client.post(
-        SKILLS, json={"name": "读文件技能", "prompt": "需要读文件时用它。", "tool_ids": [tool_id]}
+        SKILLS,
+        json={"name": "读文件技能", "knowledge": "需要读文件时用它。", "tool_ids": [tool_id]},
     )
     skill_id = skill.json()["data"]["id"]
 

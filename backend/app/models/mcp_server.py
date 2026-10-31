@@ -40,6 +40,9 @@ class MCPServer(Base):
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     timeout: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    # 检索用的领域标签
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=utcnow, nullable=False
     )

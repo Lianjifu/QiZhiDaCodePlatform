@@ -1,4 +1,4 @@
-"""技能的请求/响应模型。"""
+"""技能（能力组合）的请求/响应模型。"""
 
 from __future__ import annotations
 
@@ -14,9 +14,11 @@ class SkillBase(BaseModel):
 
     name: str = Field(min_length=1, max_length=64, description="技能名称，唯一")
     description: str | None = Field(default=None, max_length=2000)
-    prompt: str = Field(
-        default="", max_length=8000, description="挂载时追加到 system prompt 的内容"
-    )
+    knowledge: str = Field(default="", max_length=8000, description="核心做法，挂载时追加到提示词")
+    checklist: list[str] = Field(default_factory=list, description="执行前后的检查项")
+    examples: list[str] = Field(default_factory=list, description="正反例")
+    constraints: str = Field(default="", max_length=4000, description="约束与禁区")
+    tags: list[str] = Field(default_factory=list, description="检索用的领域标签")
     enabled: bool = Field(default=True)
 
 
@@ -31,7 +33,11 @@ class SkillUpdate(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=64)
     description: str | None = Field(default=None, max_length=2000)
-    prompt: str | None = Field(default=None, max_length=8000)
+    knowledge: str | None = Field(default=None, max_length=8000)
+    checklist: list[str] | None = None
+    examples: list[str] | None = None
+    constraints: str | None = Field(default=None, max_length=4000)
+    tags: list[str] | None = None
     enabled: bool | None = None
     tool_ids: list[int] | None = Field(default=None, description="替换该技能包含的工具 id")
 
@@ -43,6 +49,7 @@ class SkillOut(SkillBase):
 
     id: int
     builtin: bool = Field(default=False, description="内置技能不允许删除")
+    version: int = 1
     tool_ids: list[int] = Field(default_factory=list)
     tool_names: list[str] = Field(default_factory=list)
     created_at: datetime

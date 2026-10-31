@@ -1,7 +1,7 @@
-"""工具定义。
+"""工具（原子能力）定义。
 
 三类来源：
-- ``builtin``：平台内置的 Python 函数，用 ``source`` 指向 ``模块:函数``；
+- ``builtin``：平台内置的 Python 函数，用 ``source`` 指向 ``模块:工厂函数``；
 - ``http``：外部 HTTP 接口，``config`` 里放 method/url/headers/body 模板；
 - ``mcp``：来自某个 MCP server，``source`` 存 server 名，``config.tool_name`` 存工具名。
 """
@@ -17,13 +17,21 @@ from app.db.session import Base
 
 TOOL_TYPES = ("builtin", "http", "mcp")
 
+# 风险等级：high 的能力执行前需要确认
+PERMISSION_LOW = "low"
+PERMISSION_HIGH = "high"
+
+# 来源：出厂内置 or 用户自建
+ORIGIN_BUILTIN = "builtin"
+ORIGIN_USER = "user"
+
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
 class Tool(Base):
-    """一个可被 agent 调用的工具。"""
+    """一个可被 agent 调用的原子能力。"""
 
     __tablename__ = "tool"
 
@@ -40,7 +48,14 @@ class Tool(Base):
     config: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     # 入参 JSON Schema（http 类型必填；其余类型由实现自动推断）
     parameters: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    # builtin | user —— 内置能力由出厂源安装，user 是用户自建
+    origin: Mapped[str] = mapped_column(String(16), default=ORIGIN_USER, nullable=False)
+    # 检索用的领域标签：文件 / 网络 / 数据库 / 代码 …
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    # 风险等级：low | high
+    permission: Mapped[str] = mapped_column(String(16), default=PERMISSION_LOW, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=utcnow, nullable=False
     )

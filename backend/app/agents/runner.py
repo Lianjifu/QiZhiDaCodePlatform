@@ -3,6 +3,8 @@
 这一层只做编排，不碰数据库、不做鉴权 —— 那是 Service 层的事。
 """
 
+from __future__ import annotations
+
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +13,11 @@ from typing import Any
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from app.agents.builder import build_agent
+from app.agents.prompts import CODE_AGENT_PROMPT
+from app.capabilities.context import ExecutionContext
+from app.capabilities.entry import CapabilityEntry
+from app.capabilities.orchestration import collect_tool_keys, select_skills
+from app.capabilities.prompt import assemble_prompt
 
 
 @dataclass
@@ -21,6 +28,7 @@ class AgentRunResult:
     content: str = ""
     steps: int = 0
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    skills: list[str] = field(default_factory=list)
 
 
 class AgentRunner:
@@ -35,16 +43,14 @@ class AgentRunner:
         message: str,
         thread_id: str,
         workspace: Path,
-        extra_tools: list | None = None,
-        extra_prompt: str = "",
+        *,
+        entries: list[CapabilityEntry] | None = None,
+        context: ExecutionContext | None = None,
+        skill_ids: list[int] | None = None,
     ) -> AgentRunResult:
         """跑完一轮，返回最终回复与过程中的工具调用。"""
-        agent = build_agent(
-            workspace,
-            checkpointer=self.checkpointer,
-            model=self.model,
-            extra_tools=extra_tools,
-            extra_prompt=extra_prompt,
+        agent, skills = await self._build(
+            message, workspace, entries=entries, context=context, skill_ids=skill_ids
         )
         result = await agent.ainvoke(
             {"messages": [HumanMessage(content=message)]},
@@ -70,6 +76,7 @@ class AgentRunner:
             content=content if isinstance(content, str) else str(content),
             steps=len(tool_calls),
             tool_calls=tool_calls,
+            skills=[skill.key for skill in skills],
         )
 
     async def stream(
@@ -77,16 +84,14 @@ class AgentRunner:
         message: str,
         thread_id: str,
         workspace: Path,
-        extra_tools: list | None = None,
-        extra_prompt: str = "",
+        *,
+        entries: list[CapabilityEntry] | None = None,
+        context: ExecutionContext | None = None,
+        skill_ids: list[int] | None = None,
     ) -> AsyncIterator[str]:
         """流式产出模型文本增量，供 SSE 推送。"""
-        agent = build_agent(
-            workspace,
-            checkpointer=self.checkpointer,
-            model=self.model,
-            extra_tools=extra_tools,
-            extra_prompt=extra_prompt,
+        agent, _skills = await self._build(
+            message, workspace, entries=entries, context=context, skill_ids=skill_ids
         )
         async for chunk, _meta in agent.astream(
             {"messages": [HumanMessage(content=message)]},
@@ -97,3 +102,33 @@ class AgentRunner:
                 text = chunk.content
                 if isinstance(text, str) and text:
                     yield text
+
+    async def _build(
+        self,
+        message: str,
+        workspace: Path,
+        *,
+        entries: list[CapabilityEntry] | None,
+        context: ExecutionContext | None,
+        skill_ids: list[int] | None,
+    ):
+        """组装 agent 与选中的技能。"""
+        entries = entries or []
+        context = context or ExecutionContext.build(workspace)
+
+        skills = select_skills(entries, message, skill_ids)
+        allowed = collect_tool_keys(skills, entries) if skills else None
+        system_prompt = assemble_prompt(
+            CODE_AGENT_PROMPT,
+            skills,
+            runtime_notes=[f"工作区：{workspace}"],
+        )
+        agent = await build_agent(
+            entries=entries,
+            context=context,
+            checkpointer=self.checkpointer,
+            model=self.model,
+            system_prompt=system_prompt,
+            allowed_tool_keys=allowed,
+        )
+        return agent, skills

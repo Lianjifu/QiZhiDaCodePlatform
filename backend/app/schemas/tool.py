@@ -1,8 +1,8 @@
-"""工具的请求/响应模型。
+"""工具（原子能力）的请求/响应模型。
 
 各类型的必填项在 schema 层就校验掉，避免脏数据进库：
 
-- builtin：``source`` 必须在内置工具白名单里（否则等于允许执行任意 Python 代码）；
+- builtin：``source`` 必须在内置能力白名单里（否则等于允许执行任意 Python 代码）；
 - http：``config.url`` 必填，``parameters`` 必须是一份合法的入参 JSON Schema；
 - mcp：``source`` 是 MCP 服务器名，``config.tool_name`` 必填。
 """
@@ -15,8 +15,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.capabilities.builtin import get_builtin_by_source
 from app.schemas.common import PageMeta
-from app.skills.builtin import get_builtin_by_source
 
 ToolType = Literal["builtin", "http", "mcp"]
 
@@ -46,6 +46,8 @@ class ToolBase(BaseModel):
     )
     config: dict[str, Any] = Field(default_factory=dict, description="类型相关的细节")
     parameters: dict[str, Any] = Field(default_factory=dict, description="入参 JSON Schema")
+    tags: list[str] = Field(default_factory=list, description="检索用的领域标签")
+    permission: Literal["low", "high"] = Field(default="low", description="风险等级")
     enabled: bool = Field(default=True)
 
     @model_validator(mode="after")
@@ -63,7 +65,7 @@ class ToolBase(BaseModel):
             if not self.source:
                 raise ValueError("builtin 类型必须提供 source")
             if get_builtin_by_source(self.source) is None:
-                raise ValueError(f"内置工具 {self.source} 不在白名单内")
+                raise ValueError(f"内置能力 {self.source} 不在白名单内")
         elif self.type == "http":
             if not (self.config or {}).get("url"):
                 raise ValueError("http 类型必须在 config.url 提供接口地址")
@@ -90,6 +92,8 @@ class ToolUpdate(BaseModel):
     source: str | None = Field(default=None, max_length=255)
     config: dict[str, Any] | None = None
     parameters: dict[str, Any] | None = None
+    tags: list[str] | None = None
+    permission: Literal["low", "high"] | None = None
     enabled: bool | None = None
 
     @model_validator(mode="after")
@@ -103,7 +107,7 @@ class ToolUpdate(BaseModel):
         if self.source and get_builtin_by_source(self.source) is None:
             # 只有当类型明确是 builtin 时才强制；mcp 类型的 source 是服务器名
             if self.type in (None, "builtin") and ":" in self.source:
-                raise ValueError(f"内置工具 {self.source} 不在白名单内")
+                raise ValueError(f"内置能力 {self.source} 不在白名单内")
         return self
 
     @model_validator(mode="after")
@@ -126,6 +130,10 @@ class ToolOut(BaseModel):
     source: str | None
     config: dict[str, Any]
     parameters: dict[str, Any]
+    tags: list[str]
+    permission: str
+    origin: str = Field(default="user", description="builtin 出厂 / user 自建")
+    version: int = 1
     enabled: bool
     created_at: datetime
     updated_at: datetime
@@ -141,12 +149,15 @@ class ToolListOut(BaseModel):
 
 
 class BuiltinToolOut(BaseModel):
-    """内置工具（白名单）条目。"""
+    """内置能力（白名单）条目。"""
 
     key: str
     source: str
     display_name: str
     description: str
+    tags: list[str] = Field(default_factory=list)
+    permission: str = "low"
+    parameters: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolTestOut(BaseModel):

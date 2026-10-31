@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from sqlalchemy.exc import IntegrityError
 
+from app.capabilities.mcp_client import MCPError, MCPManager
 from app.core.exceptions import ConflictError, NotFoundError
 from app.models.mcp_server import MCPServer
 from app.repositories.mcp_server import MCPServerRepository
@@ -11,7 +12,6 @@ from app.repositories.tool import ToolRepository
 from app.schemas.common import PageMeta
 from app.schemas.mcp_server import MCPServerCreate, MCPServerUpdate
 from app.services.base import BaseService, PageResult
-from app.skills.mcp_client import MCPError, MCPManager
 
 
 class MCPServerService(BaseService[MCPServerRepository]):
