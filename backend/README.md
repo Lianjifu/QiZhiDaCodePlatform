@@ -284,6 +284,62 @@ query string，其余进 JSON body。
 `[INVALID_ARGUMENTS] 缺少必填参数：path（可以修正参数后重试）`，
 而不是一轮白跑的 traceback。
 
+## 数据库迁移（Alembic）
+
+迁移脚本在 `alembic/versions/`，连接串从应用配置读（不进版本库）。
+
+```bash
+alembic upgrade head              # 应用所有迁移
+alembic downgrade -1              # 回退一版
+alembic downgrade base            # 回到空库
+alembic revision --autogenerate -m "描述"   # 模型改了之后生成迁移
+alembic current / history / show  # 看状态
+```
+
+迁移用**异步引擎**跑（项目只装了 asyncpg，没有 psycopg2）；SQLite 走同步引擎。
+
+### 存量库怎么升级
+
+现在有两版迁移：
+
+| 版本 | 内容 |
+| --- | --- |
+| `0001_baseline` | 脚手架初期的表结构（引入 Alembic 之前的快照） |
+| `0002_capability_layer` | 能力层重构：skill.prompt → knowledge、新增若干列、新建 execution_log |
+
+按你手上数据库的状态选一条：
+
+```bash
+# A. 全新库
+alembic upgrade head
+
+# B. 跑过旧版本、想保住数据（schema 还是 0001 那个样子）
+alembic stamp 0001_baseline
+alembic upgrade head
+
+# C. 已经手动改过库、表结构已经是新的（跳过后续迁移避免重复执行）
+alembic stamp head
+```
+
+B 路径下 `0002` 会把 `skill.prompt` 改名成 `knowledge`、给 `tool` / `skill` /
+`mcp_server` 补上新列并回填默认值、创建 `execution_log` —— **已有数据不丢**。
+
+### 和自动建表的关系
+
+开发期 `init_db()` 会用 `create_all` 建表。但 `create_all` **不会给已存在的表加列**，
+所以一旦开始用 Alembic，就要把它关掉，否则两者会打架：
+
+```bash
+# .env
+DB_AUTO_CREATE_TABLES=false
+```
+
+然后启动前先 `alembic upgrade head`。
+
+> 忘了关会怎样：`create_all` 建的表结构是"当前模型的最新样子"，而 Alembic 认为
+> 数据库停在旧版本，`upgrade` 时会因为"表已存在"而报错。看到这个错误就
+> `alembic stamp head` 再重试。
+
 ## 启动
 
 需要 Python 3.11+（FastAPI 0.16x / SQLAlchemy 2.1 要求 3.11 以上）。

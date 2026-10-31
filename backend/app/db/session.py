@@ -44,17 +44,23 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """启动时建表（开发环境用，生产请用 Alembic 迁移）。
+    """启动时准备数据库。
 
-    建表之后同步内置能力的"出厂证" —— 让数据库成为能力清单的唯一事实来源，
-    代码里的出厂源只负责首次安装。
+    - 建表：只在 ``DB_AUTO_CREATE_TABLES=true`` 时做（开发期方便）；
+      正式用 Alembic 迁移时要置 False，否则"迁移"和"自动建表"会打架。
+    - 内置能力同步：始终执行 —— 它是往已有表里补数据，不是改 schema。
     """
     # 导入模型以确保 Base.metadata 收集到所有表
     from app.capabilities.registry import CapabilityRegistry
     from app.models import Example  # noqa: F401
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    if settings.db_auto_create_tables:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    else:
+        logger.info(
+            "跳过自动建表（DB_AUTO_CREATE_TABLES=false），请确保已执行 alembic upgrade head"
+        )
 
     async with SessionLocal() as session:
         created = await CapabilityRegistry.sync_builtins(session)

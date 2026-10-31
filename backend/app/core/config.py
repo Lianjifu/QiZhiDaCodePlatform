@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./app.db"
     database_sync_url: str = "sqlite:///./app.db"
     db_echo: bool = False
+    # 开发期自动建表；正式用 Alembic 迁移时置 False（否则两者会打架）
+    db_auto_create_tables: bool = True
 
     # CORS：环境变量必须是 JSON 数组，例如 CORS_ORIGINS=["http://localhost:3000"]
     cors_origins: list[str] = Field(
