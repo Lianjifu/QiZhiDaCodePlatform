@@ -77,12 +77,14 @@ def create_app() -> FastAPI:
         )
 
     @app.exception_handler(RequestValidationError)
-    async def validation_handler(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
+    async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
         """请求参数校验失败。"""
         details = [
-            ErrorDetail(loc=[str(x) for x in err.get("loc", ())], msg=err.get("msg"), type=err.get("type"))
+            ErrorDetail(
+                loc=[str(x) for x in err.get("loc", ())],
+                msg=err.get("msg"),
+                type=err.get("type"),
+            )
             for err in exc.errors()
         ]
         return JSONResponse(

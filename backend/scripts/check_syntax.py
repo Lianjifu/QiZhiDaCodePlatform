@@ -16,7 +16,7 @@ def main() -> int:
     errors: list[str] = []
     for path in files:
         try:
-            with open(path, "r", encoding="utf-8") as fh:
+            with open(path, encoding="utf-8") as fh:
                 ast.parse(fh.read(), filename=path)
         except SyntaxError as exc:
             errors.append(f"{path}: {exc}")
