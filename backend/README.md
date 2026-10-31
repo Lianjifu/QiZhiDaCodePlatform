@@ -56,14 +56,15 @@ db/session.py        引擎与会话
 backend/
 ├── app/
 │   ├── main.py              # 应用工厂 + 全局异常处理 + lifespan
-│   ├── core/                # config / exceptions / logging
+│   ├── core/                # config / exceptions / logging / crypto（API Key 加密）
 │   ├── api/
 │   │   ├── deps.py          # 依赖注入
 │   │   ├── router.py        # 路由聚合
 │   │   └── v1/              # 版本化接口
 │   │       ├── health.py
 │   │       ├── example.py
-│   │       └── agent.py     # 编码助手（LangChain）
+│   │       ├── agent.py        # 编码助手（LangChain）
+│   │       └── llm_provider.py # 模型接入配置（供应商 CRUD）
 │   ├── agents/              # Agent 层：模型 + 工具 + 循环
 │   │   ├── llm.py           # 模型工厂（环境变量 / 数据库供应商配置两种来源）
 │   │   ├── providers.py     # 供应商预设表（兼容主流大模型）
@@ -174,6 +175,9 @@ cd backend
 source ../.venv/bin/activate
 cp .env.example .env
 
+# 生成 API Key 加密主密钥，填进 .env 的 API_KEY_ENCRYPTION_KEY
+python scripts/gen_encryption_key.py
+
 uvicorn app.main:app --reload
 # 或 python3 -m app.main
 ```
@@ -199,7 +203,7 @@ pip install -r requirements.txt
 ```bash
 cd backend
 source ../.venv/bin/activate
-pytest -q
+pytest -q          # 44 passed
 ```
 
 只想快速检查语法（不装依赖也能跑）：

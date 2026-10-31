@@ -1,30 +1,33 @@
+# 依赖版本区间：下限 = 实测通过的版本，上限 = 下一个破坏性主版本。
+# 升级时先改这里，再跑一遍 pytest。
+
 # FastAPI
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
-pydantic>=2.8.0
-pydantic-settings>=2.4.0
+fastapi>=0.162.0,<0.170.0
+uvicorn[standard]>=0.54.0,<1.0.0
+pydantic>=2.14.2,<3.0.0
+pydantic-settings>=2.16.2,<3.0.0
 
 # 数据库
-sqlalchemy[asyncio]>=2.0.32
-aiosqlite>=0.20.0
-asyncpg>=0.29.0
+sqlalchemy[asyncio]>=2.1.6,<2.2.0
+aiosqlite>=0.22.1,<1.0.0
+asyncpg>=0.32.0,<1.0.0
 
 # 工具
-alembic>=1.13.2
-python-multipart>=0.0.9
-httpx>=0.27.0
-cryptography>=42.0.0
+alembic>=1.20.1,<2.0.0
+python-multipart>=0.0.32,<1.0.0
+httpx>=0.28.1,<1.0.0
+cryptography>=50.0.2,<51.0.0
 
 # 测试
-pytest>=8.3.0
-pytest-asyncio>=0.24.0
+pytest>=9.2.0,<10.0.0
+pytest-asyncio>=1.4.1,<2.0.0
 
 # LangChain / Agent
-langchain>=0.3.0
-langchain-core>=0.3.0
-langgraph>=0.2.0
-langchain-openai>=0.2.0
-langchain-anthropic>=0.3.0
-langchain-community>=0.3.0
-langchain-mcp-adapters>=0.1.0
-langgraph-checkpoint-sqlite>=2.0.0
+langchain>=1.4.7,<2.0.0
+langchain-core>=1.7.3,<2.0.0
+langgraph>=1.2.19,<2.0.0
+langchain-openai>=1.7.3,<2.0.0
+langchain-anthropic>=1.7.7,<2.0.0
+langchain-community>=0.4.2,<1.0.0
+langchain-mcp-adapters>=0.3.2,<1.0.0
+langgraph-checkpoint-sqlite>=3.1.3,<4.0.0
