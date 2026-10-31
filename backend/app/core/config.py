@@ -44,6 +44,24 @@ class Settings(BaseSettings):
     # 日志
     log_level: str = "INFO"
 
+    # LLM / Agent（LangChain）
+    llm_provider: str = "openai"  # openai | anthropic | ollama
+    llm_model: str = "gpt-4o-mini"
+    llm_api_key: str = ""
+    llm_base_url: str = ""  # OpenAI 兼容网关：DeepSeek / 通义 / Kimi / vLLM 等
+    llm_temperature: float = 0.0
+    llm_max_tokens: int = 4096
+    agent_max_steps: int = 20
+    sandbox_type: str = "local"  # local | docker
+    sandbox_image: str = "python:3.13-slim"
+    sandbox_timeout: int = 60
+
+    # Agent 工作区
+    workspace_root: str = "./workspace"
+    agent_max_file_bytes: int = 200000
+    agent_docker_mount: str = "/workspace"
+    agent_checkpointer_db: str = "./agent_checkpoints.db"
+
 
 @lru_cache
 def get_settings() -> Settings:

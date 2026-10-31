@@ -62,7 +62,15 @@ backend/
 │   │   ├── router.py        # 路由聚合
 │   │   └── v1/              # 版本化接口
 │   │       ├── health.py
-│   │       └── example.py
+│   │       ├── example.py
+│   │       └── agent.py     # 编码助手（LangChain）
+│   ├── agents/              # Agent 层：模型 + 工具 + 循环
+│   │   ├── llm.py           # 模型工厂（按配置切厂商）
+│   │   ├── prompts.py       # 系统提示词
+│   │   ├── builder.py       # create_agent 组装
+│   │   ├── runner.py        # 执行器（同步一轮 / 流式）
+│   │   ├── checkpointer.py  # 多轮对话上下文持久化
+│   │   └── tools/           # 工具集（文件读写 / 代码执行）
 │   ├── schemas/             # 请求 / 响应模型
 │   ├── services/            # 业务层
 │   ├── repositories/        # 数据访问层
@@ -74,6 +82,40 @@ backend/
 ├── pyproject.toml
 └── requirements.txt
 ```
+
+## 编码助手（LangChain / LangGraph）
+
+基于 **LangChain v1** 的 `create_agent`（内部是一张 LangGraph 图）：模型思考 → 调工具 → 结果回灌 → 再思考。
+
+```text
+POST /api/v1/agent/chat     跑完一轮再整体返回
+POST /api/v1/agent/stream   SSE 流式推送
+```
+
+配置（`.env`）：
+
+```bash
+LLM_PROVIDER="openai"        # openai | anthropic | ollama
+LLM_MODEL="gpt-4o-mini"
+LLM_API_KEY="sk-..."
+LLM_BASE_URL=""              # 国产模型走这个：https://api.deepseek.com/v1
+SANDBOX_TYPE="docker"        # local（开发）| docker（生产）
+WORKSPACE_ROOT="./workspace"
+```
+
+### ⚠️ 沙箱是这个平台的安全底线
+
+agent 会执行 **LLM 生成的代码**，而 LLM 可以被提示词注入诱导。所以：
+
+- `SANDBOX_TYPE=local` **没有任何隔离** —— 生成的代码能读写本机任意文件、能联网。仅限本地开发。
+- `SANDBOX_TYPE=docker` 才是生产可用形态：容器内执行、`--network none` 断网、限内存与进程数、`--cap-drop ALL`、只挂载当前会话的工作区。
+- 所有文件路径都经 `agents/tools/paths.py` 校验：`..` 穿越、绝对路径、指向工作区外的符号链接一律拒绝。
+- 每个会话一个独立工作区（`WORKSPACE_ROOT/<thread_id>`），互不串味。
+
+> **macOS 注意**：Docker Desktop 默认只把 `/Users` 共享给虚拟机。工作区放在 `/tmp` 或
+> `/var/folders` 下时，容器会挂到一个空目录，表现为"脚本文件不存在"。把
+> `WORKSPACE_ROOT` 设在 `/Users` 下，或在 Docker Desktop → Settings → Resources →
+> File Sharing 里共享该目录。检测到这种情况时接口会直接返回提示，不会让 agent 去猜。
 
 ## 启动
 
