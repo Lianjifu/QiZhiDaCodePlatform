@@ -1,0 +1,22 @@
+# 虚拟环境（项目根目录）
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 环境变量与本地数据库
+.env
+*.db
+
+# 工具缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
