@@ -1,4 +1,4 @@
-# 能力层 v2 架构方案（注册 / 执行意图 / 执行）
+# 能力层 v2 架构方案（注册 / 意图 / 执行）
 
 > 状态：**方案，未实施**。本文描述目标架构与迁移路径，供评审后决定是否开工。
 > 当前实现见 `app/capabilities/`，与本文的差异在 §2 逐条列出。
@@ -34,7 +34,7 @@ v2 要解决的是一件事：**让每一次能力调用都经过同一条可声
 ```text
 注册层  app/capabilities/registry.py    三张表聚合成统一清单；sync_builtins 装出厂能力
         app/capabilities/entry.py       CapabilityEntry —— 清单条目视图
-编排层  app/capabilities/orchestration.py   ← 现状叫「编排」，v2 更名为「执行意图层」
+编排层  app/capabilities/orchestration.py   ← 现状叫「编排」，v2 更名为「意图层」
           ├── retrieve_skills / select_skills   按用户输入检索技能
           ├── validate_arguments               参数校验（手写，只查必填+基础类型）
           └── CapabilityMiddleware              收窄工具集 / 调用前校验参数
@@ -61,13 +61,12 @@ v2 要解决的是一件事：**让每一次能力调用都经过同一条可声
 
 ## 3. 三层职责
 
-三层分别是 **注册层 / 执行意图层 / 执行层**。
+三层分别是 **注册层 / 意图层 / 执行层**——三个动词，正好是同一条流水线上的三步：
+**注册**声明能力，**意图**形成这次调用意图，**执行**真正动手。
 
-> 命名说明：现状里的「编排层」在 v2 更名为 **执行意图层**（`execution_intent`）——
-> 它产出的不是"编排好的执行"，而是**一次调用的意图**。它与**执行层**的区别是：
-> 执行意图层只把模型的提议翻译成结构化意图，**不产生任何副作用**；执行层才真正动手。
-> 两个名字都以"执行"开头，容易混，读代码时按 `execution_intent/` 与 `execution/`
-> 两个目录区分。
+> 现状里的「编排层」在 v2 更名为 **意图层**（`intent/`）——它产出的不是"编排好的
+> 执行"，而是**一次调用的意图**：把模型的提议翻译成结构化意图，**不产生任何副作用**。
+> 执行层才真正动手。
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
@@ -79,7 +78,7 @@ v2 要解决的是一件事：**让每一次能力调用都经过同一条可声
                 │ CapabilitySpec
                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ 执行意图层 execution_intent                                 │
+│ 意图层 intent                                               │
 │   任务上下文 → 候选能力 → CapabilityIntent（一次调用）      │
 │   产物：结构化意图（可审计、可拦截、可审批）                │
 └───────────────┬─────────────────────────────────────────────┘
@@ -98,14 +97,14 @@ v2 要解决的是一件事：**让每一次能力调用都经过同一条可声
 | 层 | 输入 | 输出 | 禁止 |
 | --- | --- | --- | --- |
 | 注册 | 数据库 + 出厂源 | `CapabilitySpec` 列表 | 不知道"这次任务要干什么" |
-| 执行意图 | 任务上下文 + 清单 | `CapabilityIntent` | **不执行任何副作用**；不替模型做"调哪个能力"的最终决策 |
+| 意图 | 任务上下文 + 清单 | `CapabilityIntent` | **不执行任何副作用**；不替模型做"调哪个能力"的最终决策 |
 | 执行 | `CapabilityIntent` | `ExecutionResult` | 不做规划、不检索技能 |
 
-**最关键的一条边界：模型提议，执行意图层收敛。**
+**最关键的一条边界：模型提议，意图层收敛。**
 
-模型（LangGraph）仍然决定"下一步调哪个能力"——它看得见对话历史，这是它不可替代的优势。执行意图层做的是把模型这次 tool call **翻译并约束**成一个结构化意图：绑定 spec、解析参数、附上本次会话的策略上下文。
+模型（LangGraph）仍然决定"下一步调哪个能力"——它看得见对话历史，这是它不可替代的优势。意图层做的是把模型这次 tool call **翻译并约束**成一个结构化意图：绑定 spec、解析参数、附上本次会话的策略上下文。
 
-执行意图层的产出是**一次调用**，不是多步计划。多步计划由模型的 ReAct 循环产生；如果执行意图层要产出计划，等于把 ReAct 重写一遍，LangGraph 的价值也就没了。
+意图层的产出是**一次调用**，不是多步计划。多步计划由模型的 ReAct 循环产生；如果意图层要产出计划，等于把 ReAct 重写一遍，LangGraph 的价值也就没了。
 
 ---
 
@@ -251,12 +250,12 @@ annotations.open_world         → risk ≥ network
 
 ---
 
-## 5. 执行意图层
+## 5. 意图层
 
 这一层把"模型的一次 tool call"变成"一条可执行、可审计、可拦截的意图"。
 
 ```text
-app/capabilities/execution_intent/
+app/capabilities/intent/
   intent.py       CapabilityIntent —— 与执行层之间的唯一契约
   planner.py      任务上下文 → 候选技能/能力（现状：retrieve_skills / select_skills）
   resolver.py     模型 tool call → CapabilityIntent
@@ -266,10 +265,10 @@ app/capabilities/execution_intent/
 ### 5.1 意图结构
 
 ```python
-# app/capabilities/execution_intent/intent.py
+# app/capabilities/intent/intent.py
 @dataclass
 class CapabilityIntent:
-    """一次能力调用的意图。执行意图层与执行层之间的唯一契约。"""
+    """一次能力调用的意图。意图层与执行层之间的唯一契约。"""
 
     capability_key: str
     arguments: dict[str, Any]
@@ -329,10 +328,10 @@ class CapabilityIntent:
 
 `awrap_tool_call` 不再直通，是消除 §2.2 差距 1 的关键改动：所有经过模型的调用，从此都在执行层的流水线里。
 
-### 5.4 执行意图层的两个"不做"
+### 5.4 意图层的两个"不做"
 
 - **不做多步计划**。计划由模型的 ReAct 循环产生。
-- **不做能力选择**。候选集已经收敛给模型，选哪个是模型的事；执行意图层只翻译和约束。
+- **不做能力选择**。候选集已经收敛给模型，选哪个是模型的事；意图层只翻译和约束。
 
 ---
 
@@ -358,7 +357,7 @@ async def execute(intent: CapabilityIntent, ctx: ExecutionContext) -> ExecutionR
 
 ### 6.2 ① schema 校验
 
-- **两处校验、一个实现**：执行意图层做前置快速校验（给模型一句"缺少必填参数 path，可以修正后重试"，省一轮往返）；执行层做权威校验（不通过就拒绝执行）。共用同一份 `input_schema` 和同一个校验器。
+- **两处校验、一个实现**：意图层做前置快速校验（给模型一句"缺少必填参数 path，可以修正后重试"，省一轮往返）；执行层做权威校验（不通过就拒绝执行）。共用同一份 `input_schema` 和同一个校验器。
 - **换掉手写校验**：`orchestration.py:116` 的 `_type_matches` 只查必填和基础类型。改用 `jsonschema` 库（需在 `pyproject.toml` 显式加依赖），支持 `enum` / `minimum` / `pattern` / `additionalProperties`。
 - 校验失败的错误码 `SCHEMA_INVALID`，`retryable=true`（模型改参数就能重试）。
 
@@ -588,7 +587,7 @@ CAPABILITY_INTERNAL_DOMAINS="localhost,.internal,.local"
 
 **验收**：结果验证能抓出"适配器说成功但文件没写成"；`OUTPUT_INVALID` 能被正确触发。
 
-### P4 — 执行意图层（中风险）
+### P4 — 意图层（中风险）
 
 引入 `CapabilityIntent` 与 resolver；`awrap_tool_call` 改为构造意图后调执行层。
 
@@ -612,8 +611,8 @@ P5a 规则自动审批 + `invocation` 状态机 → P5b 人工审批 API → P5c
 | --- | --- | --- |
 | 注册 | spec 与出厂源一致；sync_builtins 不覆盖运营改过的值 | 单测 |
 | 注册 | 迁移后 schema 与模型一致（现有 `test_migrations.py` 已有对照机制） | 集成 |
-| 执行意图 | 检索/收敛/意图构造；意图指纹稳定 | 单测 |
-| 执行意图 | middleware 收窄工具集、构造意图并走执行层 | 集成（假模型） |
+| 意图 | 检索/收敛/意图构造；意图指纹稳定 | 单测 |
+| 意图 | middleware 收窄工具集、构造意图并走执行层 | 集成（假模型） |
 | 执行 | 七个阶段各自的判定 | 阶段级单测 |
 | 执行 | 幂等：同键重放不重复执行 | 集成 |
 | 执行 | 审批：挂起 → 批准 → 执行；拒绝 → 不执行 | 集成 |
@@ -644,13 +643,13 @@ P5a 规则自动审批 + `invocation` 状态机 → P5b 人工审批 API → P5c
 | `capabilities/entry.py` `CapabilityEntry` | `registration/spec.py` `CapabilitySpec`（拆开 risk/permission，补齐契约与策略） |
 | `capabilities/registry.py` | `registration/registry.py` |
 | `capabilities/builtin/` | `registration/builtin/` |
-| `capabilities/orchestration.py` 检索部分 | `execution_intent/planner.py` |
-| `capabilities/orchestration.py` middleware | `execution_intent/middleware.py` |
-| `capabilities/orchestration.py` `validate_arguments` | `registration/validator.py`（换成 jsonschema，执行意图层与执行层共用） |
+| `capabilities/orchestration.py` 检索部分 | `intent/planner.py` |
+| `capabilities/orchestration.py` middleware | `intent/middleware.py` |
+| `capabilities/orchestration.py` `validate_arguments` | `registration/validator.py`（换成 jsonschema，意图层与执行层共用） |
 | `capabilities/adapter.py` | `execution/adapters/` |
 | `capabilities/result.py` | `execution/result.py`（扩错误码） |
 | `capabilities/context.py` | `execution/context.py`（加并发/配额上下文） |
-| — | `execution_intent/intent.py` `CapabilityIntent`（新增） |
+| — | `intent/intent.py` `CapabilityIntent`（新增） |
 | — | `execution/pipeline.py` 七阶段（新增） |
 | — | `execution/approval.py`（新增） |
 | `models/execution_log.py` | `models/invocation.py`（改名扩列） |

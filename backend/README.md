@@ -190,7 +190,7 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 
 ## 能力层（注册 / 编排 / 执行）
 
-> **v2 方案（未实施）**：能力层下一版要改成 **注册 / 执行意图 / 执行** 三层，
+> **v2 方案（未实施）**：能力层下一版要改成 **注册 / 意图 / 执行** 三层，
 > 补齐声明式契约、参数级风险评估、审批等待、结果验证与统一留痕。
 > 完整设计见 [`docs/capability-architecture.md`](docs/capability-architecture.md)。
 
