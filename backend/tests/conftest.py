@@ -5,6 +5,7 @@ import tempfile
 from collections.abc import AsyncGenerator
 
 import pytest_asyncio
+from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -13,6 +14,8 @@ os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 # agent 相关：测试用内存 checkpointer，工作区放临时目录，不污染仓库
 os.environ.setdefault("AGENT_CHECKPOINTER_DB", ":memory:")
 os.environ.setdefault("WORKSPACE_ROOT", os.path.join(tempfile.gettempdir(), "qzd-test-workspace"))
+# API Key 加密主密钥：每个测试会话现生成一把，不依赖本机 .env
+os.environ.setdefault("API_KEY_ENCRYPTION_KEY", Fernet.generate_key().decode())
 
 from app.db.session import Base, get_db  # noqa: E402
 from app.main import create_app  # noqa: E402

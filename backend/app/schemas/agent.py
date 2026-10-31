@@ -16,6 +16,11 @@ class AgentChatRequest(BaseModel):
         max_length=64,
         description="会话 ID，多轮对话靠它串联；不传则新建会话",
     )
+    provider_id: int | None = Field(
+        default=None,
+        ge=1,
+        description="指定用哪个模型接入配置；不传则用默认配置，都没有则读 .env",
+    )
 
 
 class ToolCallOut(BaseModel):

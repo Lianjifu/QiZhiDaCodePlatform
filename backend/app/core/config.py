@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     agent_docker_mount: str = "/workspace"
     agent_checkpointer_db: str = "./agent_checkpoints.db"
 
+    # API Key 加密主密钥（Fernet），用 scripts/gen_encryption_key.py 生成
+    api_key_encryption_key: str = ""
+    # Azure OpenAI 专用
+    azure_openai_api_version: str = "2024-10-21"
+
 
 @lru_cache
 def get_settings() -> Settings:

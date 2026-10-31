@@ -32,7 +32,7 @@ async def chat(
     payload: AgentChatRequest,
     service: ServiceDep,
 ) -> ResponseModel[AgentChatOut]:
-    result = await service.chat(payload.message, payload.thread_id)
+    result = await service.chat(payload.message, payload.thread_id, payload.provider_id)
     return ResponseModel[AgentChatOut](
         data=AgentChatOut(
             thread_id=result.thread_id,
@@ -46,7 +46,7 @@ async def chat(
 @router.post("/stream", summary="与编码助手对话（SSE 流式）")
 async def stream(payload: AgentChatRequest, service: ServiceDep) -> StreamingResponse:
     async def event_stream():
-        async for text in service.stream(payload.message, payload.thread_id):
+        async for text in service.stream(payload.message, payload.thread_id, payload.provider_id):
             frame = json.dumps({"text": text}, ensure_ascii=False)
             yield f"data: {frame}\n\n"
         yield "data: [DONE]\n\n"
