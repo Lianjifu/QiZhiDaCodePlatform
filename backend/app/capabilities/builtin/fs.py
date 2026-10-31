@@ -1,11 +1,16 @@
-"""文件类内置能力：读 / 写 / 改 / 列 / 按名找 / 按内容搜。
+"""文件类内置能力：读 / 写 / 改 / 移 / 拷 / 建目录 / 列 / 按名找 / 按内容搜 / 切目录。
 
-对应 Claude Code 的 Read / Write / Edit / Glob / Grep，但全部限制在会话工作区内。
+对应 Claude Code 的 Read / Write / Edit / Glob / Grep / Bash(cd|mv|cp|mkdir)，
+但全部限制在会话工作区内。
+
+路径一律相对**当前目录**（`context.workdir`），当前目录由 `change_directory`
+切换，默认是工作区根目录。
 """
 
 from __future__ import annotations
 
 import re
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -20,11 +25,21 @@ def _workspace(context: ExecutionContext) -> Path:
     return Path(context.workspace)
 
 
+def _base(context: ExecutionContext) -> Path:
+    """相对路径的起点：当前目录。"""
+    return context.workdir
+
+
 def _relative(workspace: Path, target: Path) -> str:
     try:
         return str(target.relative_to(workspace.resolve()))
     except ValueError:  # pragma: no cover - 理论上不会发生
         return str(target)
+
+
+def _resolve(context: ExecutionContext, path: str) -> Path:
+    """相对当前目录解析路径，且必须落在工作区内。"""
+    return resolve_in_workspace(_workspace(context), path, base=_base(context))
 
 
 # ---------- read ----------
@@ -34,13 +49,12 @@ def make_read_file(context: ExecutionContext) -> Callable[..., str]:
     """读取工作区内的文本文件内容。"""
 
     def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
-        """读取工作区内的文本文件内容，带行号。path 是相对于工作区根目录的路径。
+        """读取工作区内的文本文件内容，带行号。path 是相对于当前目录的路径。
 
         offset/limit 可选，用于分段读取大文件（offset 从 0 开始，limit 是行数，
         0 表示读到文件末尾）。
         """
-        workspace = _workspace(context)
-        target = resolve_in_workspace(workspace, path)
+        target = _resolve(context, path)
         if not target.exists():
             return f"文件不存在: {path}"
         if not target.is_file():
@@ -72,9 +86,8 @@ def make_write_file(context: ExecutionContext) -> Callable[..., str]:
     """把内容写入工作区内的文件。"""
 
     def write_file(path: str, content: str) -> str:
-        """把内容写入工作区内的文件（覆盖写）。path 是相对于工作区根目录的路径。"""
-        workspace = _workspace(context)
-        target = resolve_in_workspace(workspace, path)
+        """把内容写入工作区内的文件（覆盖写）。path 是相对于当前目录的路径。"""
+        target = _resolve(context, path)
         existed = target.exists()
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
@@ -100,8 +113,7 @@ def make_edit_file(context: ExecutionContext) -> Callable[..., str]:
 
         old_string 必须唯一（除非 replace_all=true），否则会报错并列出所有匹配位置。
         """
-        workspace = _workspace(context)
-        target = resolve_in_workspace(workspace, path)
+        target = _resolve(context, path)
         if not target.exists():
             return f"文件不存在: {path}"
         text = target.read_text(encoding="utf-8")
@@ -123,6 +135,119 @@ def make_edit_file(context: ExecutionContext) -> Callable[..., str]:
     return edit_file
 
 
+# ---------- move / copy / mkdir ----------
+
+
+def make_move_file(context: ExecutionContext) -> Callable[..., str]:
+    """移动或重命名文件/目录。"""
+
+    def move_file(source: str, destination: str) -> str:
+        """移动或重命名文件。
+
+        source 与 destination 都相对于当前目录。destination 是已存在的目录时，
+        移动到该目录下（与 shell 的 mv 一致）；否则 destination 就是目标路径。
+        目标所在目录不存在会自动创建。
+        """
+        workspace = _workspace(context)
+        src = _resolve(context, source)
+        if not src.exists():
+            return f"源不存在: {source}"
+        dst = _resolve(context, destination)
+        if dst.is_dir():
+            dst = dst / src.name
+        if dst.exists():
+            return f"目标已存在，没有覆盖: {destination}"
+        if src.is_dir() and (dst == src or src in dst.parents):
+            return "不能把目录移动到它自己里面"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.move(str(src), str(dst))
+        except OSError as exc:
+            return f"移动失败: {exc}"
+        return f"已移动 {source} → {_relative(workspace, dst)}"
+
+    return move_file
+
+
+def make_copy_file(context: ExecutionContext) -> Callable[..., str]:
+    """复制文件或目录。"""
+
+    def copy_file(source: str, destination: str) -> str:
+        """复制文件或目录。
+
+        source 与 destination 都相对于当前目录。destination 是已存在的目录时，
+        复制到该目录下（与 shell 的 cp 一致）；否则 destination 就是目标路径。
+        目标所在目录不存在会自动创建。
+        """
+        workspace = _workspace(context)
+        src = _resolve(context, source)
+        if not src.exists():
+            return f"源不存在: {source}"
+        dst = _resolve(context, destination)
+        if dst.is_dir():
+            dst = dst / src.name
+        if dst.exists():
+            return f"目标已存在，没有覆盖: {destination}"
+        if src.is_dir() and (dst == src or src in dst.parents):
+            return "不能把目录复制到它自己里面"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if src.is_dir():
+                shutil.copytree(str(src), str(dst))
+            else:
+                shutil.copy2(str(src), str(dst))
+        except OSError as exc:
+            return f"复制失败: {exc}"
+        return f"已复制 {source} → {_relative(workspace, dst)}"
+
+    return copy_file
+
+
+def make_make_dir(context: ExecutionContext) -> Callable[..., str]:
+    """创建目录。"""
+
+    def make_dir(path: str) -> str:
+        """创建目录（含多级父目录），已存在也算成功。
+
+        path 相对于当前目录。
+        """
+        target = _resolve(context, path)
+        existed = target.exists()
+        target.mkdir(parents=True, exist_ok=True)
+        verb = "已存在" if existed else "已创建"
+        return f"目录{verb}: {path}"
+
+    return make_dir
+
+
+# ---------- cd ----------
+
+
+def make_change_directory(context: ExecutionContext) -> Callable[..., str]:
+    """切换当前工作目录。"""
+
+    def change_directory(path: str) -> str:
+        """切换当前工作目录，之后所有相对路径都相对于新目录解析。
+
+        path 相对于当前目录：\".\" 是当前目录，\"~\" 是工作区根目录，
+        \"..\" 往上一级（不能越出工作区）。当前目录会在同一会话的多次请求之间保持。
+        """
+        workspace = _workspace(context)
+        if path.strip() == "~":
+            target = workspace.resolve()
+        else:
+            target = _resolve(context, path)
+        if not target.exists():
+            return f"目录不存在: {path}"
+        if not target.is_dir():
+            return f"不是目录: {path}"
+        context.set_cwd(target)
+        relative = _relative(workspace, target)
+        return f"当前目录已切换到 {relative or '.'}"
+
+    return change_directory
+
+
 # ---------- list ----------
 
 
@@ -130,17 +255,19 @@ def make_list_files(context: ExecutionContext) -> Callable[..., str]:
     """列出工作区内的文件与目录。"""
 
     def list_files(path: str = ".") -> str:
-        """列出工作区内某个目录下的文件和子目录。path 默认为工作区根目录。"""
+        """列出目录下的文件和子目录。path 相对于当前目录，默认当前目录。"""
         workspace = _workspace(context)
-        target = resolve_in_workspace(workspace, path)
+        target = _resolve(context, path)
         if not target.exists():
             return f"目录不存在: {path}"
         if not target.is_dir():
             return f"不是目录: {path}"
         entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name))
+        header = f"当前目录: {_relative(workspace, target) or '.'}"
         if not entries:
-            return "(空目录)"
-        return "\n".join(f"{entry.name}/" if entry.is_dir() else entry.name for entry in entries)
+            return f"{header}\n(空目录)"
+        body = "\n".join(entry.name + "/" if entry.is_dir() else entry.name for entry in entries)
+        return f"{header}\n{body}"
 
     return list_files
 
@@ -152,12 +279,13 @@ def make_glob(context: ExecutionContext) -> Callable[..., str]:
     """按 glob 模式查找文件。"""
 
     def glob(pattern: str, path: str = ".") -> str:
-        """按 glob 模式查找文件，返回相对工作区根目录的路径列表。
+        """按 glob 模式查找文件，返回相对于工作区根目录的路径列表。
 
         pattern 用 shell 通配语法，例如 **/*.py、src/**/test_*.py。
+        path 相对于当前目录，默认为当前目录。
         """
         workspace = _workspace(context)
-        root = resolve_in_workspace(workspace, path)
+        root = _resolve(context, path)
         if not root.is_dir():
             return f"目录不存在: {path}"
         matches = sorted(root.glob(pattern))
@@ -182,9 +310,10 @@ def make_grep(context: ExecutionContext) -> Callable[..., str]:
         """在工作区里按正则搜索文件内容，返回 文件:行号:内容 的形式。
 
         glob_pattern 可选，用来限定搜索哪些文件，例如 *.py。
+        path 相对于当前目录，默认为当前目录。
         """
         workspace = _workspace(context)
-        root = resolve_in_workspace(workspace, path)
+        root = _resolve(context, path)
         if not root.exists():
             return f"目录不存在: {path}"
         try:
@@ -217,10 +346,14 @@ def make_grep(context: ExecutionContext) -> Callable[..., str]:
 
 __all__ = [
     "WorkspaceError",
+    "make_change_directory",
+    "make_copy_file",
     "make_edit_file",
     "make_grep",
     "make_glob",
     "make_list_files",
+    "make_make_dir",
+    "make_move_file",
     "make_read_file",
     "make_write_file",
 ]

@@ -76,7 +76,7 @@ backend/
 │   │   ├── builtin/          # 内置能力出厂源（白名单 + 出厂规格）
 │   │   │   ├── __init__.py   # 出厂规格清单（白名单）
 │   │   │   ├── paths.py      # 工作区路径校验（防穿越）
-│   │   │   ├── fs.py         # 文件类能力（读 / 写 / 改 / 列 / glob / grep）
+│   │   │   ├── fs.py         # 文件类能力（读/写/改/移/拷/建目录/切目录/列/glob/grep）
 │   │   │   ├── sandbox.py    # 执行类能力（Python / shell，沙箱隔离）
 │   │   │   └── web.py        # 网络类能力（抓取 / 搜索）
 │   │   ├── registry.py       # 统一能力清单的唯一读取入口
@@ -229,6 +229,10 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 | `read_file` | 读取文件 | `path` `offset` `limit` | low | 读文本文件，带行号；offset/limit 用于分段读大文件 |
 | `write_file` | 写入文件 | `path` `content` | high | 写入（覆盖），自动建父目录 |
 | `edit_file` | 编辑文件 | `path` `old_string` `new_string` `replace_all` | high | 精确字符串替换；**原文必须唯一**，不唯一就报错并列出所有匹配行号 |
+| `move_file` | 移动文件 | `source` `destination` | high | 移动/重命名文件或目录，等价于 `mv` |
+| `copy_file` | 复制文件 | `source` `destination` | high | 复制文件或目录，等价于 `cp` |
+| `make_dir` | 创建目录 | `path` | high | `mkdir -p`，目录已存在也算成功 |
+| `change_directory` | 切换目录 | `path` | low | `cd`，切换后所有相对路径以新目录为起点 |
 | `list_files` | 列出文件 | `path` | low | 列目录下的文件与子目录 |
 | `glob` | 按模式找文件 | `pattern` `path` | low | 按 glob 模式找文件，如 `**/*.py` |
 | `grep` | 搜索文件内容 | `pattern` `path` `glob_pattern` | low | 按正则搜内容，返回 `文件:行号:内容` |
@@ -246,6 +250,22 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 - **执行类一律进沙箱**，且命令写进脚本文件再执行，不做 `sh -c "用户输入"` 拼接。
 - **联网搜索没配 Key 就明说**，返回"请设置 `WEB_SEARCH_PROVIDER` 和
   `WEB_SEARCH_API_KEY`"，而不是静默失败。
+
+### 当前目录（cd）
+
+文件类与执行类能力都以**当前目录**为相对路径的起点，`change_directory` 负责切换：
+
+| 写法 | 含义 |
+| --- | --- |
+| `.` | 当前目录 |
+| `..` | 上一级（不能越出工作区） |
+| `~` | 工作区根目录 |
+| `src/utils` | 相对当前目录的路径 |
+
+当前目录**在同一次运行内保持**（所有工具共享同一个执行上下文），也**在同一会话的
+多次请求之间保持** —— 状态落在工作区**外面**的 `.qzd_state/<会话>.json` 里。
+放在工作区外面有两个原因：模型的文件工具只看得到工作区内的东西，工作区也不该
+被状态文件污染。目录被删掉了就自动退回工作区根目录。
 
 ### 接口
 
@@ -418,7 +438,7 @@ pip install -r requirements.txt
 ```bash
 cd backend
 source ../.venv/bin/activate
-pytest -q          # 105 passed
+pytest -q          # 127 passed
 ```
 
 只想快速检查语法（不装依赖也能跑）：

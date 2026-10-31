@@ -32,7 +32,7 @@ class BuiltinSpec:
     parameters: dict = field(default_factory=dict)
 
 
-_PATH_PARAM = {"type": "string", "description": "相对工作区根目录的路径"}
+_PATH_PARAM = {"type": "string", "description": "相对当前目录的路径"}
 
 
 BUILTIN_SPECS: dict[str, BuiltinSpec] = {
@@ -43,7 +43,7 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
             key="read_file",
             source="app.capabilities.builtin.fs:make_read_file",
             display_name="读取文件",
-            description="读取工作区内的文本文件内容，带行号。path 是相对于工作区根目录的路径。",
+            description="读取工作区内的文本文件内容，带行号。path 是相对于当前目录的路径。",
             tags=("文件", "只读"),
             parameters={
                 "type": "object",
@@ -59,7 +59,7 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
             key="write_file",
             source="app.capabilities.builtin.fs:make_write_file",
             display_name="写入文件",
-            description="把内容写入工作区内的文件（覆盖写）。path 是相对于工作区根目录的路径。",
+            description="把内容写入工作区内的文件（覆盖写）。path 是相对于当前目录的路径。",
             tags=("文件", "写入"),
             permission="high",
             parameters={
@@ -99,12 +99,79 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
             key="list_files",
             source="app.capabilities.builtin.fs:make_list_files",
             display_name="列出文件",
-            description="列出工作区内某个目录下的文件和子目录。path 默认为工作区根目录。",
+            description="列出工作区内某个目录下的文件和子目录。path 默认为当前目录。",
             tags=("文件", "只读"),
             parameters={
                 "type": "object",
                 "properties": {"path": _PATH_PARAM},
                 "required": [],
+            },
+        ),
+        BuiltinSpec(
+            key="move_file",
+            source="app.capabilities.builtin.fs:make_move_file",
+            display_name="移动文件",
+            description=(
+                "移动或重命名文件/目录。source 与 destination 都相对于当前目录；"
+                "destination 是已存在的目录时移动到该目录下，否则就是目标路径。"
+            ),
+            tags=("文件", "移动"),
+            permission="high",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "description": "源路径"},
+                    "destination": {"type": "string", "description": "目标路径"},
+                },
+                "required": ["source", "destination"],
+            },
+        ),
+        BuiltinSpec(
+            key="copy_file",
+            source="app.capabilities.builtin.fs:make_copy_file",
+            display_name="复制文件",
+            description=(
+                "复制文件或目录。source 与 destination 都相对于当前目录；"
+                "destination 是已存在的目录时复制到该目录下，否则就是目标路径。"
+            ),
+            tags=("文件", "复制"),
+            permission="high",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "description": "源路径"},
+                    "destination": {"type": "string", "description": "目标路径"},
+                },
+                "required": ["source", "destination"],
+            },
+        ),
+        BuiltinSpec(
+            key="make_dir",
+            source="app.capabilities.builtin.fs:make_make_dir",
+            display_name="创建目录",
+            description="创建目录（含多级父目录），目录已存在也算成功。path 相对于当前目录。",
+            tags=("文件", "目录"),
+            permission="high",
+            parameters={
+                "type": "object",
+                "properties": {"path": _PATH_PARAM},
+                "required": ["path"],
+            },
+        ),
+        BuiltinSpec(
+            key="change_directory",
+            source="app.capabilities.builtin.fs:make_change_directory",
+            display_name="切换目录",
+            description=(
+                "切换当前工作目录，之后所有相对路径都相对于新目录解析。"
+                'path 相对于当前目录："." 是当前目录，"~" 是工作区根目录，'
+                '".." 往上一级。'
+            ),
+            tags=("文件", "目录"),
+            parameters={
+                "type": "object",
+                "properties": {"path": _PATH_PARAM},
+                "required": ["path"],
             },
         ),
         BuiltinSpec(

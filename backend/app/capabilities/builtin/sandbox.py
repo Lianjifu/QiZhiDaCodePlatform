@@ -43,7 +43,10 @@ def make_run_python(context: ExecutionContext) -> Callable[[str], Awaitable[str]
     """在工作区沙箱里执行一段 Python 代码。"""
 
     async def run_python(code: str) -> str:
-        """在工作区的沙箱里执行一段 Python 代码，返回退出码、标准输出和标准错误。"""
+        """在工作区的沙箱里执行一段 Python 代码，返回退出码、标准输出和标准错误。
+
+        代码在当前目录下运行。
+        """
         exit_code, stdout, stderr = await exec_python(code, context)
         return _format(exit_code, stdout, stderr)
 
@@ -56,8 +59,8 @@ def make_run_bash(context: ExecutionContext) -> Callable[[str], Awaitable[str]]:
     async def run_bash(command: str) -> str:
         """在工作区的沙箱里执行一条 shell 命令，返回退出码、标准输出和标准错误。
 
-        隔离程度取决于沙箱模式：docker 模式下断网且只能看到工作区，
-        local 模式没有隔离，命令能访问本机的一切。
+        命令在当前目录下运行。隔离程度取决于沙箱模式：docker 模式下断网且只能
+        看到工作区，local 模式没有隔离，命令能访问本机的一切。
         """
         exit_code, stdout, stderr = await exec_command(command, context)
         return _format(exit_code, stdout, stderr)
@@ -131,8 +134,20 @@ def _docker_prefix(context: ExecutionContext) -> list[str]:
         "-v",
         f"{Path(context.workspace).resolve()}:{context.docker_mount}",
         "-w",
-        context.docker_mount,
+        _docker_workdir(context),
     ]
+
+
+def _docker_workdir(context: ExecutionContext) -> str:
+    """容器里的工作目录：把当前目录换算成挂载点下的相对路径。"""
+    mount = context.docker_mount.rstrip("/")
+    try:
+        relative = Path(context.workdir).resolve().relative_to(Path(context.workspace).resolve())
+    except ValueError:  # pragma: no cover - 当前目录总在工作区内
+        return mount
+    if str(relative) == ".":
+        return mount
+    return f"{mount}/{relative}"
 
 
 async def _spawn(argv: list[str], context: ExecutionContext) -> tuple[int, str, str]:
@@ -140,7 +155,7 @@ async def _spawn(argv: list[str], context: ExecutionContext) -> tuple[int, str, 
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
-            cwd=str(context.workspace),
+            cwd=str(context.workdir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=_child_env(context),

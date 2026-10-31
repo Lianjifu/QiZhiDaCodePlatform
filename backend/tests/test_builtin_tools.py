@@ -11,10 +11,14 @@ from uuid import uuid4
 import pytest
 
 from app.capabilities.builtin.fs import (
+    make_change_directory,
+    make_copy_file,
     make_edit_file,
     make_glob,
     make_grep,
     make_list_files,
+    make_make_dir,
+    make_move_file,
     make_read_file,
     make_write_file,
 )
@@ -286,6 +290,168 @@ async def test_web_search_without_key_gives_actionable_hint(ctx, monkeypatch):
     monkeypatch.setattr("app.core.config.settings.web_search_api_key", "")
     out = await make_web_search(ctx)("langchain")
     assert "WEB_SEARCH_PROVIDER" in out
+
+
+# ---------- 移动 / 复制 / 建目录 ----------
+
+
+def test_make_dir_creates_nested_directories(ctx):
+    out = make_make_dir(ctx)("a/b/c")
+    assert "已创建" in out
+    assert (ctx.workspace / "a" / "b" / "c").is_dir()
+
+
+def test_make_dir_on_existing_directory_is_ok(ctx):
+    (ctx.workspace / "a").mkdir()
+    assert "已存在" in make_make_dir(ctx)("a")
+
+
+def test_move_file_moves_file(ctx):
+    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
+    out = make_move_file(ctx)("a.txt", "b.txt")
+    assert "已移动" in out
+    assert not (ctx.workspace / "a.txt").exists()
+    assert (ctx.workspace / "b.txt").read_text(encoding="utf-8") == "x"
+
+
+def test_move_file_into_existing_directory(ctx):
+    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
+    (ctx.workspace / "sub").mkdir()
+    make_move_file(ctx)("a.txt", "sub")
+    assert (ctx.workspace / "sub" / "a.txt").exists()
+
+
+def test_move_file_creates_missing_parent(ctx):
+    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
+    make_move_file(ctx)("a.txt", "out/b.txt")
+    assert (ctx.workspace / "out" / "b.txt").exists()
+
+
+def test_move_file_refuses_to_overwrite(ctx):
+    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
+    (ctx.workspace / "b.txt").write_text("y", encoding="utf-8")
+    out = make_move_file(ctx)("a.txt", "b.txt")
+    assert "已存在" in out
+    assert (ctx.workspace / "b.txt").read_text(encoding="utf-8") == "y"
+
+
+def test_move_file_reports_missing_source(ctx):
+    assert "源不存在" in make_move_file(ctx)("nope.txt", "b.txt")
+
+
+def test_move_file_cannot_escape_workspace(ctx):
+    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
+    with pytest.raises(WorkspaceError):
+        make_move_file(ctx)("a.txt", "../escaped.txt")
+
+
+def test_copy_file_copies_file(ctx):
+    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
+    out = make_copy_file(ctx)("a.txt", "b.txt")
+    assert "已复制" in out
+    assert (ctx.workspace / "a.txt").exists()
+    assert (ctx.workspace / "b.txt").read_text(encoding="utf-8") == "x"
+
+
+def test_copy_file_copies_directory(ctx):
+    (ctx.workspace / "src").mkdir()
+    (ctx.workspace / "src" / "a.txt").write_text("x", encoding="utf-8")
+    make_copy_file(ctx)("src", "dst")
+    assert (ctx.workspace / "dst" / "a.txt").read_text(encoding="utf-8") == "x"
+
+
+def test_copy_file_refuses_to_overwrite(ctx):
+    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
+    (ctx.workspace / "b.txt").write_text("y", encoding="utf-8")
+    assert "已存在" in make_copy_file(ctx)("a.txt", "b.txt")
+    assert (ctx.workspace / "b.txt").read_text(encoding="utf-8") == "y"
+
+
+# ---------- 当前目录（cd） ----------
+
+
+def test_change_directory_switches_relative_base(ctx):
+    (ctx.workspace / "src").mkdir()
+    (ctx.workspace / "src" / "a.txt").write_text("x", encoding="utf-8")
+    out = make_change_directory(ctx)("src")
+    assert "已切换" in out
+    # 切换之后，相对路径基于新目录
+    assert "1\tx" in make_read_file(ctx)("a.txt")
+    # "~" 回到工作区根目录，就看不到了
+    make_change_directory(ctx)("~")
+    assert "文件不存在" in make_read_file(ctx)("a.txt")
+
+
+def test_change_directory_dot_is_current_directory(ctx):
+    (ctx.workspace / "src").mkdir()
+    make_change_directory(ctx)("src")
+    make_change_directory(ctx)(".")
+    assert ctx.workdir == (ctx.workspace / "src").resolve()
+
+
+def test_change_directory_rejects_escape_from_root(ctx):
+    with pytest.raises(WorkspaceError):
+        make_change_directory(ctx)("..")
+
+
+def test_change_directory_allows_going_up_inside_workspace(ctx):
+    (ctx.workspace / "src").mkdir()
+    make_change_directory(ctx)("src")
+    assert "已切换" in make_change_directory(ctx)("..")
+
+
+def test_change_directory_reports_missing_dir(ctx):
+    assert "目录不存在" in make_change_directory(ctx)("nope")
+
+
+def test_change_directory_rejects_file(ctx):
+    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
+    assert "不是目录" in make_change_directory(ctx)("a.txt")
+
+
+def test_current_directory_persists_across_contexts(tmp_path):
+    """同一会话的多次请求之间，当前目录要保持。"""
+    (tmp_path / "src").mkdir()
+    first = ExecutionContext.build(workspace=tmp_path)
+    make_change_directory(first)("src")
+    assert first.workdir == (tmp_path / "src").resolve()
+
+    second = ExecutionContext.build(workspace=tmp_path)
+    assert second.workdir == (tmp_path / "src").resolve()
+
+
+def test_current_directory_falls_back_when_directory_is_gone(tmp_path):
+    (tmp_path / "src").mkdir()
+    first = ExecutionContext.build(workspace=tmp_path)
+    make_change_directory(first)("src")
+    shutil.rmtree(tmp_path / "src")
+    second = ExecutionContext.build(workspace=tmp_path)
+    assert second.workdir == tmp_path.resolve()
+
+
+def test_state_file_lives_outside_workspace(tmp_path):
+    """状态文件不能落在工作区里，否则模型的文件工具会看见它。"""
+    (tmp_path / "src").mkdir()
+    context = ExecutionContext.build(workspace=tmp_path)
+    make_change_directory(context)("src")
+    assert not (tmp_path / ".qzd_state").exists()
+    assert (tmp_path.parent / ".qzd_state").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_run_bash_runs_in_current_directory(ctx):
+    (ctx.workspace / "src").mkdir()
+    make_change_directory(ctx)("src")
+    out = await make_run_bash(ctx)("pwd")
+    assert "src" in out
+
+
+@pytest.mark.asyncio
+async def test_run_python_runs_in_current_directory(ctx):
+    (ctx.workspace / "src").mkdir()
+    make_change_directory(ctx)("src")
+    out = await make_run_python(ctx)("import os;print(os.getcwd())")
+    assert "src" in out
 
 
 # ---------- docker 沙箱 ----------
