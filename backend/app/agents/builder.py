@@ -19,6 +19,8 @@ def build_agent(
     workspace: Path,
     checkpointer: Any = None,
     model: BaseChatModel | None = None,
+    extra_tools: list | None = None,
+    extra_prompt: str = "",
 ) -> Any:
     """组装一个绑定到指定工作区的 agent。
 
@@ -26,10 +28,17 @@ def build_agent(
         workspace: 本次会话的工作区目录，agent 的文件与代码操作都被限制在其中。
         checkpointer: LangGraph checkpointer，用于多轮对话的上下文持久化。
         model: 覆盖默认模型（测试时注入假模型用）。
+        extra_tools: 技能带来的额外工具（来自数据库里的技能定义）。
+        extra_prompt: 技能带来的附加提示词。
     """
+    tools = [*build_tools(workspace), *(extra_tools or [])]
+    system_prompt = CODE_AGENT_PROMPT
+    if extra_prompt:
+        system_prompt = f"{system_prompt}\n\n{extra_prompt}"
+
     return create_agent(
         model=model or get_chat_model(),
-        tools=build_tools(workspace),
-        system_prompt=CODE_AGENT_PROMPT,
+        tools=tools,
+        system_prompt=system_prompt,
         checkpointer=checkpointer,
     )

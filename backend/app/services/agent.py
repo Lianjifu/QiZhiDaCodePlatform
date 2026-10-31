@@ -17,6 +17,8 @@ from app.agents.runner import AgentRunner, AgentRunResult
 from app.core.config import settings
 from app.core.exceptions import AgentError, AppError, NotFoundError, ValidationError
 from app.repositories.llm_provider import LLMProviderRepository
+from app.services.skill import SkillService
+from app.skills.context import build_runtime_context
 
 logger = logging.getLogger(__name__)
 
@@ -77,16 +79,36 @@ class AgentService:
             raise ValidationError(f"供应商配置 {provider.name} 已停用")
         return build_model_for_provider(provider)
 
+    async def _resolve_skills(self, skill_ids: list[int] | None, workspace: Path):
+        """把技能解析成 (工具, 附加提示词)。"""
+        if not skill_ids:
+            return [], ""
+        if self.session is None:
+            raise ValidationError("未提供数据库会话，无法读取技能配置")
+        service = SkillService(self.session)
+        return await service.resolve_skills(skill_ids, build_runtime_context(workspace))
+
     async def chat(
-        self, message: str, thread_id: str, provider_id: int | None = None
+        self,
+        message: str,
+        thread_id: str,
+        provider_id: int | None = None,
+        skill_ids: list[int] | None = None,
     ) -> AgentRunResult:
         """跑一轮对话，返回最终回复。"""
         workspace = self.resolve_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(provider_id)
+                extra_tools, extra_prompt = await self._resolve_skills(skill_ids, workspace)
                 runner = self._runner or AgentRunner(checkpointer=checkpointer, model=model)
-                return await runner.run(message, thread_id, workspace)
+                return await runner.run(
+                    message,
+                    thread_id,
+                    workspace,
+                    extra_tools=extra_tools,
+                    extra_prompt=extra_prompt,
+                )
             except AppError:
                 raise
             except Exception as exc:
@@ -94,15 +116,26 @@ class AgentService:
                 raise AgentError(_readable_error(exc)) from exc
 
     async def stream(
-        self, message: str, thread_id: str, provider_id: int | None = None
+        self,
+        message: str,
+        thread_id: str,
+        provider_id: int | None = None,
+        skill_ids: list[int] | None = None,
     ) -> AsyncIterator[str]:
         """流式跑一轮对话，逐段产出文本增量。"""
         workspace = self.resolve_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(provider_id)
+                extra_tools, extra_prompt = await self._resolve_skills(skill_ids, workspace)
                 runner = self._runner or AgentRunner(checkpointer=checkpointer, model=model)
-                async for text in runner.stream(message, thread_id, workspace):
+                async for text in runner.stream(
+                    message,
+                    thread_id,
+                    workspace,
+                    extra_tools=extra_tools,
+                    extra_prompt=extra_prompt,
+                ):
                     yield text
             except AppError:
                 raise

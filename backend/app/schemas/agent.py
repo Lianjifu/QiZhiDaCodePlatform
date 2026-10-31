@@ -21,6 +21,10 @@ class AgentChatRequest(BaseModel):
         ge=1,
         description="指定用哪个模型接入配置；不传则用默认配置，都没有则读 .env",
     )
+    skill_ids: list[int] = Field(
+        default_factory=list,
+        description="要启用的技能 id；技能带来的工具与提示词会被挂载到 agent 上",
+    )
 
 
 class ToolCallOut(BaseModel):

@@ -30,9 +30,22 @@ class AgentRunner:
         self.checkpointer = checkpointer
         self.model = model
 
-    async def run(self, message: str, thread_id: str, workspace: Path) -> AgentRunResult:
+    async def run(
+        self,
+        message: str,
+        thread_id: str,
+        workspace: Path,
+        extra_tools: list | None = None,
+        extra_prompt: str = "",
+    ) -> AgentRunResult:
         """跑完一轮，返回最终回复与过程中的工具调用。"""
-        agent = build_agent(workspace, checkpointer=self.checkpointer, model=self.model)
+        agent = build_agent(
+            workspace,
+            checkpointer=self.checkpointer,
+            model=self.model,
+            extra_tools=extra_tools,
+            extra_prompt=extra_prompt,
+        )
         result = await agent.ainvoke(
             {"messages": [HumanMessage(content=message)]},
             config={"configurable": {"thread_id": thread_id}},
@@ -59,9 +72,22 @@ class AgentRunner:
             tool_calls=tool_calls,
         )
 
-    async def stream(self, message: str, thread_id: str, workspace: Path) -> AsyncIterator[str]:
+    async def stream(
+        self,
+        message: str,
+        thread_id: str,
+        workspace: Path,
+        extra_tools: list | None = None,
+        extra_prompt: str = "",
+    ) -> AsyncIterator[str]:
         """流式产出模型文本增量，供 SSE 推送。"""
-        agent = build_agent(workspace, checkpointer=self.checkpointer, model=self.model)
+        agent = build_agent(
+            workspace,
+            checkpointer=self.checkpointer,
+            model=self.model,
+            extra_tools=extra_tools,
+            extra_prompt=extra_prompt,
+        )
         async for chunk, _meta in agent.astream(
             {"messages": [HumanMessage(content=message)]},
             config={"configurable": {"thread_id": thread_id}},

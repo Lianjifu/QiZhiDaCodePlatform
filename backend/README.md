@@ -73,6 +73,12 @@ backend/
 │   │   ├── runner.py        # 执行器（同步一轮 / 流式）
 │   │   ├── checkpointer.py  # 多轮对话上下文持久化
 │   │   └── tools/           # 工具集（文件读写 / 代码执行）
+│   ├── skills/              # 技能能力层：Tool / MCP / Skill 的执行
+│   │   ├── builtin/         # 内置工具白名单（read_file / write_file / run_python…）
+│   │   ├── executor.py      # 数据库定义 → 可执行 LangChain 工具
+│   │   ├── mcp_client.py    # MCP 连接与工具拉取
+│   │   ├── context.py       # 内置工具的运行时上下文
+│   │   └── prompt.py        # 技能提示词拼装
 │   ├── schemas/             # 请求 / 响应模型
 │   ├── services/            # 业务层
 │   ├── repositories/        # 数据访问层
@@ -164,6 +170,70 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 - 另外存一份脱敏串（`sk-t***cdef`），所以**列表接口不需要解密、不需要主密钥也能展示**。
 - 明文只在真正调模型前解密，绝不进响应体、日志。
 - 主密钥生成：`python scripts/gen_encryption_key.py`。**换密钥会让已存的 key 解不开，只能重录。**
+
+## 技能模块（Tool / MCP / Skill）
+
+三类实体，各自独立管理，最终组合成 agent 能用的能力包。
+
+```text
+Skill（技能）= 一组 Tool + 一段提示词
+Tool（工具）  = builtin（内置函数）| http（外部接口）| mcp（来自 MCP server）
+MCP Server    = stdio（本地命令）| sse | streamable_http
+```
+
+### 接口
+
+```text
+GET    /api/v1/tools/builtins        内置工具白名单
+GET    /api/v1/tools                 分页查询工具
+POST   /api/v1/tools                 新增工具
+GET    /api/v1/tools/{id}            详情
+PUT    /api/v1/tools/{id}            更新
+DELETE /api/v1/tools/{id}            删除（同时解除技能引用）
+POST   /api/v1/tools/{id}/test       测试工具配置能否被构造出来
+
+GET    /api/v1/mcp-servers           查询 MCP 服务器
+POST   /api/v1/mcp-servers           新增
+GET    /api/v1/mcp-servers/{id}      详情
+PUT    /api/v1/mcp-servers/{id}      更新
+DELETE /api/v1/mcp-servers/{id}      删除（有工具引用时拒绝）
+GET    /api/v1/mcp-servers/{id}/tools  探测该服务器上可用的工具
+
+GET    /api/v1/skills                分页查询技能
+POST   /api/v1/skills                新增
+GET    /api/v1/skills/{id}           详情
+PUT    /api/v1/skills/{id}           更新
+DELETE /api/v1/skills/{id}           删除
+```
+
+对话时用 `skill_ids` 挂载技能，技能里的工具与提示词会加到 agent 上：
+
+```json
+POST /api/v1/agent/chat
+{ "message": "帮我审查这段代码", "skill_ids": [1], "provider_id": 2 }
+```
+
+### ⚠️ 内置工具是白名单，不是任意入口点
+
+`builtin` 类型的工具只能引用 `app/skills/builtin/__init__.py` 里登记过的
+`模块:工厂函数`。**如果允许任意 `模块:函数`，任何能调工具管理接口的人都能让平台
+import 并执行任意 Python 代码** —— 等价于远程代码执行。所以越界的 source 会在
+schema 校验层直接 422。
+
+新增内置工具的步骤：在 `builtin/__init__.py` 登记 → 写一个
+`factory(context) -> Callable` 的工厂函数（`context` 由运行时注入，不会进 LLM 的
+tool schema）→ `GET /tools/builtins` 就能看到它。
+
+### 工具的三种来源怎么用
+
+| 类型 | source | config | parameters |
+| --- | --- | --- | --- |
+| builtin | 白名单里的入口点 | 额外参数 | 自动推断 |
+| http | 留空 | `method` / `url` / `headers` / `body` | **必填**，JSON Schema |
+| mcp | MCP 服务器名 | `tool_name` | 自动取自 MCP |
+
+http 类型的 body 模板里可以用 `{占位符}` 引用模型给的参数；GET 类请求的参数进
+query string，其余进 JSON body。
 
 ## 启动
 
