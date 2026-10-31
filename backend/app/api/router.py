@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import example, health
+from app.api.v1 import agent, example, health, llm_provider
 
 api_router = APIRouter()
 api_router.include_router(health.router)
 api_router.include_router(example.router)
+api_router.include_router(agent.router)
+api_router.include_router(llm_provider.router)
