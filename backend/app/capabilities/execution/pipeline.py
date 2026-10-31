@@ -100,7 +100,7 @@ async def execute(intent: CapabilityIntent, context: ExecutionContext) -> Execut
     stages.append({"stage": "invoke", "ok": True, "duration_ms": result.duration_ms})
 
     # ---------- ⑥ 结果验证 ----------
-    error = _verify_output(spec, result)
+    error = _verify_output(spec, result, context)
     stages.append(_stage("verify", error))
     if error is not None:
         return await _finish(intent, context, stages, error, started, assessment=assessment)
@@ -228,18 +228,50 @@ async def _invoke(intent: CapabilityIntent, context: ExecutionContext) -> Execut
     raise last_error or CapabilityError("执行失败", code=ErrorCode.UNKNOWN)
 
 
-def _verify_output(spec: CapabilitySpec, result: ExecutionResult) -> CapabilityError | None:
-    """结果验证：契约校验 + 效果确认。"""
-    if not spec.output_schema:
-        return None
-    try:
-        validate_output(spec.output_schema, result.data)
-    except SchemaValidationError as exc:
+def _verify_output(
+    spec: CapabilitySpec,
+    result: ExecutionResult,
+    context: ExecutionContext,
+) -> CapabilityError | None:
+    """结果验证：契约校验 + 效果确认。
+
+    - **契约校验**：结果数据对不对得上声明的 output_schema；
+    - **效果确认**：副作用真的发生了吗（文件写下来了没、目录建了没）。
+    """
+    if spec.output_schema:
+        try:
+            validate_output(spec.output_schema, result.data)
+        except SchemaValidationError as exc:
+            return CapabilityError(
+                f"能力 {spec.key} 的结果不符合声明的输出契约：{exc}",
+                code=ErrorCode.OUTPUT_INVALID,
+            )
+
+    problem = _verify_effect(spec.key, result.data, context)
+    if problem:
         return CapabilityError(
-            f"能力 {spec.key} 的结果不符合声明的输出契约：{exc}",
+            f"能力 {spec.key} 的结果没通过效果确认：{problem}",
             code=ErrorCode.OUTPUT_INVALID,
         )
     return None
+
+
+def _verify_effect(
+    key: str,
+    data: dict[str, Any],
+    context: ExecutionContext,
+) -> str | None:
+    """核对副作用是否真的发生。返回问题描述，没问题则返回 None。"""
+    from app.capabilities.registration.builtin.verify import get_verifier
+
+    verifier = get_verifier(key)
+    if verifier is None:
+        return None
+    try:
+        return verifier(data, context)
+    except Exception as exc:  # pragma: no cover - 验证本身不该把执行搞挂
+        logger.warning("效果确认失败（%s）: %s", key, exc)
+        return None
 
 
 # ---------- 调用记录 ----------

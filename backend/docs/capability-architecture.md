@@ -675,7 +675,7 @@ P5a 规则自动审批 + `invocation` 状态机 → P5b 人工审批 API → P5c
 | P0 | 声明式契约：risk / permission / output_schema / timeout_s / retry_policy / annotations | `registration/`、`models/tool.py`、迁移 `0003`/`0004` |
 | P1 | 调用记录下沉：`execution_log` → `invocation`，扩成完整生命周期 | `models/invocation.py`、`repositories/invocation.py` |
 | P2 | 七阶段流水线，**执行层成为唯一路径** | `execution/pipeline.py`、`execution/tooling.py` |
-| P3 | 14 个内置能力改结构化输出 + 输出契约校验 | `registration/builtin/*`、`registration/builtin/__init__.py` |
+| P3 | 14 个内置能力改结构化输出 + 输出契约校验 + **效果确认**（文件真写下来了没） | `registration/builtin/*`、`registration/builtin/verify.py` |
 | P4 | 意图层：`CapabilityIntent` + resolver + middleware 改造 | `intent/` |
 | P5a | 规则自动审批 + `invocation` 状态机 | `execution/pipeline.py::_decide_approval` |
 | P5b | 人工审批接口（approve / deny / cancel + 查询） | `services/invocation.py`、`api/v1/invocation.py` |

@@ -518,7 +518,7 @@ pip install -r requirements.txt
 ```bash
 cd backend
 source ../.venv/bin/activate
-pytest -q          # 153 passed
+pytest -q          # 156 passed
 ```
 
 只想快速检查语法（不装依赖也能跑）：

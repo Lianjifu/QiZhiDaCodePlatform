@@ -622,6 +622,38 @@ def test_schema_to_model_marks_required_fields():
     assert not model.model_fields["count"].is_required()
 
 
+# ---------- 效果确认 ----------
+
+
+def test_effect_verification_catches_missing_file(tmp_path):
+    """契约对了但文件没落盘，也要能抓出来。"""
+    from app.capabilities.registration.builtin.verify import get_verifier
+
+    context = ExecutionContext.build(workspace=tmp_path)
+    verifier = get_verifier("write_file")
+    problem = verifier({"path": "nope.txt", "bytes": 3}, context)
+    assert problem is not None
+    assert "不存在" in problem
+
+
+def test_effect_verification_passes_when_file_exists(tmp_path):
+    from app.capabilities.registration.builtin.verify import get_verifier
+
+    (tmp_path / "a.txt").write_text("abc", encoding="utf-8")
+    context = ExecutionContext.build(workspace=tmp_path)
+    verifier = get_verifier("write_file")
+    assert verifier({"path": "a.txt", "bytes": 3}, context) is None
+
+
+def test_effect_verification_catches_size_mismatch(tmp_path):
+    from app.capabilities.registration.builtin.verify import get_verifier
+
+    (tmp_path / "a.txt").write_text("abc", encoding="utf-8")
+    context = ExecutionContext.build(workspace=tmp_path)
+    verifier = get_verifier("write_file")
+    assert "大小不符" in verifier({"path": "a.txt", "bytes": 99}, context)
+
+
 # ---------- 执行结果 ----------
 
 
