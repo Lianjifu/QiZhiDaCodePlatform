@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     agent_docker_mount: str = "/workspace"
     agent_checkpointer_db: str = "./agent_checkpoints.db"
 
+    # 联网搜索（web_search 能力用）：tavily | serper | bing
+    web_search_provider: str = ""
+    web_search_api_key: str = ""
+
     # API Key 加密主密钥（Fernet），用 scripts/gen_encryption_key.py 生成
     api_key_encryption_key: str = ""
     # Azure OpenAI 专用

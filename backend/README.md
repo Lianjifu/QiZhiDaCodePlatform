@@ -71,10 +71,14 @@ backend/
 │   │   ├── prompts.py       # 系统提示词
 │   │   ├── builder.py       # create_agent 组装
 │   │   ├── runner.py        # 执行器（同步一轮 / 流式）
-│   │   ├── checkpointer.py  # 多轮对话上下文持久化
-│   │   └── tools/           # 工具集（文件读写 / 代码执行）
+│   │   └── checkpointer.py  # 多轮对话上下文持久化
 │   ├── capabilities/         # 能力层：tool / mcp / skill 的统一体系
 │   │   ├── builtin/          # 内置能力出厂源（白名单 + 出厂规格）
+│   │   │   ├── __init__.py   # 出厂规格清单（白名单）
+│   │   │   ├── paths.py      # 工作区路径校验（防穿越）
+│   │   │   ├── fs.py         # 文件类能力（读 / 写 / 改 / 列 / glob / grep）
+│   │   │   ├── sandbox.py    # 执行类能力（Python / shell，沙箱隔离）
+│   │   │   └── web.py        # 网络类能力（抓取 / 搜索）
 │   │   ├── registry.py       # 统一能力清单的唯一读取入口
 │   │   ├── entry.py          # 清单条目模型
 │   │   ├── adapter.py        # 执行适配器（builtin / http / mcp）
@@ -88,6 +92,7 @@ backend/
 │   ├── repositories/        # 数据访问层
 │   ├── models/              # ORM 模型
 │   └── db/                  # 引擎与会话
+├── alembic/                # 数据库迁移（versions/ 里是版本脚本）
 ├── scripts/
 │   ├── check_syntax.py      # 不装依赖也能跑的语法自检
 │   └── gen_encryption_key.py # 生成 API Key 加密主密钥
@@ -115,6 +120,10 @@ LLM_API_KEY="sk-..."
 LLM_BASE_URL=""              # 国产模型走这个：https://api.deepseek.com/v1
 SANDBOX_TYPE="docker"        # local（开发）| docker（生产）
 WORKSPACE_ROOT="./workspace"
+
+WEB_SEARCH_PROVIDER=""       # tavily | serper | bing（联网搜索用）
+WEB_SEARCH_API_KEY=""        # 对应服务商的 API Key
+DB_AUTO_CREATE_TABLES=false  # 用了 Alembic 就必须关掉
 ```
 
 ### ⚠️ 沙箱是这个平台的安全底线
@@ -123,13 +132,17 @@ agent 会执行 **LLM 生成的代码**，而 LLM 可以被提示词注入诱导
 
 - `SANDBOX_TYPE=local` **没有任何隔离** —— 生成的代码能读写本机任意文件、能联网。仅限本地开发。
 - `SANDBOX_TYPE=docker` 才是生产可用形态：容器内执行、`--network none` 断网、限内存与进程数、`--cap-drop ALL`、只挂载当前会话的工作区。
-- 所有文件路径都经 `agents/tools/paths.py` 校验：`..` 穿越、绝对路径、指向工作区外的符号链接一律拒绝。
+- 所有文件路径都经 `capabilities/builtin/paths.py` 校验：`..` 穿越、绝对路径、指向工作区外的符号链接一律拒绝。
 - 每个会话一个独立工作区（`WORKSPACE_ROOT/<thread_id>`），互不串味。
 
-> **macOS 注意**：Docker Desktop 默认只把 `/Users` 共享给虚拟机。工作区放在 `/tmp` 或
-> `/var/folders` 下时，容器会挂到一个空目录，表现为"脚本文件不存在"。把
-> `WORKSPACE_ROOT` 设在 `/Users` 下，或在 Docker Desktop → Settings → Resources →
-> File Sharing 里共享该目录。检测到这种情况时接口会直接返回提示，不会让 agent 去猜。
+> **macOS 注意**：容器只能看到宿主共享出去的路径。Docker Desktop 默认共享 `/Users`，
+> colima 默认共享 `$HOME`。工作区放在 `/tmp` 或 `/var/folders` 下时，容器会挂到一个
+> 空目录，表现为"脚本文件不存在"。把 `WORKSPACE_ROOT` 设在 `$HOME` 下，或在
+> Docker Desktop → Settings → Resources → File Sharing 里共享该目录。
+>
+> 另外，用 colima 时 docker 的 socket 不在 `/var/run/docker.sock`，
+> 沙箱会自己向 docker CLI 问出当前 context 的 endpoint 并以 `DOCKER_HOST`
+> 传给容器进程（子进程的 `HOME` 被换成了工作区，读不到 `~/.docker/config.json`）。
 
 ## 模型接入配置（供应商管理）
 
@@ -206,6 +219,33 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 同名冲突会**显式报错**，而不是像以前那样被 LangGraph 静默覆盖。
 
 同步只补空字段 —— 运营改过的内容不会被启动流程冲掉。
+
+### 内置能力清单
+
+内置能力对标 Claude Code 的内置工具，全部限制在会话工作区内：
+
+| key | 名称 | 参数 | 权限 | 说明 |
+| --- | --- | --- | --- | --- |
+| `read_file` | 读取文件 | `path` `offset` `limit` | low | 读文本文件，带行号；offset/limit 用于分段读大文件 |
+| `write_file` | 写入文件 | `path` `content` | high | 写入（覆盖），自动建父目录 |
+| `edit_file` | 编辑文件 | `path` `old_string` `new_string` `replace_all` | high | 精确字符串替换；**原文必须唯一**，不唯一就报错并列出所有匹配行号 |
+| `list_files` | 列出文件 | `path` | low | 列目录下的文件与子目录 |
+| `glob` | 按模式找文件 | `pattern` `path` | low | 按 glob 模式找文件，如 `**/*.py` |
+| `grep` | 搜索文件内容 | `pattern` `path` `glob_pattern` | low | 按正则搜内容，返回 `文件:行号:内容` |
+| `run_python` | 执行 Python | `code` | high | 在沙箱里跑一段 Python，返回退出码 / stdout / stderr |
+| `run_bash` | 执行命令 | `command` | high | 在沙箱里跑一条 shell 命令 |
+| `web_fetch` | 抓取网页 | `url` | high | 抓 http/https 页面并转纯文本（去脚本、去样式） |
+| `web_search` | 联网搜索 | `query` `max_results` | high | 走 Tavily / Serper / Bing 搜索，需配 API Key |
+
+几个设计取舍：
+
+- **文件类只认相对路径**。绝对路径、`..` 穿越、指向工作区外的符号链接一律拒绝
+  （`builtin/paths.py`）。
+- **写与改是"高权限"能力**，写入类操作在 `tool.permission` 上标成 `high`，
+  便于后面接权限确认。
+- **执行类一律进沙箱**，且命令写进脚本文件再执行，不做 `sh -c "用户输入"` 拼接。
+- **联网搜索没配 Key 就明说**，返回"请设置 `WEB_SEARCH_PROVIDER` 和
+  `WEB_SEARCH_API_KEY`"，而不是静默失败。
 
 ### 接口
 
@@ -378,7 +418,7 @@ pip install -r requirements.txt
 ```bash
 cd backend
 source ../.venv/bin/activate
-pytest -q          # 86 passed
+pytest -q          # 105 passed
 ```
 
 只想快速检查语法（不装依赖也能跑）：

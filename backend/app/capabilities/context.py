@@ -24,6 +24,7 @@ class ExecutionContext:
     sandbox_type: str = "local"
     sandbox_image: str = "python:3.13-slim"
     sandbox_timeout: int = 60
+    docker_mount: str = "/workspace"
 
     @classmethod
     def build(
@@ -39,4 +40,5 @@ class ExecutionContext:
             sandbox_type=settings.sandbox_type,
             sandbox_image=settings.sandbox_image,
             sandbox_timeout=settings.sandbox_timeout,
+            docker_mount=settings.agent_docker_mount,
         )
