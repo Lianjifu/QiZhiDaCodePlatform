@@ -69,3 +69,11 @@ class ForbiddenError(AppError):
     status_code = 403
     code = "FORBIDDEN"
     message = "无访问权限"
+
+
+class AgentError(AppError):
+    """智能体执行失败（模型调用、工具执行等）。"""
+
+    status_code = 500
+    code = "AGENT_ERROR"
+    message = "智能体执行失败"

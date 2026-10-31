@@ -30,6 +30,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging()
     await init_db()
     logger.info("%s v%s 已启动", settings.app_name, settings.app_version)
+    if not settings.llm_api_key and settings.llm_provider != "ollama":
+        logger.warning("未配置 LLM_API_KEY，调用编码助手接口会失败（请在 .env 中设置）")
     try:
         yield
     finally:

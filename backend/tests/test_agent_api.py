@@ -52,3 +52,21 @@ async def test_stream_returns_sse(app, client: AsyncClient) -> None:
     assert resp.headers["content-type"].startswith("text/event-stream")
     assert "流式内容" in resp.text
     assert "[DONE]" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_chat_returns_clean_error_when_model_fails(app, client: AsyncClient) -> None:
+    """模型调用失败时，要返回结构化错误，而不是裸的 500 traceback。"""
+
+    class BrokenModel(FakeChatModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            raise RuntimeError("Missing credentials. Please pass an `api_key`")
+
+    app.dependency_overrides[get_agent_service] = lambda: AgentService(
+        runner=AgentRunner(model=BrokenModel())
+    )
+    resp = await client.post(API + "/chat", json={"message": "hi", "thread_id": "t3"})
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body["error_code"] == "AGENT_ERROR"
+    assert "LLM_API_KEY" in body["message"]

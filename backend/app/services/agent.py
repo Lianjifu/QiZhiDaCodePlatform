@@ -5,13 +5,31 @@
 - 这里管"给这次会话分配哪个工作区""上下文怎么存""错误怎么翻译成 HTTP"。
 """
 
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 from app.agents.checkpointer import open_checkpointer
 from app.agents.runner import AgentRunner, AgentRunResult
 from app.core.config import settings
-from app.core.exceptions import ValidationError
+from app.core.exceptions import AgentError, AppError, ValidationError
+
+logger = logging.getLogger(__name__)
+
+
+def _readable_error(exc: Exception) -> str:
+    """把底层异常翻译成用户看得懂的提示。
+
+    模型厂商的报错对普通用户不友好（"Missing credentials" 这种），
+    但对排障有用 —— 所以原样信息写日志，对外只给可操作的提示。
+    """
+    text = str(exc)
+    lowered = text.lower()
+    if "missing credentials" in lowered or "api_key" in lowered:
+        return "模型凭据缺失：请在 .env 中配置 LLM_API_KEY（或对应厂商的环境变量）"
+    if "connection" in lowered and ("refused" in lowered or "error" in lowered):
+        return f"无法连接模型服务：{text or exc.__class__.__name__}"
+    return f"智能体执行失败：{text or exc.__class__.__name__}"
 
 
 class AgentService:
@@ -38,12 +56,25 @@ class AgentService:
         workspace = self.resolve_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
             runner = self._runner or AgentRunner(checkpointer=checkpointer)
-            return await runner.run(message, thread_id, workspace)
+            try:
+                return await runner.run(message, thread_id, workspace)
+            except AppError:
+                raise
+            except Exception as exc:
+                logger.exception("agent 执行失败 thread_id=%s", thread_id)
+                raise AgentError(_readable_error(exc)) from exc
 
     async def stream(self, message: str, thread_id: str) -> AsyncIterator[str]:
         """流式跑一轮对话，逐段产出文本增量。"""
         workspace = self.resolve_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
             runner = self._runner or AgentRunner(checkpointer=checkpointer)
-            async for text in runner.stream(message, thread_id, workspace):
-                yield text
+            try:
+                async for text in runner.stream(message, thread_id, workspace):
+                    yield text
+            except AppError:
+                raise
+            except Exception as exc:
+                # SSE 一旦开始推数据就改不了 HTTP 状态码了，只能把错误作为一帧推出去
+                logger.exception("agent 流式执行失败 thread_id=%s", thread_id)
+                yield f"[ERROR] {_readable_error(exc)}"

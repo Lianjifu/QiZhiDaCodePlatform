@@ -5,6 +5,8 @@ __pycache__/
 venv/
 .env
 *.db
+# Agent 会话工作区（运行时产物）
+workspace/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
