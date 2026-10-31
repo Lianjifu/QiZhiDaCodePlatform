@@ -259,10 +259,11 @@ async def _invoke(intent: CapabilityIntent, context: ExecutionContext) -> Execut
             )
             return result
         except CapabilityError as exc:
-            last_error = exc
+            last_error = _apply_idempotency(spec, exc)
         except TimeoutError:
-            last_error = CapabilityError(
-                f"执行超时（>{timeout}s），已终止", code=ErrorCode.TIMEOUT, retryable=True
+            last_error = _apply_idempotency(
+                spec,
+                CapabilityError(f"执行超时（>{timeout}s），已终止", code=ErrorCode.TIMEOUT),
             )
         except asyncio.CancelledError:
             raise
@@ -279,6 +280,25 @@ async def _invoke(intent: CapabilityIntent, context: ExecutionContext) -> Execut
             await asyncio.sleep(delay)
 
     raise last_error or CapabilityError("执行失败", code=ErrorCode.UNKNOWN)
+
+
+def _apply_idempotency(spec: CapabilitySpec, error: CapabilityError) -> CapabilityError:
+    """按能力的幂等性修正错误的 retryable。
+
+    超时意味着"不知道执行完没有"。对**不幂等**的能力（``run_bash``、
+    ``move_file``），重试可能把副作用做两遍 —— 所以不许重试，也要把这句话
+    写进错误信息，免得模型拿着"可以重试"的提示自己去重复执行。
+
+    不幂等能力的超时错误多半来自沙箱内部（它自己也在计时），所以规则统一
+    收在这里，不让每个执行器各写一套。
+    """
+    if spec.annotations.idempotent:
+        return error
+    if error.code == ErrorCode.TIMEOUT:
+        error.retryable = False
+        if "不要重复执行" not in error.message:
+            error.message += "；不确定是否已执行完，不要重复执行同样的命令"
+    return error
 
 
 def _can_retry(

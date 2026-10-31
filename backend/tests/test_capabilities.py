@@ -685,6 +685,48 @@ def test_backoff_can_be_fixed():
     assert policy.backoff_for(3) == 1.0
 
 
+def test_non_idempotent_capability_refuses_model_retry_on_timeout():
+    """超时的能力不幂等时，不许模型重试 —— 重跑可能把副作用做两遍。"""
+    from app.capabilities.execution.pipeline import _apply_idempotency
+
+    spec = _retry_spec(idempotent=False)
+    error = CapabilityError.of(ErrorCode.TIMEOUT, "执行超时（>60s），已终止")
+    adjusted = _apply_idempotency(spec, error)
+    assert adjusted.retryable is False
+    assert "不要重复执行" in adjusted.message
+
+    idempotent = _retry_spec(idempotent=True)
+    ok_error = _apply_idempotency(idempotent, CapabilityError.of(ErrorCode.TIMEOUT, "超时"))
+    assert ok_error.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_timeout_on_non_idempotent_capability_is_not_retryable(tmp_path):
+    """端到端：跑一条会超时的命令，错误不该邀请模型重试。"""
+    from app.capabilities.execution.pipeline import execute
+
+    context = ExecutionContext.build(workspace=tmp_path)
+    context.sandbox_type = "local"
+    context.sandbox_timeout = 1  # 沙箱内部超时压到 1s
+    spec = CapabilitySpec(
+        key="run_bash",
+        source_type="builtin",
+        locator={"source": "app.capabilities.registration.builtin.sandbox:make_run_bash"},
+        risk="execute",
+        timeout_s=1,
+        retry=RetryPolicy(max_attempts=3, backoff_s=0.1, retry_on=("TIMEOUT",)),
+        annotations=Annotations(destructive=True, open_world=True),  # 不幂等
+    )
+    intent = CapabilityIntent(
+        capability_key="run_bash", arguments={"command": "sleep 5"}, spec=spec
+    )
+    result = await execute(intent, context)
+    assert result.ok is False
+    assert result.error.code == ErrorCode.TIMEOUT
+    assert result.error.retryable is False
+    assert "不要重复执行" in result.error.message
+
+
 # ---------- 熔断 ----------
 
 
