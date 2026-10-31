@@ -15,6 +15,7 @@ from app.capabilities.intent.planner import collect_tool_keys, retrieve_skills, 
 from app.capabilities.intent.resolver import resolve
 from app.capabilities.prompt import assemble_prompt
 from app.capabilities.registration.args_model import schema_to_model
+from app.capabilities.registration.policy import Annotations, RetryPolicy
 from app.capabilities.registration.spec import KIND_SKILL, KIND_TOOL, CapabilitySpec
 from app.capabilities.registration.validator import (
     SchemaValidationError,
@@ -620,6 +621,305 @@ def test_schema_to_model_marks_required_fields():
     assert "path" in model.model_fields
     assert model.model_fields["path"].is_required()
     assert not model.model_fields["count"].is_required()
+
+
+# ---------- 重试策略 ----------
+
+
+def _retry_spec(*, idempotent: bool, retry_on=("TIMEOUT",), attempts: int = 3):
+    spec = _tool("run_bash")
+    spec.risk = "execute"
+    spec.retry = RetryPolicy(max_attempts=attempts, retry_on=tuple(retry_on))
+    spec.annotations = Annotations(idempotent=idempotent)
+    return spec
+
+
+def test_retry_requires_idempotency():
+    """不幂等的操作不自动重试 —— 重跑可能把副作用做两遍。"""
+    from app.capabilities.execution.pipeline import _can_retry
+
+    timeout = CapabilityError.of(ErrorCode.TIMEOUT, "超时")
+    idempotent = _retry_spec(idempotent=True)
+    assert _can_retry(idempotent, timeout, attempt=1, attempts=3) is True
+
+    not_idempotent = _retry_spec(idempotent=False)
+    assert _can_retry(not_idempotent, timeout, attempt=1, attempts=3) is False
+
+
+def test_retry_requires_error_to_be_retryable():
+    from app.capabilities.execution.pipeline import _can_retry
+
+    spec = _retry_spec(idempotent=True)
+    fatal = CapabilityError.of(ErrorCode.EXECUTION_ERROR, "代码写错了")
+    assert _can_retry(spec, fatal, attempt=1, attempts=3) is False
+
+
+def test_retry_respects_error_code_allowlist():
+    from app.capabilities.execution.pipeline import _can_retry
+
+    spec = _retry_spec(idempotent=True, retry_on=("NETWORK_ERROR",))
+    timeout = CapabilityError.of(ErrorCode.TIMEOUT, "超时")
+    assert _can_retry(spec, timeout, attempt=1, attempts=3) is False
+
+
+def test_retry_respects_attempt_budget():
+    from app.capabilities.execution.pipeline import _can_retry
+
+    spec = _retry_spec(idempotent=True, attempts=2)
+    timeout = CapabilityError.of(ErrorCode.TIMEOUT, "超时")
+    assert _can_retry(spec, timeout, attempt=1, attempts=2) is True
+    assert _can_retry(spec, timeout, attempt=2, attempts=2) is False
+
+
+def test_backoff_is_exponential_with_cap():
+    policy = RetryPolicy(max_attempts=5, backoff_s=1.0, exponential=True, max_backoff_s=4.0)
+    assert policy.backoff_for(1) == 1.0
+    assert policy.backoff_for(2) == 2.0
+    assert policy.backoff_for(3) == 4.0
+    assert policy.backoff_for(4) == 4.0  # 封顶
+
+
+def test_backoff_can_be_fixed():
+    policy = RetryPolicy(max_attempts=5, backoff_s=1.0, exponential=False)
+    assert policy.backoff_for(1) == 1.0
+    assert policy.backoff_for(3) == 1.0
+
+
+# ---------- 熔断 ----------
+
+
+def test_breaker_opens_after_repeated_failures():
+    from app.capabilities.execution.breaker import CircuitBreaker
+
+    breaker = CircuitBreaker(window_seconds=60, min_samples=4, error_rate=0.5, cooldown_seconds=30)
+    for _ in range(4):
+        breaker.record("flaky", ok=False, duration_ms=10)
+    assert breaker.is_open("flaky") is True
+
+
+def test_breaker_stays_closed_when_errors_are_few():
+    from app.capabilities.execution.breaker import CircuitBreaker
+
+    breaker = CircuitBreaker(window_seconds=60, min_samples=5, error_rate=0.9)
+    breaker.record("ok_one", ok=False, duration_ms=10)
+    breaker.record("ok_two", ok=True, duration_ms=10)
+    assert breaker.is_open("ok_one") is False
+
+
+def test_breaker_counts_slow_calls_as_failures():
+    from app.capabilities.execution.breaker import CircuitBreaker
+
+    breaker = CircuitBreaker(
+        window_seconds=60, min_samples=3, error_rate=0.5, cooldown_seconds=30, latency_ms=100
+    )
+    for _ in range(3):
+        breaker.record("slow", ok=True, duration_ms=500)
+    assert breaker.is_open("slow") is True
+
+
+# ---------- 任务状态：置信度 / 阻塞 ----------
+
+
+@pytest.mark.asyncio
+async def test_confidence_drops_on_format_errors(session):
+    """格式类错误：扣得轻 —— 模型改改参数就能对。"""
+    from app.capabilities.execution.task_state import load_task_state
+    from app.models.invocation import Invocation
+
+    for _ in range(2):
+        session.add(
+            Invocation(
+                thread_id="conf-1",
+                capability_key="write_file",
+                arguments={},
+                status="failed",
+                error_code="SCHEMA_INVALID",
+            )
+        )
+    await session.commit()
+    state = await load_task_state(session, "conf-1", "write_file")
+    assert state.confidence < 100
+    assert state.confidence >= 80  # 格式类扣得轻
+    assert state.blocked is False
+
+
+@pytest.mark.asyncio
+async def test_confidence_drops_faster_on_semantic_errors(session):
+    """语义类错误：扣得重 —— 说明模型的判断本身有问题。"""
+    from app.capabilities.execution.task_state import load_task_state
+    from app.models.invocation import Invocation
+
+    for _ in range(2):
+        session.add(
+            Invocation(
+                thread_id="conf-2",
+                capability_key="write_file",
+                arguments={},
+                status="failed",
+                error_code="EXECUTION_ERROR",
+            )
+        )
+    await session.commit()
+    state = await load_task_state(session, "conf-2", "write_file")
+    assert state.confidence <= 50
+    assert state.semantic_errors == 2
+
+
+@pytest.mark.asyncio
+async def test_repeated_format_errors_block_the_task(session):
+    """同一能力连续多次参数错误 → 任务阻塞，转人工。"""
+    from app.capabilities.execution.task_state import load_task_state
+    from app.models.invocation import Invocation
+
+    for _ in range(3):
+        session.add(
+            Invocation(
+                thread_id="conf-3",
+                capability_key="write_file",
+                arguments={},
+                status="failed",
+                error_code="SCHEMA_INVALID",
+            )
+        )
+    await session.commit()
+    state = await load_task_state(session, "conf-3", "write_file")
+    assert state.blocked is True
+    assert "连续" in state.reason
+
+
+@pytest.mark.asyncio
+async def test_blocked_task_refuses_further_calls(session, tmp_path):
+    """阻塞之后不再执行，直接转人工。"""
+    from sqlalchemy import select
+
+    from app.capabilities.execution.pipeline import execute
+    from app.capabilities.registration.registry import _tool_spec
+    from app.models.invocation import Invocation
+    from app.models.tool import Tool
+
+    for _ in range(3):
+        session.add(
+            Invocation(
+                thread_id="blocked-1",
+                capability_key="write_file",
+                arguments={},
+                status="failed",
+                error_code="SCHEMA_INVALID",
+            )
+        )
+    await session.commit()
+
+    spec = _tool_spec(
+        (await session.execute(select(Tool).where(Tool.name == "write_file"))).scalar_one()
+    )
+    context = ExecutionContext.build(workspace=tmp_path)
+    context.session = session
+    context.thread_id = "blocked-1"
+    intent = CapabilityIntent(
+        capability_key="write_file",
+        arguments={"path": "a.txt", "content": "x"},
+        spec=spec,
+        thread_id="blocked-1",
+    )
+    result = await execute(intent, context)
+    assert result.ok is False
+    assert result.error.code == ErrorCode.TASK_BLOCKED
+    assert result.blocked is True
+
+
+# ---------- 权限类错误转审批 ----------
+
+
+@pytest.mark.asyncio
+async def test_capability_outside_allowed_set_goes_to_approval(session, tmp_path):
+    """权限类错误不许模型重试，但可以转人工授权。"""
+    from sqlalchemy import select
+
+    from app.capabilities.execution.pipeline import execute
+    from app.capabilities.registration.registry import _tool_spec
+    from app.models.tool import Tool
+
+    spec = _tool_spec(
+        (await session.execute(select(Tool).where(Tool.name == "write_file"))).scalar_one()
+    )
+    context = ExecutionContext.build(workspace=tmp_path)
+    context.session = session
+    intent = CapabilityIntent(
+        capability_key="write_file",
+        arguments={"path": "a.txt", "content": "x"},
+        spec=spec,
+        allowed_keys={"read_file"},
+    )
+    result = await execute(intent, context)
+    assert result.ok is False
+    assert result.error.code == ErrorCode.APPROVAL_REQUIRED
+    assert result.invocation_id is not None
+
+
+@pytest.mark.asyncio
+async def test_task_blocks_as_soon_as_confidence_crosses_threshold(session, tmp_path):
+    """置信度跌破阈值的那一刻就标记阻塞，不等下一次调用。"""
+    from sqlalchemy import select
+
+    from app.capabilities.execution.pipeline import execute
+    from app.capabilities.registration.registry import _tool_spec
+    from app.models.tool import Tool
+
+    spec = _tool_spec(
+        (await session.execute(select(Tool).where(Tool.name == "read_file"))).scalar_one()
+    )
+    context = ExecutionContext.build(workspace=tmp_path)
+    context.session = session
+    context.thread_id = "cross-thread"
+    intent = CapabilityIntent(
+        capability_key="read_file",
+        arguments={"path": "不存在.txt"},
+        spec=spec,
+        thread_id="cross-thread",
+    )
+    # 先攒两次语义类错误（100 → 75 → 50）
+    for _ in range(2):
+        await execute(intent, context)
+        await session.commit()
+
+    result = await execute(intent, context)
+    await session.commit()
+    # 第三次：100-25*3 = 25 < 40 → 立即阻塞
+    assert result.confidence == 25.0
+    assert result.blocked is True
+
+
+@pytest.mark.asyncio
+async def test_middleware_tells_model_to_stop_when_blocked():
+    """阻塞时给模型的提示要说清楚"停下来"，而不是让它继续撞。"""
+    from app.capabilities.execution.result import ExecutionResult
+
+    result = ExecutionResult.failed(CapabilityError.of(ErrorCode.INVALID_ARGUMENTS, "文件不存在"))
+    result.blocked = True
+    text = CapabilityMiddleware._render(result)
+    assert "任务已阻塞" in text
+    assert "停止重试" in text
+
+
+def test_middleware_distinguishes_error_types():
+    """不同失败类型给模型不同的指令。"""
+    from app.capabilities.execution.result import ExecutionResult
+
+    schema_error = ExecutionResult.failed(
+        CapabilityError.of(ErrorCode.SCHEMA_INVALID, "缺少 content")
+    )
+    assert "改正后重试" in CapabilityMiddleware._render(schema_error)
+
+    semantic_error = ExecutionResult.failed(
+        CapabilityError.of(ErrorCode.INVALID_ARGUMENTS, "文件不存在")
+    )
+    semantic_error.confidence = 75.0
+    assert "置信度降到 75" in CapabilityMiddleware._render(semantic_error)
+
+    permission_error = ExecutionResult.failed(
+        CapabilityError.of(ErrorCode.PERMISSION_DENIED, "能力已停用")
+    )
+    assert "不允许重复调用" in CapabilityMiddleware._render(permission_error)
 
 
 # ---------- 效果确认 ----------

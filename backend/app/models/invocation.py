@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, Float, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -27,6 +27,7 @@ STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
 STATUS_CANCELLED = "cancelled"
 STATUS_EXPIRED = "expired"
+STATUS_BLOCKED = "blocked"  # 任务阻塞：重试超限或置信度过低，转人工
 
 TERMINAL_STATUSES = (
     STATUS_SUCCEEDED,
@@ -34,6 +35,7 @@ TERMINAL_STATUSES = (
     STATUS_DENIED,
     STATUS_CANCELLED,
     STATUS_EXPIRED,
+    STATUS_BLOCKED,
 )
 
 
@@ -74,7 +76,7 @@ class Invocation(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=utcnow, nullable=False
     )

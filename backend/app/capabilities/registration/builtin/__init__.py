@@ -67,7 +67,8 @@ _READ_ONLY = Annotations(read_only=True, idempotent=True)
 _WRITE = Annotations(idempotent=True)
 _MUTATING = Annotations()
 _EXEC = Annotations(destructive=True, open_world=True)
-_OPEN = Annotations(open_world=True)
+# 联网类是只读 GET：同样的请求重发一次结果不变，可以安全重试
+_OPEN = Annotations(read_only=True, idempotent=True, open_world=True)
 
 # 重试策略：只对"外部因素导致、且重试安全"的错误重试
 _RETRY_TIMEOUT = RetryPolicy(max_attempts=2, backoff_s=0.5, retry_on=("TIMEOUT",))

@@ -85,6 +85,8 @@ class CapabilityInvokeOut(BaseModel):
     duration_ms: int = 0
     invocation_id: int | None = Field(default=None, description="调用记录 ID")
     status: str = Field(default="succeeded", description="pending（待审批）/ succeeded / failed")
+    confidence: float | None = Field(default=None, description="本次调用之后的任务置信度（0-100）")
+    blocked: bool = Field(default=False, description="任务是否已阻塞（转人工）")
 
 
 class SkillPreviewOut(BaseModel):

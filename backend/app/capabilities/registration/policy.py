@@ -63,13 +63,21 @@ def max_risk(*risks: str) -> str:
 class RetryPolicy:
     """重试策略。
 
-    声明的"可以重试"只是一半：真正是否重试，要和运行时错误自己的 ``retryable``
-    **取交集**。声明允许重试但错误是"代码本身写错了"，重试没有意义。
+    声明的"可以重试"只是一半：真正是否重试，要同时满足三个条件：
+
+    1. 运行时错误自己的 ``retryable`` 为真（声明允许 ≠ 运行时值得）；
+    2. 错误码在 ``retry_on`` 白名单里；
+    3. **能力是幂等的**（``require_idempotent`` 为真时）—— 不幂等的操作重试
+       可能把副作用做两遍。``run_bash`` 超时就是典型：超时只说明"不知道执行完
+       没有"，重跑可能重复执行。
     """
 
     max_attempts: int = 1  # 含首次调用
-    backoff_s: float = 0.0
+    backoff_s: float = 0.0  # 退避基数；指数退避时按 2^(n-1) 增长
     retry_on: tuple[str, ...] = ()  # ErrorCode 白名单
+    exponential: bool = True  # 是否指数退避
+    max_backoff_s: float = 30.0  # 单次退避上限
+    require_idempotent: bool = True  # 只对幂等能力自动重试
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> RetryPolicy:
@@ -81,6 +89,9 @@ class RetryPolicy:
             max_attempts=max(1, int(data.get("max_attempts") or 1)),
             backoff_s=float(data.get("backoff_s") or 0.0),
             retry_on=tuple(str(item) for item in raw_on),
+            exponential=bool(data.get("exponential", True)),
+            max_backoff_s=float(data.get("max_backoff_s") or 30.0),
+            require_idempotent=bool(data.get("require_idempotent", True)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -88,7 +99,23 @@ class RetryPolicy:
             "max_attempts": self.max_attempts,
             "backoff_s": self.backoff_s,
             "retry_on": list(self.retry_on),
+            "exponential": self.exponential,
+            "max_backoff_s": self.max_backoff_s,
+            "require_idempotent": self.require_idempotent,
         }
+
+    def backoff_for(self, attempt: int) -> float:
+        """第 attempt 次失败后该等多久。
+
+        ``attempt`` 从 1 开始（第一次失败后等一次）。指数退避：base * 2^(n-1)，
+        并封顶在 ``max_backoff_s``。
+        """
+        if self.backoff_s <= 0:
+            return 0.0
+        if not self.exponential:
+            return min(self.backoff_s, self.max_backoff_s)
+        delay = self.backoff_s * (2 ** max(0, attempt - 1))
+        return min(delay, self.max_backoff_s)
 
 
 @dataclass(frozen=True)

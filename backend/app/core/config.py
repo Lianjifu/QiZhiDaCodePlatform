@@ -84,6 +84,17 @@ class Settings(BaseSettings):
     capability_redact_patterns: str = ""
     # 内部域名后缀（SSRF 判定用，逗号分隔）
     capability_internal_domains: str = "localhost,.internal,.local"
+    # 熔断：按能力统计滑动窗口内的错误率，坏了就快速失败
+    capability_breaker_window: int = 60
+    capability_breaker_min_samples: int = 5
+    capability_breaker_error_rate: float = 0.5
+    capability_breaker_cooldown: int = 30
+    # 慢调用也算"劣化"的阈值（毫秒）
+    capability_breaker_latency_ms: int = 5000
+    # 任务置信度：低于阈值就阻塞转人工
+    capability_confidence_block_threshold: float = 40.0
+    # 同一能力连续多少次格式类错误就阻塞
+    capability_max_format_retries: int = 3
 
     # API Key 加密主密钥（Fernet），用 scripts/gen_encryption_key.py 生成
     api_key_encryption_key: str = ""

@@ -110,13 +110,60 @@ class CapabilityMiddleware(AgentMiddleware):
 
     @staticmethod
     def _render(result) -> str:
-        """渲染给模型看的文本；待审批的调用要说清楚下一步该做什么。"""
+        """渲染给模型看的文本。
+
+        按失败类型分层给不同的指令 —— 模型知道该怎么反应，任务才不会空转：
+
+        - **格式类**（参数没按 schema 填）：让它改参数重试，但有次数上限；
+        - **语义类**（参数合法但意图错了）：同样回灌，但会拉低任务置信度；
+        - **权限类**：明确不许重试，直接走权限流程；
+        - **阻塞/熔断**：让它停下来转人工，别再撞。
+        """
         error = result.error
-        if error is not None and error.code == ErrorCode.APPROVAL_REQUIRED:
+        if error is None:
+            return result.to_text()
+
+        if error.code == ErrorCode.APPROVAL_REQUIRED:
             return (
                 f"[{error.code}] {error.message}\n"
                 f"（调用记录 #{result.invocation_id}，人工批准后会自动执行；"
                 "请停止后续操作并告知用户需要确认）"
+            )
+        if result.blocked:
+            # 这次调用本身可能成功了/失败了，但任务已经越过阻塞线 ——
+            # 错误码还是原来的（要留着算置信度），但要明确告诉模型该停
+            return (
+                f"[{error.code}] {error.message}\n"
+                "（任务已阻塞：重试次数或任务置信度已到阈值；"
+                "请停止重试并告知用户需要人工介入）"
+            )
+        if error.code == ErrorCode.TASK_BLOCKED:
+            return (
+                f"[{error.code}] {error.message}\n（任务已阻塞，请停止重试并告知用户需要人工介入）"
+            )
+        if error.code == ErrorCode.CIRCUIT_OPEN:
+            return (
+                f"[{error.code}] {error.message}\n"
+                "（该能力近期连续失败，已熔断；请换一条路，别再重复调用）"
+            )
+        if error.code in (ErrorCode.PERMISSION_DENIED, ErrorCode.RISK_BLOCKED):
+            return (
+                f"[{error.code}] {error.message}\n"
+                "（权限/风险判定不通过，不允许重复调用；请停止并告知用户）"
+            )
+        if error.code == ErrorCode.SCHEMA_INVALID:
+            return (
+                f"[{error.code}] {error.message}\n"
+                "（参数格式不对，请按上面的要求改正后重试；连续多次不对会转人工）"
+            )
+        if error.code in (ErrorCode.INVALID_ARGUMENTS, ErrorCode.EXECUTION_ERROR):
+            confidence = (
+                f"，任务置信度降到 {result.confidence:.0f}" if result.confidence is not None else ""
+            )
+            return (
+                f"[{error.code}] {error.message}\n"
+                f"（这次调用没成功{confidence}；"
+                "请检查参数是否与实际目标一致后重试，不要重复同样的调用）"
             )
         return result.to_text()
 

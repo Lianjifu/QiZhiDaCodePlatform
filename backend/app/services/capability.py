@@ -120,6 +120,8 @@ class CapabilityService:
             duration_ms=result.duration_ms,
             invocation_id=result.invocation_id,
             status="pending" if _is_pending(result) else ("succeeded" if result.ok else "failed"),
+            confidence=result.confidence,
+            blocked=result.blocked,
         )
 
     async def preview_skill(self, skill_id: int) -> SkillPreviewOut:

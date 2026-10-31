@@ -36,6 +36,9 @@ class ExecutionResult:
     invocation_id: int | None = None
     # 各阶段结论，写进调用记录便于定位"卡在哪一关"
     stages: list[dict[str, Any]] = field(default_factory=list)
+    # 任务置信度与阻塞状态（由调用记录算出来）
+    confidence: float | None = None
+    blocked: bool = False
 
     @classmethod
     def failed(cls, error: CapabilityError, duration_ms: int = 0) -> ExecutionResult:
@@ -62,6 +65,8 @@ class ExecutionResult:
             "error_code": self.error.code.value if self.error else None,
             "error_message": self.error.message if self.error else None,
             "duration_ms": self.duration_ms,
+            "confidence": self.confidence,
+            "blocked": self.blocked,
         }
 
 
