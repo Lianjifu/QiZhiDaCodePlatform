@@ -50,8 +50,8 @@ _INTERNAL_NETWORKS: tuple[str, ...] = (
 class RiskAssessment:
     """一次调用的风险评估结果。"""
 
-    risk: str = RiskLevel.READ
-    reasons: list[str] = field(default_factory=list)
+    risk: str = RiskLevel.READ  # 最终风险等级（只能比基线高）
+    reasons: list[str] = field(default_factory=list)  # 上调原因（说给模型/人听）
     # 需要管理员才能放行（参数级规则可以把风险顶到 destructive）
     require_admin: bool = False
 
@@ -62,7 +62,18 @@ class RiskAssessment:
 
 
 def assess(spec: CapabilitySpec, arguments: dict[str, Any] | None = None) -> RiskAssessment:
-    """按声明 + 参数做风险评估。"""
+    """按声明 + 参数做风险评估。
+
+    Args:
+        spec: 能力声明（基线风险 + 注解）。
+        arguments: 本次调用的参数（规则按参数匹配）。
+
+    Returns:
+        评估结果：最终风险等级、上调原因、是否要管理员放行。
+
+    规则是纯函数 —— 同样的输入永远给同样的输出，便于单测，也便于向模型解释
+    "这次为什么要审批"。
+    """
     arguments = arguments or {}
     risk = spec.risk or RiskLevel.READ
     reasons: list[str] = []
@@ -80,6 +91,7 @@ def assess(spec: CapabilitySpec, arguments: dict[str, Any] | None = None) -> Ris
 
     command = arguments.get("command")
     if isinstance(command, str):
+        # 命令内容里的破坏性特征 —— 命中就把风险顶到 destructive 并要管理员放行
         for pattern, label in _DESTRUCTIVE_COMMANDS:
             if re.search(pattern, command):
                 risk = max_risk(risk, RiskLevel.DESTRUCTIVE)
@@ -97,7 +109,11 @@ def assess(spec: CapabilitySpec, arguments: dict[str, Any] | None = None) -> Ris
 
 
 def _is_internal_url(url: str) -> bool:
-    """URL 的主机是不是内网地址。"""
+    """URL 的主机是不是内网地址。
+
+    域名（不是 IP）查不出来 —— 这时返回 False。真要防住 DNS 重绑定这类手法，
+    得在解析之后再判一次 IP；那是另一层的事，不在这里做。
+    """
     host = urlparse(url).hostname
     if not host:
         return False
@@ -106,6 +122,7 @@ def _is_internal_url(url: str) -> bool:
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
+        # 不是 IP 字面量 → 域名，判不了
         return False
     return any(address in ipaddress.ip_network(cidr) for cidr in _INTERNAL_NETWORKS)
 

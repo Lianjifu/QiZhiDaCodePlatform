@@ -18,7 +18,20 @@ class MCPError(RuntimeError):
 
 
 def build_connection(server: MCPServer) -> dict[str, Any]:
-    """按 transport 生成 MCP 连接配置。"""
+    """按 transport 生成 MCP 连接配置。
+
+    Args:
+        server: 数据库里的 MCP 服务器记录。
+
+    Returns:
+        ``MultiServerMCPClient`` 认识的连接参数字典。
+
+    Raises:
+        MCPError: 缺 command / url，或 transport 不支持。
+
+    缺参数就明确报错 —— 连接参数不全时静默默认值，会连到一个错的地址上，
+    排查起来比直接报错难得多。
+    """
     transport = (server.transport or "stdio").lower()
     if transport == "stdio":
         if not server.command:
@@ -50,7 +63,11 @@ class MCPManager:
     """
 
     async def list_tools(self, server: MCPServer) -> list[BaseTool]:
-        """列出某个 MCP server 上的全部能力。"""
+        """列出某个 MCP server 上的全部能力。
+
+        Raises:
+            MCPError: 连接失败（统一包成 MCPError，别把底层异常泄给上层）。
+        """
         from langchain_mcp_adapters.client import MultiServerMCPClient
 
         client = MultiServerMCPClient({server.name: build_connection(server)})
@@ -60,7 +77,7 @@ class MCPManager:
             raise MCPError(f"连接 MCP 服务器 {server.name} 失败: {exc}") from exc
 
     async def find_tool(self, server: MCPServer, tool_name: str) -> BaseTool | None:
-        """按名字找出 server 上的某个能力。"""
+        """按名字找出 server 上的某个能力；找不到返回 ``None``。"""
         if not tool_name:
             return None
         for tool in await self.list_tools(server):

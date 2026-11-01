@@ -86,3 +86,17 @@ class InvocationRepository(BaseRepository[Invocation]):
             stmt = stmt.where(Invocation.thread_id == thread_id)
         result = await self.session.execute(stmt)
         return result.scalars().first() is not None
+
+    async def list_recent(self, thread_id: str | None, *, limit: int = 20) -> list[Invocation]:
+        """最近的调用记录，**按时间正序**返回。
+
+        给"执行摘要"用：一轮对话结束后，按调用顺序把记录与工具调用对上，
+        补上成功 / 失败 / 耗时。
+        """
+        stmt = select(Invocation).order_by(Invocation.id.desc()).limit(limit)
+        if thread_id:
+            stmt = stmt.where(Invocation.thread_id == thread_id)
+        result = await self.session.execute(stmt)
+        records = list(result.scalars().all())
+        records.reverse()
+        return records

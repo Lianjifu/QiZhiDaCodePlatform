@@ -5,15 +5,17 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 from sqlalchemy.exc import IntegrityError
 
 from app.agents.llm import build_model_for_provider
 from app.agents.providers import resolve_preset
-from app.core.crypto import encrypt_secret, mask_secret
-from app.core.exceptions import ConflictError, NotFoundError, ValidationError
+from app.core.crypto import decrypt_secret, encrypt_secret, mask_secret
+from app.core.exceptions import AppError, ConflictError, NotFoundError, ValidationError
 from app.models.llm_provider import LLMProvider
+from app.rag.embedding import EmbeddingTarget, build_provider, probe_dimension
 from app.repositories.llm_provider import LLMProviderRepository
 from app.schemas.common import PageMeta
 from app.schemas.llm_provider import (
@@ -22,6 +24,8 @@ from app.schemas.llm_provider import (
     ProviderTestOut,
 )
 from app.services.base import BaseService, PageResult
+
+logger = logging.getLogger(__name__)
 
 
 class LLMProviderService(BaseService[LLMProviderRepository]):
@@ -78,6 +82,9 @@ class LLMProviderService(BaseService[LLMProviderRepository]):
 
         encrypted = encrypt_secret(payload.api_key)
         masked = mask_secret(payload.api_key)
+        embedding_dim = await self._probe_embedding_dim(
+            payload.provider, payload.base_url, payload.embedding_model, payload.api_key
+        )
         try:
             provider = await self.repo.create(
                 name=payload.name,
@@ -87,6 +94,8 @@ class LLMProviderService(BaseService[LLMProviderRepository]):
                 api_key_masked=masked,
                 default_model=payload.default_model,
                 available_models=list(payload.available_models),
+                embedding_model=payload.embedding_model,
+                embedding_dim=embedding_dim,
                 temperature=payload.temperature,
                 max_tokens=payload.max_tokens,
                 timeout=payload.timeout,
@@ -114,9 +123,11 @@ class LLMProviderService(BaseService[LLMProviderRepository]):
         if "provider" in data and data["provider"]:
             resolve_preset(data["provider"])
 
+        plain_api_key: str | None = None
         if "api_key" in data:
             # 传空串表示清空已配置的 key；不传这个字段表示保持原样
             new_key = data.pop("api_key")
+            plain_api_key = new_key or None
             if new_key:
                 data["api_key_encrypted"] = encrypt_secret(new_key)
                 data["api_key_masked"] = mask_secret(new_key)
@@ -127,6 +138,23 @@ class LLMProviderService(BaseService[LLMProviderRepository]):
         if data.get("is_default"):
             await self.repo.clear_default_except(provider.id)
 
+        if "embedding_model" in data:
+            # 换了向量化模型，维度大概率也变了，重新探一次。
+            # 没传新的 key 就沿用原来那条（探维度要真发请求）
+            probe_key = plain_api_key
+            if probe_key is None:
+                try:
+                    probe_key = decrypt_secret(provider.api_key_encrypted)
+                except AppError:
+                    # 主密钥没配 / 换过 —— 探不了就跳过，维度留 0
+                    probe_key = None
+            data["embedding_dim"] = await self._probe_embedding_dim(
+                data.get("provider") or provider.provider,
+                data.get("base_url") or provider.base_url,
+                data["embedding_model"] or "",
+                probe_key,
+            )
+
         provider = await self.repo.update(provider, **data)
         await self.session.commit()
         return provider
@@ -135,6 +163,32 @@ class LLMProviderService(BaseService[LLMProviderRepository]):
         provider = await self.get_provider(provider_id)
         await self.repo.delete(provider)
         await self.session.commit()
+
+    async def _probe_embedding_dim(
+        self,
+        provider: str,
+        base_url: str | None,
+        embedding_model: str,
+        api_key: str | None,
+    ) -> int:
+        """探一次向量化维度。
+
+        探不到不算失败 —— 向量化是可选能力，配错了也不该挡住对话模型的接入，
+        所以这里只记日志，维度留 0（建集合时会再探一次并明确报错）。
+        """
+        if not embedding_model:
+            return 0
+        preset = resolve_preset(provider)
+        target = EmbeddingTarget(
+            model=embedding_model,
+            base_url=base_url or preset.default_base_url or "",
+            api_key=api_key or "",
+        )
+        try:
+            return await probe_dimension(build_provider(target))
+        except Exception as exc:  # 探测失败不阻塞配置
+            logger.warning("探测向量化维度失败（%s）：%s", embedding_model, exc)
+            return 0
 
     # ---------- 连通性测试 ----------
 

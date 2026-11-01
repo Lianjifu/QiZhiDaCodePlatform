@@ -1,14 +1,19 @@
-"""Agent 组装：能力清单 → 可执行的 agent。
+"""Agent 组装：能力清单 + 执行环境 → 一个可执行的 deep agent。
 
-工具**只从注册层来**（`app.capabilities.registration.registry`），不再保留硬编码
-的第二条路径。原因：两条路径并存时，同名能力会被 LangGraph 的 `tools_by_name`
-静默覆盖（后者胜），模型看到的能力集就不可预期了。现在冲突会显式报错。
+用 deepAgents 的 ``create_deep_agent``，而不是 langchain 的 ``create_agent``。
+deepAgents 额外带来规划（write_todos）、子代理（task）、技能（SKILL.md）、
+记忆（AGENTS.md）、上下文摘要与 prompt caching。
 
-LangChain v1 用 `create_agent` 一站式创建 agent，它内部是一张 LangGraph 图：
-模型思考 → 调工具 → 结果回灌 → 再思考，直到模型不再要求调工具。
+**工具从哪来**：
 
-工具的 coroutine 走**执行层流水线**（`app.capabilities.execution.tooling`），
-不直接执行能力 —— 这样 agent 内部的调用和直接调 API 走的是同一条路。
+- **文件工具**（ls / read_file / write_file / edit_file / delete / glob / grep /
+  execute）：deepAgents 的 ``FilesystemMiddleware`` 注册，backend 换成我们的 ——
+  文件操作走本地、命令执行走 docker 沙箱；
+- **我们的工具**（web_fetch / web_search / run_python / MCP 工具）：从注册层来，
+  走能力层的执行流水线。
+
+同名工具不能同时存在：deepAgents 的文件工具名与我们的旧文件能力重名，
+所以我们的文件类能力不再暴露成工具（它们的能力由 deepAgents 的文件工具接管）。
 """
 
 from __future__ import annotations
@@ -17,15 +22,31 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from langchain.agents import create_agent
+from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models import BaseChatModel
 
+from app.capabilities.backends.assembly import build_backend
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.tooling import build_tools
 from app.capabilities.intent.middleware import CapabilityMiddleware
 from app.capabilities.registration.spec import CapabilitySpec
+from app.capabilities.registration.tool_policy import FS_TOOL_NAMES, approval_tool_names
 
 logger = logging.getLogger(__name__)
+
+# 通用子代理的名字与说明。模型按 description 决定什么时候派活给它。
+GENERAL_SUBAGENT_NAME = "general"
+GENERAL_SUBAGENT_DESCRIPTION = (
+    "通用子代理：适合需要独立上下文的复杂子任务（多文件调研、批量改造、"
+    "长链路的排查）。它有自己的工具预算和上下文，不与主 agent 共享历史。"
+)
+GENERAL_SUBAGENT_PROMPT = (
+    "你是通用子代理，主 agent 把一段完整、明确的子任务交给你。\n"
+    "你的产出是给主 agent 用的中间结论，不是给人看的最终答复：\n"
+    "- 先把任务做完，再给结论；\n"
+    "- 结论要具体（文件路径、命令、数据），不要写“应该可以”之类的模糊话；\n"
+    "- 遇到需要人工审批的操作，照常挂起等人批，不要绕过。"
+)
 
 
 async def build_agent(
@@ -38,8 +59,12 @@ async def build_agent(
     allowed_tool_keys: set[str] | None = None,
     thread_id: str = "",
     trust_mode: str = "balanced",
+    skills: list[str] | None = None,
+    skills_dir: Path | None = None,
+    memory: list[str] | None = None,
+    subagents: list[Any] | None = None,
 ) -> Any:
-    """组装 agent。
+    """组装 deep agent。
 
     Args:
         specs: 注册层给出的统一能力清单。
@@ -50,9 +75,19 @@ async def build_agent(
         allowed_tool_keys: 限定暴露给模型的工具（意图层检索后的候选集）；
             为 None 表示全量暴露。
         thread_id: 会话 ID，调用记录按它归集。
-        trust_mode: 会话信任模式，决定哪些能力需要人工审批。
+        trust_mode: 会话信任模式，决定哪些工具需要人工审批。
+        skills: 技能源路径（deepAgents 的虚拟路径）。
+        skills_dir: 技能导出目录，backend 按 ``/skills/`` 路由挂它。
+        memory: 记忆文件路径（AGENTS.md）。
+        subagents: 子代理规格；不传就用我们自带的通用子代理。
+
+    Returns:
+        编译好的图（``CompiledStateGraph``），用法与 ``create_agent`` 一致：
+        ``ainvoke`` / ``astream``。
     """
-    tools = await build_tools(specs, context, allowed_tool_keys)
+    from deepagents import create_deep_agent
+
+    tools = await build_tools(specs, context, allowed_tool_keys, skip_names=FS_TOOL_NAMES)
 
     # 同名能力必须显式报错，不能让 LangGraph 静默覆盖
     seen: set[str] = set()
@@ -61,23 +96,110 @@ async def build_agent(
             raise ValueError(f"能力名重复：{tool.name}")
         seen.add(tool.name)
 
-    middleware = [
-        CapabilityMiddleware(
-            specs,
-            allowed_tool_keys=allowed_tool_keys,
-            context=context,
-            thread_id=thread_id,
-            trust_mode=trust_mode,
-        )
-    ]
+    governance = CapabilityMiddleware(
+        specs,
+        allowed_tool_keys=allowed_tool_keys,
+        context=context,
+        thread_id=thread_id,
+        trust_mode=trust_mode,
+    )
+    middleware: list[Any] = [governance, TodoListMiddleware()]
 
-    return create_agent(
+    interrupt_on = _interrupt_on(specs, trust_mode, allowed_tool_keys)
+    if subagents is None:
+        subagents = _general_subagent(
+            governance=governance,
+            interrupt_on=interrupt_on,
+            model=model,
+        )
+
+    if memory:
+        _ensure_memory_files(context.workspace, memory)
+
+    return create_deep_agent(
         model=model or _default_model(),
         tools=tools,
         system_prompt=system_prompt or _default_prompt(),
         checkpointer=checkpointer,
         middleware=middleware,
+        backend=build_backend(context, skills_dir),
+        interrupt_on=interrupt_on or None,
+        skills=skills,
+        memory=memory,
+        subagents=subagents,
     )
+
+
+# 记忆文件（AGENTS.md）的初始内容
+_MEMORY_TEMPLATE = (
+    "# 长期记忆\n\n"
+    "这个文件记录跨轮次要记住的东西（用户偏好、项目约定、已经确定的结论）。\n"
+    "只写真正需要长期保留的内容 —— 写进来的每一句都会进每轮的提示词。\n"
+)
+
+
+def _ensure_memory_files(workspace: Path, sources: list[str]) -> None:
+    """确保记忆文件存在。
+
+    记忆是"**这个文件**"而不是数据库里的某条记录 —— agent 自己就能改它，
+    改完下一轮就生效。文件不存在时要先建一个空壳，否则记忆中间件读不到内容。
+    """
+    root = Path(workspace)
+    for source in sources:
+        name = source.strip("/")
+        if not name:
+            continue
+        target = root / name
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(_MEMORY_TEMPLATE, encoding="utf-8")
+
+
+def _interrupt_on(
+    specs: list[CapabilitySpec],
+    trust_mode: str,
+    allowed_tool_keys: set[str] | None,
+) -> dict[str, bool]:
+    """算出"哪些工具要人工审批"。
+
+    两部分：deepAgents 的文件工具按**风险等级 + 信任模式**算；我们自己的工具
+    按声明的权限要求算（声明写 confirm / admin 就是要人批）。
+    """
+    names = {name: True for name in approval_tool_names(trust_mode)}
+    for spec in specs:
+        if spec.kind != "tool" or not spec.enabled:
+            continue
+        if allowed_tool_keys is not None and spec.key not in allowed_tool_keys:
+            continue
+        if spec.permission in ("confirm", "admin"):
+            names[spec.key] = True
+    return names
+
+
+def _general_subagent(
+    *,
+    governance: CapabilityMiddleware,
+    interrupt_on: dict[str, bool],
+    model: BaseChatModel | None,
+) -> list[Any]:
+    """我们自己的通用子代理。
+
+    **为什么不用 deepAgents 自带的那个**：它的中间件是按默认槽位继承的，
+    我们的 ``CapabilityMiddleware`` 不在里面 —— 子代理的工具调用就不会经过
+    风险判定和留痕。所以这里显式声明一份，让它带上同一套治理。
+    """
+    spec: dict[str, Any] = {
+        "name": GENERAL_SUBAGENT_NAME,
+        "description": GENERAL_SUBAGENT_DESCRIPTION,
+        "system_prompt": GENERAL_SUBAGENT_PROMPT,
+        "middleware": [governance, TodoListMiddleware()],
+    }
+    if interrupt_on:
+        spec["interrupt_on"] = interrupt_on
+    if model is not None:
+        spec["model"] = model
+    return [spec]
 
 
 def _default_model() -> BaseChatModel:

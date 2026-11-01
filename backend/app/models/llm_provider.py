@@ -31,6 +31,11 @@ class LLMProvider(Base):
     api_key_masked: Mapped[str] = mapped_column(String(32), default="", nullable=False)
     default_model: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     available_models: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    # 向量化模型名（空 = 这条配置不参与向量化）。绝大多数厂商的对话与向量化
+    # 接口在同一个 base_url 上，所以复用这一条配置即可，不必再单独建一套
+    embedding_model: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    # 向量维度（探测出来的），用于建集合时校验
+    embedding_dim: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     temperature: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     max_tokens: Mapped[int] = mapped_column(Integer, default=4096, nullable=False)
     timeout: Mapped[int] = mapped_column(Integer, default=60, nullable=False)

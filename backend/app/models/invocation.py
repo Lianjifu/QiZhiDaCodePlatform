@@ -38,6 +38,14 @@ TERMINAL_STATUSES = (
     STATUS_BLOCKED,
 )
 
+# 人工已经处理完的状态（无论是批准、拒绝还是取消）。
+DECIDED_STATUSES = (
+    STATUS_APPROVED,
+    STATUS_DENIED,
+    STATUS_CANCELLED,
+    STATUS_EXPIRED,
+)
+
 
 def utcnow() -> datetime:
     return datetime.now(UTC)

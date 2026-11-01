@@ -27,7 +27,11 @@ from app.capabilities.registration.spec import (
 
 
 class ExecutionAdapter(ABC):
-    """执行适配器基类。"""
+    """执行适配器基类。
+
+    适配器只做一件事：**把这一次调用跑完**。超时、重试、幂等、留痕都在流水线里，
+    适配器不操心 —— 它抛错，流水线决定怎么分层、要不要重试。
+    """
 
     source_type: str = ""
 
@@ -38,7 +42,19 @@ class ExecutionAdapter(ABC):
         arguments: dict[str, Any],
         context: ExecutionContext,
     ) -> ExecutionResult:
-        """执行一次能力调用。失败抛 `CapabilityError`。"""
+        """执行一次能力调用。
+
+        Args:
+            spec: 能力声明。
+            arguments: 调用参数。
+            context: 执行上下文。
+
+        Returns:
+            统一格式的执行结果。
+
+        Raises:
+            CapabilityError: 执行失败（错误码决定这一类失败怎么处理）。
+        """
 
 
 class BuiltinAdapter(ExecutionAdapter):
@@ -52,6 +68,11 @@ class BuiltinAdapter(ExecutionAdapter):
         arguments: dict[str, Any],
         context: ExecutionContext,
     ) -> ExecutionResult:
+        """构造并调用内置能力。
+
+        同步实现丢到线程池里跑 —— 文件读写这类操作是阻塞的，直接在事件循环里
+        调用会把整个服务卡住。
+        """
         started = time.perf_counter()
         func = import_factory(spec.locator.get("source") or "")
         try:
@@ -61,8 +82,10 @@ class BuiltinAdapter(ExecutionAdapter):
             else:
                 data = await _to_thread(raw, **arguments)
         except CapabilityError:
+            # 能力自己抛的错已经带好错误码了，原样往上抛
             raise
         except Exception as exc:
+            # 其它异常统一包成 EXECUTION_ERROR：模型不需要知道 Python 的内部细节
             raise CapabilityError(
                 str(exc) or exc.__class__.__name__, code=ErrorCode.EXECUTION_ERROR
             ) from exc
@@ -81,6 +104,16 @@ class HttpAdapter(ExecutionAdapter):
         arguments: dict[str, Any],
         context: ExecutionContext,
     ) -> ExecutionResult:
+        """调用外部 HTTP 接口。
+
+        GET / HEAD / DELETE 的参数进 query string，其余方法的参数进 JSON body
+        —— 跟大多数 REST 接口的约定一致。
+
+        Raises:
+            CapabilityError: URL 模板参数不完整（``INVALID_ARGUMENTS``）、
+                超时（``TIMEOUT``）、网络失败（``NETWORK_ERROR``）、
+                HTTP 4xx/5xx（``HTTP_ERROR``；5xx 可重试，4xx 重试没用）。
+        """
         started = time.perf_counter()
         locator = spec.locator or {}
         method = str(locator.get("method") or "GET").upper()
@@ -92,6 +125,7 @@ class HttpAdapter(ExecutionAdapter):
         import httpx
 
         try:
+            # URL 里的 {占位符} 用模型给的参数替换
             final_url = url.format(**arguments) if "{" in url else url
         except (KeyError, IndexError) as exc:
             raise CapabilityError(
@@ -123,6 +157,7 @@ class HttpAdapter(ExecutionAdapter):
         elapsed = int((time.perf_counter() - started) * 1000)
         text = response.text
         if response.status_code >= 400:
+            # 5xx 是服务端的毛病，重试可能有用；4xx 是请求本身的问题，重试没用
             raise CapabilityError(
                 f"HTTP {response.status_code}",
                 code=ErrorCode.HTTP_ERROR,
@@ -150,6 +185,12 @@ class McpAdapter(ExecutionAdapter):
         arguments: dict[str, Any],
         context: ExecutionContext,
     ) -> ExecutionResult:
+        """调用 MCP server 上的工具。
+
+        Raises:
+            CapabilityError: server 不可用或工具找不到（``CAPABILITY_NOT_FOUND``）、
+                连接失败（``NETWORK_ERROR``）、调用出错（``EXECUTION_ERROR``）。
+        """
         from app.capabilities.mcp_client import MCPError, MCPManager
 
         started = time.perf_counter()
@@ -178,6 +219,7 @@ class McpAdapter(ExecutionAdapter):
         return _to_result({"content": content}, elapsed)
 
 
+# 三种执行方式各一个适配器实例（适配器本身无状态，可以共用）
 _ADAPTERS: dict[str, ExecutionAdapter] = {
     SOURCE_BUILTIN: BuiltinAdapter(),
     SOURCE_HTTP: HttpAdapter(),
@@ -186,7 +228,11 @@ _ADAPTERS: dict[str, ExecutionAdapter] = {
 
 
 def get_adapter(source_type: str) -> ExecutionAdapter:
-    """按执行方式取适配器。"""
+    """按执行方式取适配器。
+
+    Raises:
+        ValueError: 执行方式不认识 —— 说明声明里写了不支持的 ``source_type``。
+    """
     adapter = _ADAPTERS.get(source_type)
     if adapter is None:
         raise ValueError(f"不支持的执行方式: {source_type}")
@@ -197,7 +243,14 @@ def get_adapter(source_type: str) -> ExecutionAdapter:
 
 
 def import_factory(source: str):
-    """按 "模块:函数" 导入工厂函数。"""
+    """按 "模块:函数" 导入工厂函数。
+
+    Raises:
+        ValueError: 格式不对，或模块里没有这个属性。
+
+    注意：这个函数**只做导入**，不做白名单校验 —— 白名单在注册层
+    （``registration/builtin``）里，schema 校验层会挡住越界的 source。
+    """
     module_name, _, attr = source.partition(":")
     if not module_name or not attr:
         raise ValueError(f"非法的能力来源: {source}")
@@ -209,6 +262,7 @@ def import_factory(source: str):
 
 
 def _is_async(func: Any) -> bool:
+    """是不是 async 函数。"""
     import inspect
 
     return inspect.iscoroutinefunction(func)
@@ -225,6 +279,7 @@ def _to_result(data: Any, elapsed: int) -> ExecutionResult:
     """把能力的返回值整理成统一结果。
 
     约定：能力返回 dict，其中 ``content`` 是给模型看的文本，其余是结构化数据。
+    返回的不是 dict 时（老能力），把值本身当文本。
     """
     if isinstance(data, dict):
         payload = dict(data)
@@ -243,8 +298,13 @@ def _to_result(data: Any, elapsed: int) -> ExecutionResult:
 
 
 def _render_body(body_template: Any, arguments: dict[str, Any]) -> Any:
-    """渲染请求体模板：字符串值里的 {占位符} 用模型给的参数替换。"""
+    """渲染请求体模板：字符串值里的 {占位符} 用模型给的参数替换。
+
+    替换失败（占位符对不上）就**原样保留**那个字符串 —— 总比整次请求失败好，
+    服务端大概率会给出更具体的报错。
+    """
     if body_template is None:
+        # 没写 body 模板 → 整个参数当 body
         return arguments
     if isinstance(body_template, dict):
         rendered = {}

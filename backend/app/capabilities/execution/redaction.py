@@ -22,13 +22,23 @@ _DEFAULT_PATTERNS: tuple[str, ...] = (
     r"(?i)\b(password|passwd|secret|api[_-]?key|access[_-]?token)\b\s*[:=]\s*\S+",
 )
 
+# 掩码：只标出"这里原来有东西"，不留下任何原文片段
 _MASK = "***"
 
+# 预编译一次：脱敏在每次调用留痕时都会跑，编译不该重复做
 _compiled: list[re.Pattern[str]] = [re.compile(pattern) for pattern in _DEFAULT_PATTERNS]
 
 
 def redact_text(text: str, extra_patterns: tuple[str, ...] = ()) -> str:
-    """把文本里的凭据替换成掩码。"""
+    """把文本里的凭据替换成掩码。
+
+    Args:
+        text: 原始文本。
+        extra_patterns: 额外的正则（配置里自定义的），格式写错就跳过。
+
+    Returns:
+        脱敏后的文本。
+    """
     if not text:
         return text
     result = text
@@ -43,7 +53,10 @@ def redact_text(text: str, extra_patterns: tuple[str, ...] = ()) -> str:
 
 
 def redact(value: Any, extra_patterns: tuple[str, ...] = ()) -> Any:
-    """递归脱敏：dict / list / str 逐层处理。"""
+    """递归脱敏：dict / list / str 逐层处理。
+
+    只认容器和字符串 —— 数字、布尔这些没有凭据可言，原样返回。
+    """
     if isinstance(value, str):
         return redact_text(value, extra_patterns)
     if isinstance(value, dict):

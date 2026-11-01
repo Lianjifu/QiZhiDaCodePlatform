@@ -23,6 +23,11 @@ class LLMProviderBase(BaseModel):
     )
     default_model: str = Field(default="", max_length=64, description="默认模型名")
     available_models: list[str] = Field(default_factory=list, description="可选模型列表")
+    embedding_model: str = Field(
+        default="",
+        max_length=128,
+        description="向量化模型名，留空表示这条配置不参与向量化",
+    )
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1, le=1_000_000)
     timeout: int = Field(default=60, ge=1, le=3600)
@@ -53,6 +58,7 @@ class LLMProviderUpdate(BaseModel):
     api_key: str | None = Field(default=None, max_length=512)
     default_model: str | None = Field(default=None, max_length=64)
     available_models: list[str] | None = None
+    embedding_model: str | None = Field(default=None, max_length=128)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
     timeout: int | None = Field(default=None, ge=1, le=3600)
@@ -79,6 +85,8 @@ class LLMProviderOut(BaseModel):
     base_url: str | None
     default_model: str
     available_models: list[str]
+    embedding_model: str = Field(default="", description="向量化模型名")
+    embedding_dim: int = Field(default=0, description="向量维度")
     temperature: float
     max_tokens: int
     timeout: int

@@ -20,7 +20,11 @@ from app.capabilities.registration.validator import (
 
 
 def find_spec(specs: list[CapabilitySpec], key: str) -> CapabilitySpec | None:
-    """按 key 找一条可执行的声明。"""
+    """按 key 找一条可执行的声明。
+
+    只认 ``kind == tool`` 的成员 —— mcp 是通道、skill 是组合，都不能被
+    模型当工具直接调。
+    """
     for spec in specs:
         if spec.kind == KIND_TOOL and spec.key == key:
             return spec
@@ -48,6 +52,10 @@ def resolve(
 ) -> CapabilityIntent:
     """把一次 tool call 翻译成意图。
 
+    检查顺序是有意的，从便宜到贵：先看能力存不存在 → 停用没有 → 在不在允许集里
+    → 最后才做 schema 校验。前三步都是内存里的集合查询，几乎不花钱；
+    schema 校验要跑一遍 JSON Schema 校验器。
+
     Args:
         tool_call: 模型产出的 ``{"name": ..., "args": {...}}``。
         specs: 统一能力清单。
@@ -57,8 +65,13 @@ def resolve(
         allowed_keys: 本次允许的能力集；超出范围的调用在这里就被挡住。
         validate: 是否做前置参数校验。
 
+    Returns:
+        绑定了声明与策略快照的 ``CapabilityIntent``。
+
     Raises:
-        CapabilityError: 能力不存在、不在允许集内，或参数不符合声明。
+        CapabilityError: 能力不存在（``CAPABILITY_NOT_FOUND``）、已停用或
+            不在允许集内（``PERMISSION_DENIED``）、参数不符合声明
+            （``SCHEMA_INVALID``，可重试 —— 模型改对参数就能成）。
     """
     name = str(tool_call.get("name") or "")
     spec = find_spec(specs, name)
@@ -67,6 +80,7 @@ def resolve(
     if not spec.enabled:
         raise CapabilityError(f"能力 {name} 已停用", code=ErrorCode.PERMISSION_DENIED)
     if allowed_keys is not None and name not in allowed_keys:
+        # 不在本次允许集内 = 这次会话根本没给模型这个工具
         raise CapabilityError(
             f"能力 {name} 不在本次允许的能力集内",
             code=ErrorCode.PERMISSION_DENIED,
@@ -77,6 +91,7 @@ def resolve(
         try:
             validate_arguments(spec.input_schema, arguments)
         except SchemaValidationError as exc:
+            # 标成可重试：这类失败模型改对参数就能成，值得再试一次
             raise CapabilityError(
                 f"调用 {name} 的参数不合法：{exc}",
                 code=ErrorCode.SCHEMA_INVALID,

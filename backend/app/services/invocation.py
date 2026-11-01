@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.pipeline import execute
+from app.capabilities.execution.redaction import redact
 from app.capabilities.intent.intent import CapabilityIntent, compute_idempotency_key
 from app.capabilities.registration.registry import CapabilityRegistry
 from app.core.config import settings
@@ -110,11 +111,18 @@ class InvocationService:
         result = await execute(intent, context)
 
         # 审批动作本身也留痕：这条记录标记为"已批准"，
-        # 真正执行的结果由执行层另写一条调用记录
+        # 真正执行的结果由执行层另写一条调用记录。
+        # 但**执行结果要回填到这条记录上** —— 审计时一眼能看到"这条挂起的
+        # 调用最后跑成什么样了"。
         record.status = STATUS_APPROVED
         record.decided_at = datetime.now(UTC)
         record.finished_at = datetime.now(UTC)
         record.decision_reason = (record.decision_reason or "") + "；已人工批准"
+        record.result = redact(result.to_dict())
+        record.error_code = result.error.code.value if result.error else None
+        record.error_message = result.error.message if result.error else None
+        record.duration_ms = result.duration_ms
+        record.stages = list(result.stages or [])
         await self.session.commit()
 
         return CapabilityInvokeOut(

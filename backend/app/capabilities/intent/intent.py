@@ -23,34 +23,45 @@ from app.capabilities.registration.spec import CapabilitySpec
 
 @dataclass
 class CapabilityIntent:
-    """一次能力调用的意图。意图层与执行层之间的唯一契约。"""
+    """一次能力调用的意图。意图层与执行层之间的唯一契约。
 
-    capability_key: str
-    arguments: dict[str, Any]
-    spec: CapabilitySpec
+    意图是**一次**调用，不是多步计划 —— 多步计划由模型的 ReAct 循环产生，
+    意图层只负责把其中一步翻译成可执行、可审计、可拦截的形态。
 
-    # 上下文
-    thread_id: str = ""
-    workspace: Path | None = None
+    里面的策略字段是**快照**：生成意图那一刻的判定，执行层不再重新推导。
+    这样"审批时看到的风险"和"执行时的风险"必然是同一个，不会中途变。
+    """
 
-    # 策略快照（生成意图那一刻的判定，执行层不再重新推导）
-    trust_mode: str = "balanced"
-    idempotency_key: str | None = None
-    allowed_keys: set[str] | None = None
+    capability_key: str  # 要调的能力 key
+    arguments: dict[str, Any]  # 调用参数（已去掉值为 None 的项）
+    spec: CapabilitySpec  # 绑定的声明（契约 + 策略）
+
+    # ---- 上下文 ----
+    thread_id: str = ""  # 会话 ID，进幂等键
+    workspace: Path | None = None  # 本次执行的工作区
+
+    # ---- 策略快照（生成意图那一刻的判定，执行层不再重新推导）----
+    trust_mode: str = "balanced"  # 会话信任模式快照
+    idempotency_key: str | None = None  # 幂等去重键；不幂等的能力没有这个键
+    allowed_keys: set[str] | None = None  # 本次允许的能力集；None 表示不限制
     # 已经人工批准，跳过审批阶段（审批接口执行挂起调用时用）
     pre_approved: bool = False
-    requested_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    requested_at: datetime = field(default_factory=lambda: datetime.now(UTC))  # 意图生成时间
 
     def __post_init__(self) -> None:
         # 未提供的可选参数（None）直接去掉，让能力实现用自己的默认值。
-        # 不这么做的话，`list_files(path=None)` 会在路径校验里炸掉，
-        # 而不是像 `list_files()` 那样列当前目录。
+        # 不这么做的话，`ls(path=None)` 会在路径校验里炸掉，
+        # 而不是像 `ls()` 那样列工作区根目录。
         self.arguments = {
             key: value for key, value in (self.arguments or {}).items() if value is not None
         }
 
     def fingerprint(self) -> str:
-        """意图指纹，用于去重与审计。"""
+        """意图指纹，用于去重与审计。
+
+        只覆盖能力 key 和参数 —— 不含时间戳，所以同样的调用指纹相同，
+        可以用来判断"这是不是同一次调用"。
+        """
         payload = json.dumps(
             {"key": self.capability_key, "args": self.arguments},
             sort_keys=True,
@@ -60,7 +71,11 @@ class CapabilityIntent:
         return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
     def to_dict(self) -> dict[str, Any]:
-        """可落库的意图快照（参数原样，由落库阶段负责脱敏）。"""
+        """可落库的意图快照（参数原样，由落库阶段负责脱敏）。
+
+        注意这里**不做脱敏** —— 审批时要按原始参数执行，脱敏了就执行不了了。
+        脱敏发生在写 ``invocation`` 表的那一层。
+        """
         return {
             "capability_key": self.capability_key,
             "arguments": dict(self.arguments),
@@ -82,6 +97,14 @@ def compute_idempotency_key(
     盲目去重会把"第二次真的要做的事"给吞掉。
 
     键里带上会话 ID：不同会话的同名调用不该互相命中。
+
+    Args:
+        spec: 能力声明。
+        arguments: 调用参数。
+        thread_id: 会话 ID。
+
+    Returns:
+        幂等键；能力不幂等时返回 ``None``。
     """
     if not spec.annotations.idempotent:
         return None

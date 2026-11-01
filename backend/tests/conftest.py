@@ -11,8 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
-# agent 相关：测试用内存 checkpointer，工作区放临时目录，不污染仓库
-os.environ.setdefault("AGENT_CHECKPOINTER_DB", ":memory:")
+# agent 相关：测试用临时目录里的 checkpointer 文件，工作区放临时目录，不污染仓库。
+# checkpointer 必须落**文件**而不是内存 —— 审批挂起时图停在 checkpoint 里，
+# 恢复审批是**另一次 HTTP 请求**，要用同一个 checkpointer 才能接上。
+os.environ.setdefault(
+    "AGENT_CHECKPOINTER_DB",
+    os.path.join(tempfile.mkdtemp(prefix="qzd-test-ckpt-"), "checkpoints.db"),
+)
 os.environ.setdefault("WORKSPACE_ROOT", os.path.join(tempfile.gettempdir(), "qzd-test-workspace"))
 # API Key 加密主密钥：每个测试会话现生成一把，不依赖本机 .env
 os.environ.setdefault("API_KEY_ENCRYPTION_KEY", Fernet.generate_key().decode())

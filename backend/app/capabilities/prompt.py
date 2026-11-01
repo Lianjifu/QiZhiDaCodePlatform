@@ -19,7 +19,16 @@ def assemble_prompt(
     skills: list[CapabilitySpec] | None = None,
     runtime_notes: list[str] | None = None,
 ) -> str:
-    """组装最终的系统提示词。"""
+    """组装最终的系统提示词。
+
+    Args:
+        base_prompt: 基础提示词（全局常量）。
+        skills: 本次挂载的技能。
+        runtime_notes: 运行时上下文说明（工作区、约束等）。
+
+    Returns:
+        拼好的系统提示词。空块不拼进去，避免出现空标题。
+    """
     parts: list[str] = [base_prompt.strip()] if base_prompt else []
 
     skill_blocks = [block for block in (_skill_block(skill) for skill in skills or []) if block]
@@ -33,7 +42,13 @@ def assemble_prompt(
 
 
 def _skill_block(skill: CapabilitySpec) -> str:
-    """一个技能的知识块。"""
+    """一个技能的知识块。
+
+    块的顺序是有意的：先说"该怎么做"（knowledge），再说"做完检查什么"
+    （checklist）、"不许做什么"（constraints）、"长什么样"（examples）。
+
+    返回空串表示这个技能没有任何知识内容 —— 不往提示词里塞空标题。
+    """
     title = skill.display_name or skill.key
     lines: list[str] = [f"【{title}】"]
     if skill.knowledge:

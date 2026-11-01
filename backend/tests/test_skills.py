@@ -7,12 +7,13 @@ TOOLS = "/api/v1/tools"
 MCP = "/api/v1/mcp-servers"
 SKILLS = "/api/v1/skills"
 
-BUILTIN_SOURCE = "app.capabilities.registration.builtin.fs:make_read_file"
+# 文件类能力已经交给 deepAgents 了，出厂白名单里剩下的入口点用 run_python。
+BUILTIN_SOURCE = "app.capabilities.registration.builtin.sandbox:make_run_python"
 
 
 def _tool_payload(**overrides):
     payload = {
-        "name": "read_workspace_file",
+        "name": "sandbox_python",
         "display_name": "读取文件",
         "description": "读取工作区文件",
         "type": "builtin",
@@ -41,7 +42,7 @@ async def test_list_builtins(client: AsyncClient) -> None:
     resp = await client.get(f"{TOOLS}/builtins")
     assert resp.status_code == 200
     keys = {item["key"] for item in resp.json()["data"]}
-    assert {"read_file", "write_file", "list_files", "run_python"} <= keys
+    assert {"run_python", "web_fetch", "web_search"} <= keys
 
 
 @pytest.mark.asyncio
@@ -69,9 +70,9 @@ async def test_create_and_list_tools(client: AsyncClient) -> None:
     listing = await client.get(TOOLS)
     assert listing.status_code == 200
     names = {item["name"] for item in listing.json()["data"]["items"]}
-    assert "read_workspace_file" in names
+    assert "sandbox_python" in names
     # 出厂内置能力也在清单里（注册层是唯一事实来源）
-    assert "read_file" in names
+    assert "run_python" in names
 
 
 @pytest.mark.asyncio
@@ -141,7 +142,7 @@ async def test_test_builtin_tool_reports_ok(client: AsyncClient) -> None:
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["ok"] is True
-    assert "path" in data["message"]
+    assert "code" in data["message"]
 
 
 # ---------- MCP 服务器 CRUD ----------
@@ -213,7 +214,7 @@ async def test_create_skill_with_tools(client: AsyncClient) -> None:
     assert resp.status_code == 201
     data = resp.json()["data"]
     assert data["tool_ids"] == [tool_id]
-    assert data["tool_names"] == ["read_workspace_file"]
+    assert data["tool_names"] == ["sandbox_python"]
 
 
 @pytest.mark.asyncio
@@ -302,4 +303,4 @@ async def test_agent_can_use_skill_tools(app, client: AsyncClient, session, monk
         json={"message": "读一下文件", "thread_id": "sk1", "skill_ids": [skill_id]},
     )
     assert resp.status_code == 200
-    assert "read_workspace_file" in seen["tools"]
+    assert "sandbox_python" in seen["tools"]

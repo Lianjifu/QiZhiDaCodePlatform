@@ -101,6 +101,25 @@ class Settings(BaseSettings):
     # Azure OpenAI 专用
     azure_openai_api_version: str = "2024-10-21"
 
+    # ---- RAG ----
+    # 分块参数（字符数，不是 token 数）
+    rag_chunk_size: int = 1000
+    rag_chunk_overlap: int = 150
+    # 单篇文档上限（字符）
+    rag_max_document_chars: int = 200000
+    # 检索默认返回条数
+    rag_top_k: int = 8
+    # 融合权重：向量一路、关键词一路
+    rag_vector_weight: float = 1.0
+    rag_keyword_weight: float = 1.0
+    # 向量化环境变量兜底（正式配置走「模型接入配置」表，密钥才有加密存储）
+    rag_embedding_model: str = ""
+    rag_embedding_base_url: str = ""
+    rag_embedding_api_key: str = ""
+    rag_embedding_dim: int = 0
+    rag_embedding_timeout: int = 60
+    rag_embedding_batch_size: int = 32
+
 
 @lru_cache
 def get_settings() -> Settings:

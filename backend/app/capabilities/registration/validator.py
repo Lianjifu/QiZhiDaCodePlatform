@@ -20,7 +20,11 @@ _MAX_MESSAGES = 5
 
 
 class SchemaValidationError(ValueError):
-    """参数不符合声明的 schema。"""
+    """参数不符合声明的 schema。
+
+    消息列表保留成结构化形式（``messages``），是因为调用方要把它转成给模型的
+    分层指令 —— 格式类失败要告诉模型"怎么改"，而不是甩一段堆栈。
+    """
 
     def __init__(self, messages: list[str]) -> None:
         self.messages = messages
@@ -32,6 +36,13 @@ def normalize_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
 
     JSON Schema 里 ``additionalProperties`` 缺省是**允许**多余的，但我们的声明
     语义是"这份 schema 就是全部入参" —— 声明了字段就默认拒绝多余的。
+
+    Args:
+        schema: 声明的 JSON Schema，可以为空。
+
+    Returns:
+        归一化后的 schema；``additionalProperties`` 已经是 True 时原样返回
+        （尊重声明者的显式选择）。
 
     不统一的话会出现很难查的错：校验放行了，能力实现却收到没见过的关键字参数
     直接 TypeError。两层（意图层快速校验、执行层权威校验、给模型看的参数模型）
@@ -53,6 +64,16 @@ def validate_arguments(
     """按 JSON Schema 校验参数。
 
     不符合则抛 `SchemaValidationError`；schema 为空表示这个能力没有约束，直接放过。
+
+    Args:
+        schema: 声明的 ``input_schema``。
+        arguments: 本次调用的参数，可以为空。
+
+    Raises:
+        SchemaValidationError: 参数不符合声明（消息里带出错字段的路径）。
+
+    错误按字段路径排序、再截断到前 5 条 —— 一次给模型几十条错误没有意义，
+    它改不动那么多；剩下的用"另有 N 处"带过。
     """
     schema = normalize_schema(schema)
     if not schema:
@@ -83,6 +104,13 @@ def validate_output(
 
     这里**不**限制多余字段：结果里常带些簿记字段（HTTP 状态、退出码之类），
     契约只该管"声明过的字段对不对"。
+
+    Args:
+        schema: 声明的 ``output_schema``。
+        data: 能力返回的结果。
+
+    Raises:
+        SchemaValidationError: 返回值不符合声明的契约。
     """
     if not schema:
         return

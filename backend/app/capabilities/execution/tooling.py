@@ -30,10 +30,20 @@ async def build_tools(
     specs: list[CapabilitySpec],
     context: ExecutionContext,
     allowed_keys: set[str] | None = None,
+    skip_names: frozenset[str] | set[str] | None = None,
 ) -> list[BaseTool]:
     """把清单里的原子能力变成模型可调用的工具。
 
     单个能力构造失败（配置写错、MCP 连不上）只跳过这一个，不拖垮整个 agent。
+
+    Args:
+        specs: 统一能力清单。
+        context: 执行上下文。
+        allowed_keys: 本次允许的能力集；``None`` 表示全给。
+        skip_names: 这些名字的能力不暴露成工具（deepAgents 已经接管的能力）。
+
+    Returns:
+        可交给 agent 的工具列表。
     """
     tools: list[BaseTool] = []
     for spec in specs:
@@ -41,9 +51,13 @@ async def build_tools(
             continue
         if allowed_keys is not None and spec.key not in allowed_keys:
             continue
+        if skip_names and spec.key in skip_names and spec.origin == "builtin":
+            # 出厂内置的这批由 deepAgents 的文件工具接管，不重复暴露
+            continue
         try:
             tool = await _build_tool(spec, context)
         except Exception as exc:
+            # 一个能力不可用不该让整个 agent 起不来
             logger.warning("能力 %s 不可用，已跳过: %s", spec.key, exc)
             continue
         if tool is not None:
@@ -52,6 +66,7 @@ async def build_tools(
 
 
 async def _build_tool(spec: CapabilitySpec, context: ExecutionContext) -> BaseTool | None:
+    """按来源分派：MCP 走它自己的构造路径（要连 server 拿 schema）。"""
     if spec.source_type == SOURCE_MCP:
         return await _build_mcp_tool(spec, context)
     return _build_generic_tool(spec, context)
@@ -63,6 +78,8 @@ def _build_generic_tool(spec: CapabilitySpec, context: ExecutionContext) -> Base
     args_model = schema_to_model(input_schema, name=f"{spec.key}_input")
 
     async def call(**kwargs: Any) -> str:
+        # 注意：这里**不执行能力**，只构造意图 —— 执行由执行层统一做，
+        # 于是 agent 内部调用和直接调 API 走的是同一条流水线
         intent = CapabilityIntent(
             capability_key=spec.key,
             arguments=dict(kwargs),
@@ -82,7 +99,11 @@ def _build_generic_tool(spec: CapabilitySpec, context: ExecutionContext) -> Base
 
 
 async def _build_mcp_tool(spec: CapabilitySpec, context: ExecutionContext) -> BaseTool | None:
-    """MCP 类型的工具：参数 schema 以 MCP server 侧的声明为准。"""
+    """MCP 类型的工具：参数 schema 以 MCP server 侧的声明为准。
+
+    MCP 工具的参数契约由 server 说了算，不看我们这边的声明 ——
+    两边对不上时以 server 为准，不然调过去一定失败。
+    """
     from app.capabilities.mcp_client import MCPManager
 
     locator = spec.locator or {}
@@ -119,6 +140,7 @@ __all__ = ["build_tools"]
 
 # ---------- 从实现函数签名推断入参 ----------
 
+# Python 注解名 → JSON Schema 类型
 _JSON_TYPES = {
     "str": "string",
     "int": "integer",
@@ -133,7 +155,7 @@ def _json_type(annotation: Any) -> str:
     """Python 注解 → JSON Schema 类型。
 
     内置模块开了 `from __future__ import annotations`，注解拿到的是**字符串**，
-    所以按名字映射。
+    所以按名字映射。认不出来的按 string 处理 —— 宁可宽松点，别把模型挡在门外。
     """
     if isinstance(annotation, str):
         name = annotation.split("[")[0].strip().lower()
@@ -148,6 +170,9 @@ def _derive_input_schema(spec: CapabilitySpec, context: ExecutionContext) -> dic
     注册层声明的 ``input_schema`` 是权威的；但用户自建的内置能力常常不填，
     这时让模型看到一张**空的**参数表是很糟的（它不知道该传什么）。
     从函数签名兜一份，比空白强。
+
+    推断出来的 schema **不带 additionalProperties=False** —— 它只是给模型看的
+    提示，真正生效的约束仍然是执行层按声明做的校验。
     """
     source = spec.locator.get("source") or ""
     if not source:
@@ -156,15 +181,18 @@ def _derive_input_schema(spec: CapabilitySpec, context: ExecutionContext) -> dic
         func = import_factory(source)(context)
         signature = inspect.signature(func)
     except Exception:
+        # 推不出来就返回空 schema，不是致命问题
         return {}
 
     properties: dict[str, Any] = {}
     required: list[str] = []
     for name, parameter in signature.parameters.items():
         if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+            # *args / **kwargs 不是模型该传的参数
             continue
         properties[name] = {"type": _json_type(parameter.annotation)}
         if parameter.default is inspect.Parameter.empty:
+            # 没有默认值的参数是必填
             required.append(name)
     if not properties:
         return {}

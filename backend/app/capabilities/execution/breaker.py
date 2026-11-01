@@ -27,19 +27,27 @@ DEFAULT_LATENCY_MS = 5000.0
 
 @dataclass
 class _Window:
-    """单个能力的滑动窗口样本。"""
+    """单个能力的滑动窗口样本。
+
+    样本是 ``(时间戳, 是否失败)`` 的队列；``opened_until`` 是熔断打开的截止
+    时间（0 表示没打开）。
+    """
 
     samples: deque[tuple[float, bool]] = field(default_factory=deque)
     opened_until: float = 0.0
 
     def prune(self, now: float, window: float) -> None:
+        """丢掉窗口外的旧样本。"""
         threshold = now - window
         while self.samples and self.samples[0][0] < threshold:
             self.samples.popleft()
 
 
 class CircuitBreaker:
-    """滑动窗口熔断器。"""
+    """滑动窗口熔断器。
+
+    按能力维度（key）分别统计，互不影响 —— 一个 HTTP 能力挂了不该影响文件能力。
+    """
 
     def __init__(
         self,
@@ -49,11 +57,11 @@ class CircuitBreaker:
         cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS,
         latency_ms: float = DEFAULT_LATENCY_MS,
     ) -> None:
-        self.window_seconds = window_seconds
-        self.min_samples = min_samples
-        self.error_rate = error_rate
-        self.cooldown_seconds = cooldown_seconds
-        self.latency_ms = latency_ms
+        self.window_seconds = window_seconds  # 滑动窗口长度（秒）
+        self.min_samples = min_samples  # 样本数够多少才开始判定
+        self.error_rate = error_rate  # 错误率阈值
+        self.cooldown_seconds = cooldown_seconds  # 熔断打开后的冷却时间
+        self.latency_ms = latency_ms  # 超过这个耗时就记一次"劣化"
         self._windows: dict[str, _Window] = {}
         self._lock = threading.Lock()
 
@@ -73,13 +81,18 @@ class CircuitBreaker:
             return False
 
     def record(self, key: str, ok: bool, duration_ms: int) -> None:
-        """记一次调用结果，必要时打开熔断。"""
+        """记一次调用结果，必要时打开熔断。
+
+        慢调用也算失败的一部分：调用成功但慢到不可接受，对 agent 来说
+        跟失败没区别 —— 一样会把时间耗光。
+        """
         now = time.monotonic()
         with self._lock:
             window = self._windows.setdefault(key, _Window())
             window.prune(now, self.window_seconds)
             degraded = ok and duration_ms > self.latency_ms
             window.samples.append((now, not ok or degraded))
+            # 样本不够就不判定 —— 一次失败就熔断太敏感
             if len(window.samples) < self.min_samples:
                 return
             failures = sum(1 for _ts, failed in window.samples if failed)
@@ -114,7 +127,11 @@ _breaker_lock = threading.Lock()
 
 
 def get_breaker() -> CircuitBreaker:
-    """全局熔断器（按配置构造一次）。"""
+    """全局熔断器（按配置构造一次）。
+
+    双重检查锁：读一次全局变量在无锁情况下已经能拿到绝大多数情况，
+    加锁只在第一次构造时才有意义。
+    """
     global _breaker
     if _breaker is None:
         with _breaker_lock:

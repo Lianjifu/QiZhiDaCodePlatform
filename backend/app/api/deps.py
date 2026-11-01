@@ -8,6 +8,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
+from app.rag.service import RagService
 from app.services.agent import AgentService
 from app.services.capability import CapabilityService
 from app.services.example import ExampleService
@@ -58,3 +59,8 @@ def get_capability_service(session: DbSession) -> CapabilityService:
 def get_invocation_service(session: DbSession) -> InvocationService:
     """构造调用记录（审批）服务实例。"""
     return InvocationService(session)
+
+
+def get_rag_service(session: DbSession) -> RagService:
+    """构造 RAG 服务实例。"""
+    return RagService(session)

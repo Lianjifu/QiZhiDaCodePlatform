@@ -12,6 +12,7 @@ from app.api.v1 import (
     invocation,
     llm_provider,
     mcp_server,
+    rag,
     skill,
     tool,
 )
@@ -26,3 +27,4 @@ api_router.include_router(tool.router)
 api_router.include_router(skill.router)
 api_router.include_router(capability.router)
 api_router.include_router(invocation.router)
+api_router.include_router(rag.router)

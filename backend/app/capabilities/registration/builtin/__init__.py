@@ -4,7 +4,7 @@
 `模块:工厂函数` —— 否则任何能调工具管理接口的人都能让平台 import 并执行任意
 Python 代码（等价于远程代码执行）。
 
-这里登记的规格会在启动时**同步进数据库**（见 `app.capabilities.registration.registry`），
+这里登记的规格会在启动时**同步进数据库**（见 `app/capabilities/registration.registry`），
 之后数据库就是唯一事实来源：运营可以改描述、调参数、单独禁用某个内置能力，
 而代码里的这份清单降级为"出厂源"。
 
@@ -15,7 +15,10 @@ Python 代码（等价于远程代码执行）。
 其余字段是给程序看的。执行层按 `output_schema` 校验，并原样保留 `content`，
 所以模型看到的输出和以前一样。
 
-工具形态参考 Claude Code 的内置工具：文件读写改查移拷、执行命令、联网抓取与搜索。
+**文件与命令类工具不在这里** —— 它们由 deepAgents 的文件系统中间件提供
+（``ls`` / ``read_file`` / ``write_file`` / ``edit_file`` / ``delete`` / ``glob`` /
+``grep`` / ``execute``），backend 指向我们的工作区与 docker 沙箱。
+这里只留 deepAgents 没有等价物的那几个。
 """
 
 from __future__ import annotations
@@ -33,28 +36,36 @@ from app.capabilities.registration.policy import (
 
 @dataclass(frozen=True)
 class BuiltinSpec:
-    """内置能力的出厂规格。"""
+    """内置能力的出厂规格。
 
-    key: str
-    source: str  # "模块:工厂函数"
-    display_name: str
-    description: str
-    tags: tuple[str, ...] = ()
-    permission: str = PermissionLevel.NONE
-    risk: str = RiskLevel.READ
-    timeout_s: int = 30
-    retry: RetryPolicy = field(default_factory=RetryPolicy)
-    annotations: Annotations = field(default_factory=Annotations)
-    input_schema: dict[str, Any] = field(default_factory=dict)
-    output_schema: dict[str, Any] | None = None
+    冻结的（frozen）—— 出厂规格是常量，不该被谁在运行时改掉。
+    运营想改某个内置能力的描述或风险等级，改数据库去；启动同步时只**补空字段**，
+    不会用这份常量去覆盖。
 
+    字段含义见 ``app/capabilities/registration/spec.py`` 的 ``CapabilitySpec``
+    （两者字段一一对应，只是这个不落库）。
+    """
 
-_PATH = {"type": "string", "description": "相对当前目录的路径"}
-_SOURCE = {"type": "string", "description": "源路径，相对当前目录"}
-_DEST = {"type": "string", "description": "目标路径，相对当前目录"}
+    key: str  # 工具名，模型调用时用的名字
+    source: str  # "模块:工厂函数" —— 必须登记在下面的白名单里
+    display_name: str  # 给人看的名字
+    description: str  # 给模型看的说明：检索和选型都靠它
+    tags: tuple[str, ...] = ()  # 领域标签，检索命中标签权重更高
+    permission: str = PermissionLevel.NONE  # 权限要求
+    risk: str = RiskLevel.READ  # 风险等级
+    timeout_s: int = 30  # 单次调用上限（秒）
+    retry: RetryPolicy = field(default_factory=RetryPolicy)  # 重试策略
+    annotations: Annotations = field(default_factory=Annotations)  # 工具自述性质
+    input_schema: dict[str, Any] = field(default_factory=dict)  # 入参契约
+    output_schema: dict[str, Any] | None = None  # 出参契约
 
 
 def _obj(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
+    """构造一个对象类型的 JSON Schema。
+
+    固定 ``additionalProperties: False`` —— 声明了什么就只收什么，
+    模型多传一个参数不该让能力实现直接 TypeError。
+    """
     return {
         "type": "object",
         "properties": properties,
@@ -63,9 +74,7 @@ def _obj(properties: dict[str, Any], required: list[str] | None = None) -> dict[
     }
 
 
-_READ_ONLY = Annotations(read_only=True, idempotent=True)
-_WRITE = Annotations(idempotent=True)
-_MUTATING = Annotations()
+# 执行类：可能破坏，也可能访问外部世界
 _EXEC = Annotations(destructive=True, open_world=True)
 # 联网类是只读 GET：同样的请求重发一次结果不变，可以安全重试
 _OPEN = Annotations(read_only=True, idempotent=True, open_world=True)
@@ -78,286 +87,21 @@ _RETRY_NETWORK = RetryPolicy(max_attempts=3, backoff_s=1.0, retry_on=("NETWORK_E
 BUILTIN_SPECS: dict[str, BuiltinSpec] = {
     spec.key: spec
     for spec in (
-        # ---------- 文件 ----------
-        BuiltinSpec(
-            key="read_file",
-            source="app.capabilities.registration.builtin.fs:make_read_file",
-            display_name="读取文件",
-            description="读取工作区内的文本文件内容，带行号。path 是相对于当前目录的路径。",
-            tags=("文件", "只读"),
-            risk=RiskLevel.READ,
-            timeout_s=10,
-            annotations=_READ_ONLY,
-            input_schema=_obj(
-                {
-                    "path": _PATH,
-                    "offset": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "起始行号（从 0 开始）",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "读取多少行，0 表示到文件末尾",
-                    },
-                },
-                ["path"],
-            ),
-            output_schema=_obj(
-                {
-                    "content": {"type": "string"},
-                    "line_count": {"type": "integer"},
-                    "truncated": {"type": "boolean"},
-                },
-                ["content", "line_count"],
-            ),
-        ),
-        BuiltinSpec(
-            key="write_file",
-            source="app.capabilities.registration.builtin.fs:make_write_file",
-            display_name="写入文件",
-            description="把内容写入工作区内的文件（覆盖写）。path 是相对于当前目录的路径。",
-            tags=("文件", "写入"),
-            permission=PermissionLevel.NONE,
-            risk=RiskLevel.WRITE,
-            timeout_s=10,
-            annotations=_WRITE,
-            input_schema=_obj(
-                {
-                    "path": _PATH,
-                    "content": {"type": "string", "description": "要写入的文本内容"},
-                },
-                ["path", "content"],
-            ),
-            output_schema=_obj(
-                {
-                    "content": {"type": "string"},
-                    "path": {"type": "string"},
-                    "bytes": {"type": "integer"},
-                    "created": {"type": "boolean"},
-                },
-                ["content", "path", "bytes"],
-            ),
-        ),
-        BuiltinSpec(
-            key="edit_file",
-            source="app.capabilities.registration.builtin.fs:make_edit_file",
-            display_name="编辑文件",
-            description=(
-                "把文件里的 old_string 精确替换成 new_string。"
-                "old_string 必须唯一，否则会报错并列出所有匹配位置。"
-            ),
-            tags=("文件", "编辑"),
-            risk=RiskLevel.WRITE,
-            timeout_s=10,
-            annotations=_WRITE,
-            input_schema=_obj(
-                {
-                    "path": _PATH,
-                    "old_string": {"type": "string", "description": "要被替换的原文"},
-                    "new_string": {"type": "string", "description": "替换后的新内容"},
-                    "replace_all": {
-                        "type": "boolean",
-                        "description": "是否替换全部匹配（默认只替换一处）",
-                    },
-                },
-                ["path", "old_string", "new_string"],
-            ),
-            output_schema=_obj(
-                {
-                    "content": {"type": "string"},
-                    "path": {"type": "string"},
-                    "replaced_count": {"type": "integer"},
-                },
-                ["content", "path"],
-            ),
-        ),
-        BuiltinSpec(
-            key="move_file",
-            source="app.capabilities.registration.builtin.fs:make_move_file",
-            display_name="移动文件",
-            description=(
-                "移动或重命名文件/目录。source 与 destination 都相对于当前目录；"
-                "destination 是已存在的目录时移动到该目录下，否则就是目标路径。"
-            ),
-            tags=("文件", "移动"),
-            risk=RiskLevel.WRITE,
-            timeout_s=10,
-            # 不幂等：第一次成功后源已不存在，重试必然失败
-            annotations=_MUTATING,
-            input_schema=_obj(
-                {"source": _SOURCE, "destination": _DEST},
-                ["source", "destination"],
-            ),
-            output_schema=_obj(
-                {
-                    "content": {"type": "string"},
-                    "source": {"type": "string"},
-                    "destination": {"type": "string"},
-                },
-                ["content", "source", "destination"],
-            ),
-        ),
-        BuiltinSpec(
-            key="copy_file",
-            source="app.capabilities.registration.builtin.fs:make_copy_file",
-            display_name="复制文件",
-            description=(
-                "复制文件或目录。source 与 destination 都相对于当前目录；"
-                "destination 是已存在的目录时复制到该目录下，否则就是目标路径。"
-            ),
-            tags=("文件", "复制"),
-            risk=RiskLevel.WRITE,
-            timeout_s=10,
-            annotations=_WRITE,
-            input_schema=_obj(
-                {"source": _SOURCE, "destination": _DEST},
-                ["source", "destination"],
-            ),
-            output_schema=_obj(
-                {
-                    "content": {"type": "string"},
-                    "source": {"type": "string"},
-                    "destination": {"type": "string"},
-                },
-                ["content", "source", "destination"],
-            ),
-        ),
-        BuiltinSpec(
-            key="make_dir",
-            source="app.capabilities.registration.builtin.fs:make_make_dir",
-            display_name="创建目录",
-            description="创建目录（含多级父目录），目录已存在也算成功。path 相对于当前目录。",
-            tags=("文件", "目录"),
-            risk=RiskLevel.WRITE,
-            timeout_s=10,
-            annotations=_WRITE,
-            input_schema=_obj({"path": _PATH}, ["path"]),
-            output_schema=_obj(
-                {
-                    "content": {"type": "string"},
-                    "path": {"type": "string"},
-                    "created": {"type": "boolean"},
-                },
-                ["content", "path"],
-            ),
-        ),
-        BuiltinSpec(
-            key="change_directory",
-            source="app.capabilities.registration.builtin.fs:make_change_directory",
-            display_name="切换目录",
-            description=(
-                "切换当前工作目录，之后所有相对路径都相对于新目录解析。"
-                'path 相对于当前目录："." 是当前目录，"~" 是工作区根目录，'
-                '".." 往上一级。'
-            ),
-            tags=("文件", "目录"),
-            risk=RiskLevel.READ,
-            timeout_s=5,
-            annotations=_READ_ONLY,
-            input_schema=_obj({"path": _PATH}, ["path"]),
-            output_schema=_obj(
-                {"content": {"type": "string"}, "cwd": {"type": "string"}},
-                ["content", "cwd"],
-            ),
-        ),
-        BuiltinSpec(
-            key="list_files",
-            source="app.capabilities.registration.builtin.fs:make_list_files",
-            display_name="列出文件",
-            description="列出工作区内某个目录下的文件和子目录。path 默认为当前目录。",
-            tags=("文件", "只读"),
-            risk=RiskLevel.READ,
-            timeout_s=10,
-            annotations=_READ_ONLY,
-            input_schema=_obj({"path": _PATH}),
-            output_schema=_obj(
-                {
-                    "content": {"type": "string"},
-                    "entries": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "name": {"type": "string"},
-                                "is_dir": {"type": "boolean"},
-                                "size": {"type": "integer"},
-                            },
-                        },
-                    },
-                },
-                ["content", "entries"],
-            ),
-        ),
-        BuiltinSpec(
-            key="glob",
-            source="app.capabilities.registration.builtin.fs:make_glob",
-            display_name="按模式找文件",
-            description="按 glob 模式查找文件，返回相对工作区根目录的路径列表。例如 **/*.py。",
-            tags=("文件", "查找"),
-            risk=RiskLevel.READ,
-            timeout_s=15,
-            annotations=_READ_ONLY,
-            input_schema=_obj(
-                {
-                    "pattern": {"type": "string", "description": "glob 模式，例如 **/*.py"},
-                    "path": {"type": "string", "description": "在哪个目录下找，默认当前目录"},
-                },
-                ["pattern"],
-            ),
-            output_schema=_obj(
-                {
-                    "content": {"type": "string"},
-                    "matches": {"type": "array", "items": {"type": "string"}},
-                },
-                ["content", "matches"],
-            ),
-        ),
-        BuiltinSpec(
-            key="grep",
-            source="app.capabilities.registration.builtin.fs:make_grep",
-            display_name="搜索文件内容",
-            description="在工作区里按正则搜索文件内容，返回 文件:行号:内容 的形式。",
-            tags=("文件", "搜索"),
-            risk=RiskLevel.READ,
-            timeout_s=20,
-            annotations=_READ_ONLY,
-            input_schema=_obj(
-                {
-                    "pattern": {"type": "string", "description": "正则表达式"},
-                    "path": {"type": "string", "description": "在哪个目录下搜，默认当前目录"},
-                    "glob_pattern": {
-                        "type": "string",
-                        "description": "限定搜索哪些文件，例如 *.py",
-                    },
-                },
-                ["pattern"],
-            ),
-            output_schema=_obj(
-                {
-                    "content": {"type": "string"},
-                    "matches": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "file": {"type": "string"},
-                                "line": {"type": "integer"},
-                                "text": {"type": "string"},
-                            },
-                        },
-                    },
-                },
-                ["content", "matches"],
-            ),
-        ),
         # ---------- 执行 ----------
+        # run_python 的约定：
+        #
+        # - 权限 confirm、风险 execute：``balanced`` 信任模式下每次都要人工确认；
+        # - 一律进沙箱（docker 模式：断网、限资源、只挂载工作区）；
+        # - 超时 60 秒，执行层还会再套一层兜底超时；
+        # - 声明了超时重试，但**实际不会重试** —— 这个能力不幂等，
+        #   超时只说明"不知道执行完没有"，重跑可能把副作用做两遍。
+        #   执行层会把这类超时降级成不可重试，并在错误信息里写明
+        #   "不要重复执行同样的命令"。
         BuiltinSpec(
             key="run_python",
             source="app.capabilities.registration.builtin.sandbox:make_run_python",
             display_name="执行 Python",
-            description="在工作区的沙箱里执行一段 Python 代码，返回退出码、标准输出和标准错误。",
+            description="在工作区的沙箱里执行一段 Python 代码，返回退出码和输出。",
             tags=("代码", "执行"),
             permission=PermissionLevel.CONFIRM,
             risk=RiskLevel.EXECUTE,
@@ -371,41 +115,20 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
             output_schema=_obj(
                 {
                     "content": {"type": "string"},
-                    "stdout": {"type": "string"},
-                    "stderr": {"type": "string"},
+                    "output": {"type": "string"},
                     "exit_code": {"type": "integer"},
                     "duration_ms": {"type": "integer"},
                 },
-                ["content", "stdout", "stderr", "exit_code"],
-            ),
-        ),
-        BuiltinSpec(
-            key="run_bash",
-            source="app.capabilities.registration.builtin.sandbox:make_run_bash",
-            display_name="执行命令",
-            description="在工作区的沙箱里执行一条 shell 命令，返回退出码、标准输出和标准错误。",
-            tags=("命令", "执行"),
-            permission=PermissionLevel.CONFIRM,
-            risk=RiskLevel.EXECUTE,
-            timeout_s=60,
-            retry=_RETRY_TIMEOUT,
-            annotations=_EXEC,
-            input_schema=_obj(
-                {"command": {"type": "string", "description": "要执行的 shell 命令"}},
-                ["command"],
-            ),
-            output_schema=_obj(
-                {
-                    "content": {"type": "string"},
-                    "stdout": {"type": "string"},
-                    "stderr": {"type": "string"},
-                    "exit_code": {"type": "integer"},
-                    "duration_ms": {"type": "integer"},
-                },
-                ["content", "stdout", "stderr", "exit_code"],
+                ["content", "exit_code"],
             ),
         ),
         # ---------- 网络 ----------
+        # web_fetch / web_search 的共同约定：
+        #
+        # - 权限 confirm、风险 network：联网在 balanced 模式下要人工确认；
+        # - 都是只读 GET，同一个请求重发结果不变 → 幂等，网络错误可安全重试；
+        # - web_fetch 的 URL 会再过一遍参数级规则：指向内网地址就顶成
+        #   destructive（SSRF 尝试），要管理员放行（见 execution/risk.py）。
         BuiltinSpec(
             key="web_fetch",
             source="app.capabilities.registration.builtin.web:make_web_fetch",
@@ -481,13 +204,20 @@ _SOURCE_INDEX: dict[str, str] = {spec.source: key for key, spec in BUILTIN_SPECS
 
 
 def list_builtin_specs() -> list[BuiltinSpec]:
+    """列出全部出厂规格（启动时同步进数据库用）。"""
     return list(BUILTIN_SPECS.values())
 
 
 def get_builtin_by_source(source: str) -> BuiltinSpec | None:
+    """按 ``模块:工厂函数`` 反查出厂规格。
+
+    这是白名单校验的入口：不在这里登记的 source 一律拒绝 ——
+    允许任意 ``模块:函数`` 等于允许任何人让平台 import 并执行任意 Python 代码。
+    """
     key = _SOURCE_INDEX.get(source)
     return BUILTIN_SPECS.get(key) if key else None
 
 
 def get_builtin_by_key(key: str) -> BuiltinSpec | None:
+    """按 key 取出厂规格（没有就返回 None）。"""
     return BUILTIN_SPECS.get(key)

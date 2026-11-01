@@ -54,13 +54,14 @@ SEMANTIC_ERROR_CODES = {
 class TaskState:
     """一个任务（会话）当前的状态。"""
 
-    confidence: float = CONFIDENCE_START
+    confidence: float = CONFIDENCE_START  # 任务置信度（0~100）
     format_errors: int = 0  # 连续格式类错误次数（针对同一个能力）
-    semantic_errors: int = 0
-    blocked: bool = False
-    reason: str = ""
+    semantic_errors: int = 0  # 语义类错误次数（不针对具体能力）
+    blocked: bool = False  # 是否已阻塞（要转人工）
+    reason: str = ""  # 阻塞原因（给模型/人看的说明）
 
     def to_dict(self) -> dict:
+        """状态快照（写进调用记录，便于回溯当时的判定）。"""
         return {
             "confidence": round(self.confidence, 1),
             "format_errors": self.format_errors,
@@ -75,7 +76,19 @@ async def load_task_state(
     thread_id: str | None,
     capability_key: str = "",
 ) -> TaskState:
-    """从调用记录算出任务状态。"""
+    """从调用记录算出任务状态。
+
+    Args:
+        session: 数据库会话；为空则返回初始状态（不落库的调用没有历史可查）。
+        thread_id: 会话 ID。
+        capability_key: 当前要调的能力（连续格式错误是针对它的算的）。
+
+    Returns:
+        算出来的任务状态。
+
+    取最近 ``WINDOW_SIZE`` 条记录算 —— 更早的失败跟当前判断关系不大，
+    全表扫既慢又会被很久以前的失败误导。
+    """
     state = TaskState()
     if session is None or not thread_id:
         return state
@@ -111,6 +124,7 @@ async def load_task_state(
     state.confidence = max(0.0, state.confidence)
     block_threshold = settings.capability_confidence_block_threshold
     max_format_retries = settings.capability_max_format_retries
+    # 两道阻塞线：先看"同一个能力反复填错参数"，再看"整个任务的置信度"
     if state.format_errors >= max_format_retries:
         state.blocked = True
         state.reason = f"同一能力连续 {state.format_errors} 次参数错误，已停止自动重试"
@@ -118,6 +132,28 @@ async def load_task_state(
         state.blocked = True
         state.reason = f"任务置信度 {state.confidence:.0f} 低于阈值 {block_threshold:.0f}"
     return state
+
+
+def adjust_confidence(confidence: float, error_code: str | None) -> float:
+    """按错误码调整置信度。
+
+    格式类错误扣得轻（模型改改参数就能对），语义类扣得重（模型的判断本身有问题），
+    成功回补一点。置信度不会低于 0，也不会超过 100。
+
+    Args:
+        confidence: 当前置信度。
+        error_code: 本次调用的错误码；``None`` 表示成功。
+
+    Returns:
+        调整后的置信度。
+    """
+    if error_code is None:
+        return min(CONFIDENCE_START, confidence + SUCCESS_REWARD)
+    if error_code in FORMAT_ERROR_CODES:
+        return max(0.0, confidence - FORMAT_PENALTY)
+    if error_code in SEMANTIC_ERROR_CODES:
+        return max(0.0, confidence - SEMANTIC_PENALTY)
+    return confidence
 
 
 __all__ = [
@@ -129,5 +165,6 @@ __all__ = [
     "SEMANTIC_ERROR_CODES",
     "SEMANTIC_PENALTY",
     "TaskState",
+    "adjust_confidence",
     "load_task_state",
 ]

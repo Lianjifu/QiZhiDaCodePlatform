@@ -63,36 +63,38 @@ backend/
 │   │   └── v1/              # 版本化接口
 │   │       ├── health.py
 │   │       ├── example.py
-│   │       ├── agent.py        # 编码助手（LangChain）
+│   │       ├── agent.py        # 编码助手（deepAgents + 审批）
 │   │       └── llm_provider.py # 模型接入配置（供应商 CRUD）
 │   ├── agents/              # Agent 层：模型 + 工具 + 循环
 │   │   ├── llm.py           # 模型工厂（环境变量 / 数据库供应商配置两种来源）
 │   │   ├── providers.py     # 供应商预设表（兼容主流大模型）
 │   │   ├── prompts.py       # 系统提示词
-│   │   ├── builder.py       # create_agent 组装
+│   │   ├── builder.py       # create_deep_agent 组装（含子代理规格）
 │   │   ├── runner.py        # 执行器（同步一轮 / 流式）
 │   │   └── checkpointer.py  # 多轮对话上下文持久化
 │   ├── capabilities/         # 能力层：tool / mcp / skill 的统一体系
 │   │   ├── errors.py          # 错误码与 CapabilityError（三层共用）
 │   │   ├── prompt.py          # 提示词组装器
 │   │   ├── mcp_client.py      # MCP 连接与能力拉取
+│   │   ├── skills_export.py   # 数据库技能 → SKILL.md（deepAgents 渐进披露）
+│   │   ├── backends/          # deepAgents 的 backend
+│   │   │   ├── assembly.py    # CompositeBackend 组装（文件本地 / 命令进沙箱）
+│   │   │   └── sandbox_backend.py # docker 沙箱（BaseSandbox 子类）
 │   │   ├── registration/      # 注册层：声明、编目、安装
 │   │   │   ├── spec.py        # 能力声明（契约 + 策略）
 │   │   │   ├── policy.py      # 风险等级 / 权限要求 / 重试策略 / 工具注解
 │   │   │   ├── validator.py   # JSON Schema 校验（意图层与执行层共用）
 │   │   │   ├── args_model.py  # JSON Schema → 给模型看的参数模型
 │   │   │   ├── registry.py    # 统一能力清单的唯一读取入口
+│   │   │   ├── tool_policy.py # 文件工具的治理策略映射表（deepAgents 的工具）
 │   │   │   └── builtin/       # 内置能力出厂源（白名单 + 出厂规格）
 │   │   │       ├── __init__.py# 出厂规格清单（白名单）
-│   │   │       ├── paths.py   # 工作区路径校验（防穿越）
-│   │   │       ├── fs.py      # 文件类能力（读/写/改/移/拷/建目录/切目录/列/glob/grep）
-│   │   │       ├── sandbox.py # 执行类能力（Python / shell，沙箱隔离）
+│   │   │       ├── sandbox.py # 执行类能力（run_python，沙箱隔离）
 │   │   │       └── web.py     # 网络类能力（抓取 / 搜索）
 │   │   ├── intent/            # 意图层：模型的一次 tool call → 一条意图
 │   │   │   ├── intent.py      # CapabilityIntent（与执行层的唯一契约）
-│   │   │   ├── planner.py     # 检索技能、收敛能力集
 │   │   │   ├── resolver.py    # tool call → 意图（含前置参数校验）
-│   │   │   └── middleware.py  # LangChain middleware 挂钩
+│   │   │   └── middleware.py  # 治理中间件（工具收敛 / 参数级风险 / 留痕）
 │   │   └── execution/         # 执行层：七阶段流水线
 │   │       ├── pipeline.py    # 校验→授权→风险→审批→调用→验证→回写
 │   │       ├── adapters.py    # 执行适配器（builtin / http / mcp）
@@ -102,6 +104,14 @@ backend/
 │   │       ├── result.py      # 执行结果
 │   │       └── context.py     # 执行上下文（工作区、沙箱、MCP 通道）
 │   ├── schemas/             # 请求 / 响应模型
+│   ├── rag/                 # RAG 服务层（通用：语料 → 分块 → 向量 → 检索）
+│   │   ├── models.py        # 集合 / 文档 / 分块
+│   │   ├── chunking.py      # 分块策略（Markdown / 代码 / 纯文本）
+│   │   ├── embedding.py     # 向量化（复用模型接入配置）
+│   │   ├── vector_store.py  # 存储抽象
+│   │   ├── stores/sql.py    # SQL 实现（SQLite / Postgres 同一套）
+│   │   ├── retriever.py     # 混合检索（向量 + 关键词，RRF 融合）
+│   │   └── service.py       # 业务：入库 / 检索
 │   ├── services/            # 业务层
 │   ├── repositories/        # 数据访问层
 │   ├── models/              # ORM 模型
@@ -116,9 +126,12 @@ backend/
 └── requirements.txt
 ```
 
-## 编码助手（LangChain / LangGraph）
+## 编码助手（deepAgents / LangGraph）
 
-基于 **LangChain v1** 的 `create_agent`（内部是一张 LangGraph 图）：模型思考 → 调工具 → 结果回灌 → 再思考。
+基于 **deepAgents** 的 `create_deep_agent`（内部是一张 LangGraph 图）：模型思考 → 调工具 → 结果回灌 → 再思考。
+
+deepAgents 额外带来规划（`write_todos`）、子代理（`task`）、技能（`SKILL.md`）、
+记忆（`AGENTS.md`）、上下文摘要与 prompt caching。
 
 ```text
 POST /api/v1/agent/chat     跑完一轮再整体返回
@@ -149,7 +162,7 @@ agent 会执行 **LLM 生成的代码**，而 LLM 可以被提示词注入诱导
 
 - `SANDBOX_TYPE=local` **没有任何隔离** —— 生成的代码能读写本机任意文件、能联网。仅限本地开发。
 - `SANDBOX_TYPE=docker` 才是生产可用形态：容器内执行、`--network none` 断网、限内存与进程数、`--cap-drop ALL`、只挂载当前会话的工作区。
-- 所有文件路径都经 `capabilities/builtin/paths.py` 校验：`..` 穿越、绝对路径、指向工作区外的符号链接一律拒绝。
+- 文件路径由 deepAgents 的 `FilesystemBackend`（虚拟模式）把关：`..` 穿越一律拒绝，绝对路径映射进工作区（`/etc/passwd` → `<工作区>/etc/passwd`），resolve 后必须仍在工作区内。
 - 每个会话一个独立工作区（`WORKSPACE_ROOT/<thread_id>`），互不串味。
 
 > **macOS 注意**：容器只能看到宿主共享出去的路径。Docker Desktop 默认共享 `/Users`，
@@ -232,7 +245,10 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 三层都是动词，正好是同一条流水线上的三步：**注册**声明能力，**意图**形成这次调用意图，
 **执行**真正动手。
 
-设计细节见 [`docs/capability-architecture.md`](docs/capability-architecture.md)。
+能力与实现梳理见 [`docs/implementation/capability-module.md`](docs/implementation/capability-module.md)：
+统一能力清单、声明式契约、工具清单与逐段实现、治理能力。
+已知限制与待办见 [`docs/plans/capability-followups.md`](docs/plans/capability-followups.md)。
+deepAgents 迁移的方案与决策见 [`docs/plans/agent-migration-deepagents.md`](docs/plans/agent-migration-deepagents.md)。
 
 ### 执行层是唯一的执行路径
 
@@ -265,7 +281,7 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 | `balanced`（默认） | 读写自动放行；执行命令 / 联网抓取需确认 | 默认 |
 | `permissive` | 只有 `destructive` 需确认 | 本地开发 |
 
-风险还会被**参数级规则上调**：`run_bash` 命中 `rm -rf`、`dd`、`curl … | sh`，
+风险还会被**参数级规则上调**：`execute` 命中 `rm -rf`、`dd`、`curl … | sh`，
 或 `web_fetch` 的 URL 指向内网地址（SSRF），都会把风险顶到 `destructive` 并要求
 管理员放行。
 
@@ -277,31 +293,36 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 
 同步只补空字段 —— 运营改过的内容不会被启动流程冲掉。
 
-### 内置能力清单
+### 工具清单
 
-内置能力对标 Claude Code 的内置工具，全部限制在会话工作区内：
+**文件工具由 deepAgents 提供**（8 个），全部限制在会话工作区内：
+
+| key | 名称 | 参数 | 风险 | 说明 |
+| --- | --- | --- | --- | --- |
+| `ls` | 列出文件 | `path` | read | 列目录下的文件与子目录 |
+| `read_file` | 读取文件 | `file_path` `offset` `limit` | read | 读文本文件，带行号 |
+| `write_file` | 写入文件 | `file_path` `content` | write | 写入（覆盖），自动建父目录 |
+| `edit_file` | 编辑文件 | `file_path` `old_string` `new_string` | write | 精确字符串替换；**原文必须唯一** |
+| `delete` | 删除 | `file_path` | write | **永远要人批**；不可重试 |
+| `glob` | 按模式找文件 | `pattern` `path` | read | 按 glob 模式找文件，如 `**/*.py` |
+| `grep` | 搜索文件内容 | `pattern` `path` | read | 按正则搜内容 |
+| `execute` | 执行命令 | `command` | execute | 在沙箱里跑一条 shell 命令 |
+
+**我们自己的内置能力**（3 个）：
 
 | key | 名称 | 参数 | 风险 | 权限 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| `read_file` | 读取文件 | `path` `offset` `limit` | read | none | 读文本文件，带行号；offset/limit 用于分段读大文件 |
-| `write_file` | 写入文件 | `path` `content` | write | none | 写入（覆盖），自动建父目录 |
-| `edit_file` | 编辑文件 | `path` `old_string` `new_string` `replace_all` | write | none | 精确字符串替换；**原文必须唯一**，不唯一就报错并列出所有匹配行号 |
-| `move_file` | 移动文件 | `source` `destination` | write | none | 移动/重命名文件或目录，等价于 `mv` |
-| `copy_file` | 复制文件 | `source` `destination` | write | none | 复制文件或目录，等价于 `cp` |
-| `make_dir` | 创建目录 | `path` | write | none | `mkdir -p`，目录已存在也算成功 |
-| `change_directory` | 切换目录 | `path` | read | none | `cd`，切换后所有相对路径以新目录为起点 |
-| `list_files` | 列出文件 | `path` | read | none | 列目录下的文件与子目录 |
-| `glob` | 按模式找文件 | `pattern` `path` | read | none | 按 glob 模式找文件，如 `**/*.py` |
-| `grep` | 搜索文件内容 | `pattern` `path` `glob_pattern` | read | none | 按正则搜内容，返回 `文件:行号:内容` |
-| `run_python` | 执行 Python | `code` | execute | confirm | 在沙箱里跑一段 Python，返回退出码 / stdout / stderr |
-| `run_bash` | 执行命令 | `command` | execute | confirm | 在沙箱里跑一条 shell 命令 |
+| `run_python` | 执行 Python | `code` | execute | confirm | 在沙箱里跑一段 Python，返回退出码 / 输出 |
 | `web_fetch` | 抓取网页 | `url` | network | confirm | 抓 http/https 页面并转纯文本（去脚本、去样式） |
 | `web_search` | 联网搜索 | `query` `max_results` | network | confirm | 走 Tavily / Serper / Bing 搜索，需配 API Key |
 
 几个设计取舍：
 
-- **文件类只认相对路径**。绝对路径、`..` 穿越、指向工作区外的符号链接一律拒绝
-  （`registration/builtin/paths.py`）。
+- **路径一律相对工作区根目录**。"当前目录"这个概念整体消失 —— 会话级 `cd`
+  没有了（`mv` / `cp` / `mkdir -p` 靠 `execute` 跑）。
+- **文件工具的治理策略用一张映射表补上**（`registration/tool_policy.py`）——
+  它们由 deepAgents 注册，我们手里没有声明，但风险、幂等、要不要人批都得有，
+  否则治理就漏了一块。
 - **能力返回结构化结果**：dict，其中 `content` 是给模型看的文本，其余字段给程序看
   （校验、日志、自动化消费）。失败抛 `CapabilityError`，带错误码和 `retryable`
   标记，不再返回"看起来像成功"的字符串。
@@ -309,34 +330,30 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 - **联网搜索没配 Key 就明说**，报"请设置 `WEB_SEARCH_PROVIDER` 和
   `WEB_SEARCH_API_KEY`"，而不是静默失败。
 
-### 当前目录（cd）
-
-文件类与执行类能力都以**当前目录**为相对路径的起点，`change_directory` 负责切换：
-
-| 写法 | 含义 |
-| --- | --- |
-| `.` | 当前目录 |
-| `..` | 上一级（不能越出工作区） |
-| `~` | 工作区根目录 |
-| `src/utils` | 相对当前目录的路径 |
-
-当前目录**在同一次运行内保持**（所有工具共享同一个执行上下文），也**在同一会话的
-多次请求之间保持** —— 状态落在工作区**外面**的 `.qzd_state/<会话>.json` 里。
-放在工作区外面有两个原因：模型的文件工具只看得到工作区内的东西，工作区也不该
-被状态文件污染。目录被删掉了就自动退回工作区根目录。
-
 ### 审批
 
-需要审批的调用不会直接执行，而是生成一条 `pending` 的调用记录：
+需要审批的调用**挂起整张图**，等人工处理：
 
 ```text
-调用 → 生成 pending 记录 → 返回"等待审批"
+模型调工具 → 命中 interrupt_on → 图挂在 checkpoint 里
                              ↓
-                   人工批准 ─┬─ approve → 按记录里的参数执行
-                            └─ deny    → 不执行
+                     响应 status = "pending_approval"
+                             ↓
+        人工批准 ─┬─ approve → 恢复图 → 工具执行 → agent 自己接着往下跑
+                   └─ reject  → 恢复图 → 工具不执行 → agent 收到拒绝消息
 ```
 
-批准后由审批接口直接执行，**不依赖 agent 还活着**，所以不需要把 agent 挂起等审批。
+审批走 **LangGraph 的中断机制**，批准后用同一个 `thread_id` 恢复图（`Command(resume=…)`）。
+**结果直接回到 agent 的上下文** —— 不需要"下一轮再补给它"那套回流机制。
+
+审批状态存在 **checkpoint 里**，不在调用记录表里：查待审批列表用
+`GET /api/v1/agent/{thread_id}/pending`。
+
+直接调 API 的那条路径不走图，仍然是"生成 pending 记录 →
+`POST /api/v1/invocations/{id}/approve` 执行"。
+
+另外，agent 响应里的 `tool_calls` 带**执行摘要**（成功 / 失败 + 调用记录 ID + 耗时），
+前端不用再查一遍调用记录才知道这次调用成没成。
 
 ### 失败分层
 
@@ -355,10 +372,10 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 
 ### 超时、重试与熔断
 
-- **超时按能力分级**：每个能力声明自己的 `timeout_s`（读文件 10s、grep 20s、
-  执行命令 60s），执行层再套一层兜底。
+- **超时按能力分级**：每个能力声明自己的 `timeout_s`（联网 20s、执行命令 60s），
+  执行层再套一层兜底。
 - **重试**：指数退避（`backoff_s × 2^(n-1)`，封顶 30s），**且只对幂等能力自动重试**
-  —— 不幂等的操作（`run_bash`、`move_file`）重试可能把副作用做两遍，
+  —— 不幂等的操作（`execute`、`run_python`）重试可能把副作用做两遍，
   超时只说明"不知道执行完没有"。这类失败直接转人工。
 - **熔断**：按能力统计滑动窗口内的错误率与延迟，超过阈值就快速失败一段时间，
   别把时间耗在一个已经坏掉的能力上。
@@ -398,9 +415,14 @@ GET    /api/v1/skills/{id}              详情
 PUT    /api/v1/skills/{id}              更新
 DELETE /api/v1/skills/{id}              删除
 GET    /api/v1/skills/{id}/preview      预览挂载后带来哪些能力、什么提示词
+
+GET    /api/v1/agent/{thread_id}/pending  待审批的调用
+POST   /api/v1/agent/{thread_id}/approve 批准挂起的调用，恢复图
+POST   /api/v1/agent/{thread_id}/reject  拒绝挂起的调用，恢复图
 ```
 
-对话时用 `skill_ids` 挂载技能；不传则按用户输入自动检索相关技能：
+对话时用 `skill_ids` 指定要挂载的技能；不传则导出全部启用的技能，由模型按
+描述自己挑（渐进披露）：
 
 ```json
 POST /api/v1/agent/chat
@@ -409,7 +431,7 @@ POST /api/v1/agent/chat
 
 ### ⚠️ 内置能力是白名单，不是任意入口点
 
-`builtin` 类型的工具只能引用 `app/capabilities/builtin/__init__.py` 里登记过的
+`builtin` 类型的工具只能引用 `app/capabilities/registration/builtin/__init__.py` 里登记过的
 `模块:工厂函数`。**如果允许任意 `模块:函数`，任何能调工具管理接口的人都能让平台
 import 并执行任意 Python 代码** —— 等价于远程代码执行。所以越界的 source 会在
 schema 校验层直接 422。
@@ -443,9 +465,114 @@ query string，其余进 JSON body。
 | `NETWORK_ERROR` | true | 外部服务问题 |
 | `PERMISSION_DENIED` | false | 越权，需人工介入 |
 
-参数校验发生在**进执行层之前**（编排层的 middleware），所以模型拿到的是
-`[INVALID_ARGUMENTS] 缺少必填参数：path（可以修正参数后重试）`，
+失败文本由 `CapabilityError.to_text()` 统一渲染，结尾一定带一句"该怎么做"：
+可重试的说"（可以修正参数后重试）"，不可重试的说"（换个思路，不要重复同样的调用）"。
+模型拿到的是 `[INVALID_ARGUMENTS] 缺少必填参数：path（可以修正参数后重试）`，
 而不是一轮白跑的 traceback。
+
+## RAG 服务层
+
+RAG 是**独立的一层** `app/rag/`，不依赖能力层、也不依赖记忆模块 ——
+记忆模块（短期 / 长期两层）是它的一个消费者，尚未实现。
+
+> 这一层**不套用**「models / repositories / services」那套目录约定 ——
+> 那是给"业务模块"用的（一个业务用例一个 Service、仓储只管存取）。
+> RAG 是一套自成体系的检索设施，把分块、向量、检索策略各自成文件，
+> 比拆进 repositories/services 更好读也好改。
+> ORM 表仍然注册在 `Base.metadata` 里（`app/models/__init__.py` 统一导入），
+> 所以建表和迁移不会漏。
+
+```text
+        记忆模块（短期 / 长期）        知识库 / 文档问答
+                  │                            │
+                  └──────────┬─────────────────┘
+                             ▼
+                    ┌──────────────────┐
+                    │   RAG 服务层     │
+                    └──────────────────┘
+```
+
+### 三个概念
+
+```text
+collection（一个知识库，绑定一套向量化配置）
+  └─ document（一篇原始文档，按内容哈希去重）
+       └─ chunk（检索单元，带向量）
+```
+
+**集合必须绑定固定的向量化配置**：不同模型的向量不在同一个空间里，
+混着比出来的相似度是噪声。所以模型名和维度记在集合上，建集合时探一次维度，
+入库时校验维度 —— **换模型 = 重建集合**，不是改个字段。
+
+### 分块
+
+| 类型 | 切法 | meta 里带什么 |
+| --- | --- | --- |
+| Markdown | 按标题层级切 | `heading` `level` `path` |
+| 代码 | 按顶层定义切（函数 / 类） | `symbol` `kind` |
+| 纯文本 | 固定窗口 + 重叠 | `position` `overlap` |
+
+分块按**字符数**算不按 token 数（分块在调模型之前，用不着先分词）；
+一次入库的内容不丢。
+
+### 向量化：复用模型接入配置
+
+绝大多数厂商在同一个 `base_url` 上同时提供对话和向量化接口，差别只是模型名。
+所以供应商配置表加了两列 `embedding_model` / `embedding_dim`，
+向量化请求直接打 `{base_url}/embeddings`（OpenAI 兼容格式）——
+**不引入任何新基础设施，密钥继续走 Fernet 加密存储**。
+
+没配 `embedding_model` 的供应商不影响对话，只是不参与向量化。
+**集合不配向量模型也能用**（纯关键词检索）。
+
+### 检索：必须混合
+
+- 只上向量会漏 —— 向量把下划线、驼峰抹平了，查 `DATABASE_URL` 召不回；
+- 只上关键词也会漏 —— 问"怎么配置数据库"召不回那段 `DATABASE_URL=postgres://…`。
+
+两路用 **RRF（倒数排名融合）** 合并：`score(d) = Σ 权重 / (60 + rank(d))`。
+用排名不用分数，是因为余弦在 0-1、BM25 无上界，分数不可比。
+
+关键词一路用 **BM25**，中文按**字符二元组**分词，标识符额外拆开
+（`foo_bar` → `foo` + `bar`）。
+
+| mode | 行为 |
+| --- | --- |
+| `hybrid`（默认） | 向量 + 关键词，RRF 融合 |
+| `vector` | 只走向量 |
+| `keyword` | 只走关键词 |
+
+集合没启用向量化时自动退化成关键词，并在结果的 `degraded` 字段里说明原因。
+
+v1 的向量存在 SQL 的 JSON 列里，检索在进程内算余弦 —— 几千条分块毫秒级，
+**不引入新依赖**。规模上去了在 `VectorStore` 这一层后面换 pgvector / FTS5，
+接口不变。
+
+设计细节见 [`docs/implementation/rag-architecture.md`](docs/implementation/rag-architecture.md)，
+待办见 [`docs/plans/rag-followups.md`](docs/plans/rag-followups.md)。
+
+### RAG 接口
+
+```text
+GET    /api/v1/rag/collections                   集合列表
+POST   /api/v1/rag/collections                   新建集合（配了模型会探维度）
+GET    /api/v1/rag/collections/{id}              集合详情
+DELETE /api/v1/rag/collections/{id}              删集合（连同文档与分块）
+
+GET    /api/v1/rag/collections/{id}/documents    集合里的文档
+POST   /api/v1/rag/collections/{id}/documents    入库一篇文档
+DELETE /api/v1/rag/documents/{id}                删文档（连同分块）
+
+POST   /api/v1/rag/search                       检索
+```
+
+```json
+POST /api/v1/rag/collections/1/documents
+{ "title": "数据库配置", "content": "用 DATABASE_URL 连库…", "format": "auto" }
+
+POST /api/v1/rag/search
+{ "query": "数据库怎么连", "collection_id": 1, "top_k": 5, "mode": "hybrid" }
+```
 
 ## 数据库迁移（Alembic）
 
@@ -463,7 +590,7 @@ alembic current / history / show  # 看状态
 
 ### 存量库怎么升级
 
-现在有四版迁移：
+现在有七版迁移：
 
 | 版本 | 内容 |
 | --- | --- |
@@ -471,6 +598,9 @@ alembic current / history / show  # 看状态
 | `0002_capability_layer` | 能力层重构：skill.prompt → knowledge、新增若干列、新建 execution_log |
 | `0003_capability_v2` | 声明式契约：tool 补 risk/output_schema/timeout_s/retry_policy/annotations；permission 取值域 low→none、high→confirm；execution_log 改名 invocation 并扩成完整生命周期 |
 | `0004_builtin_specs` | 内置能力出厂规格升级：模块路径迁移到注册层下，补齐风险等级与策略 |
+| `0005_invocation_confidence` | 调用记录补 `confidence`（任务置信度，从记录算出来的那个分数存下来方便回溯） |
+| `0006_rag_layer` | RAG 层：新建 rag_collection / rag_document / rag_chunk；llm_provider 补 embedding_model / embedding_dim |
+| `0007_agent_capability_flow` | agent 侧能力调用闭环：invocation 补 `notified_at`（审批结果是否已回流给 agent） |
 
 按你手上数据库的状态选一条：
 
@@ -543,7 +673,7 @@ pip install -r requirements.txt
 ```bash
 cd backend
 source ../.venv/bin/activate
-pytest -q          # 173 passed
+pytest -q          # 215 passed
 ```
 
 只想快速检查语法（不装依赖也能跑）：

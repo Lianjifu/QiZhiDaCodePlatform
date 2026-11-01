@@ -38,6 +38,8 @@ def _to_out(provider: LLMProvider) -> LLMProviderOut:
         base_url=provider.base_url,
         default_model=provider.default_model,
         available_models=list(provider.available_models or []),
+        embedding_model=provider.embedding_model,
+        embedding_dim=provider.embedding_dim,
         temperature=provider.temperature,
         max_tokens=provider.max_tokens,
         timeout=provider.timeout,

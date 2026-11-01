@@ -1,10 +1,12 @@
-"""内置能力测试：路径安全、文件读写改查移拷、glob/grep、沙箱执行、网络工具。
+"""内置能力与后端测试。
 
-工具形态参考 Claude Code：读 / 写 / 改 / 移 / 拷 / 建目录 / 切目录 / 列 / glob /
-grep / 执行 / 抓取 / 搜索。
+**文件类能力已经不在我们这里了** —— 它们由 deepAgents 的文件系统中间件提供，
+路径安全、读写语义都归它管（``FilesystemBackend`` 的虚拟模式）。所以这个文件
+现在测三块：
 
-能力现在返回**结构化结果**（dict，`content` 是给模型看的文本），失败抛
-`CapabilityError` —— 不再返回"看起来像成功"的字符串。
+1. **路径安全**：deepAgents 的 ``FilesystemBackend`` 会不会放越界路径；
+2. **我们自己的内置能力**：``run_python`` / ``web_fetch`` / ``web_search``；
+3. **沙箱**：docker 模式的隔离（断网、看不见工作区以外的文件）。
 """
 
 import shutil
@@ -13,27 +15,12 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from deepagents.backends.filesystem import FilesystemBackend
 
-from app.capabilities.errors import CapabilityError, ErrorCode
+from app.capabilities.backends.sandbox_backend import DockerSandbox
+from app.capabilities.errors import CapabilityError
 from app.capabilities.execution.context import ExecutionContext
-from app.capabilities.registration.builtin.fs import (
-    make_change_directory,
-    make_copy_file,
-    make_edit_file,
-    make_glob,
-    make_grep,
-    make_list_files,
-    make_make_dir,
-    make_move_file,
-    make_read_file,
-    make_write_file,
-)
-from app.capabilities.registration.builtin.paths import WorkspaceError, resolve_in_workspace
-from app.capabilities.registration.builtin.sandbox import (
-    exec_command,
-    make_run_bash,
-    make_run_python,
-)
+from app.capabilities.registration.builtin.sandbox import make_run_python
 from app.capabilities.registration.builtin.web import _html_to_text, make_web_fetch, make_web_search
 
 
@@ -61,9 +48,13 @@ async def docker_ctx():
     context.sandbox_type = "docker"
     context.sandbox_image = "python:3.12-slim"
 
-    (workspace / "probe.txt").write_text("probe", encoding="utf-8")
-    exit_code, stdout, _ = await exec_command("cat probe.txt", context)
-    if "probe" not in stdout:
+    sandbox = DockerSandbox(workspace, image=context.sandbox_image)
+    try:
+        probe = sandbox.execute("echo probe")
+    except RuntimeError:
+        shutil.rmtree(workspace, ignore_errors=True)
+        pytest.skip("docker 容器看不到工作区（当前虚拟机只共享部分宿主路径）")
+    if "probe" not in (probe.output or ""):
         shutil.rmtree(workspace, ignore_errors=True)
         pytest.skip("docker 容器看不到工作区（当前虚拟机只共享部分宿主路径）")
     try:
@@ -92,29 +83,37 @@ def _docker_daemon_ready() -> bool:
     return result.returncode == 0
 
 
-# ---------- 路径安全 ----------
+# ---------- 路径安全（deepAgents 的虚拟文件系统） ----------
 
 
 def test_relative_path_resolves_inside_workspace(tmp_path):
-    assert resolve_in_workspace(tmp_path, "src/main.py") == (tmp_path.resolve() / "src" / "main.py")
+    backend = FilesystemBackend(root_dir=tmp_path)
+    assert backend.write("/src/main.py", "x").error is None
+    assert (tmp_path.resolve() / "src" / "main.py").exists()
 
 
 def test_parent_traversal_is_rejected(tmp_path):
-    with pytest.raises(WorkspaceError):
-        resolve_in_workspace(tmp_path, "../secret.txt")
+    """``..`` 一律拒绝 —— 虚拟模式不解析它，直接报错。"""
+    backend = FilesystemBackend(root_dir=tmp_path)
+    with pytest.raises(ValueError, match="Path traversal"):
+        backend.write("/../secret.txt", "x")
+    assert not (tmp_path.parent / "secret.txt").exists()
 
 
-def test_deep_traversal_is_rejected(tmp_path):
-    with pytest.raises(WorkspaceError):
-        resolve_in_workspace(tmp_path, "a/b/../../../../etc/passwd")
+def test_absolute_path_is_mapped_inside_the_root(tmp_path):
+    """绝对路径在虚拟模式下是**工作区里的**路径，不是宿主的根。
 
-
-def test_absolute_path_is_rejected(tmp_path):
-    with pytest.raises(WorkspaceError):
-        resolve_in_workspace(tmp_path, "/etc/passwd")
+    所以 ``/etc/passwd`` 指向的是 ``<工作区>/etc/passwd`` —— 宿主上真的
+    ``/etc/passwd`` 读不到。
+    """
+    backend = FilesystemBackend(root_dir=tmp_path)
+    result = backend.read("/etc/passwd")
+    assert result.error is not None
+    assert result.file_data is None
 
 
 def test_symlink_escape_is_rejected(tmp_path):
+    """符号链接指向工作区外也要挡住。"""
     workspace = tmp_path / "ws"
     outside = tmp_path / "outside"
     workspace.mkdir()
@@ -122,287 +121,19 @@ def test_symlink_escape_is_rejected(tmp_path):
     (outside / "secret.txt").write_text("s3cret", encoding="utf-8")
     (workspace / "link").symlink_to(outside)
 
-    with pytest.raises(WorkspaceError):
-        resolve_in_workspace(workspace, "link/secret.txt")
+    backend = FilesystemBackend(root_dir=workspace)
+    with pytest.raises(ValueError):
+        backend.read("/link/secret.txt")
 
 
-# ---------- 文件：读 ----------
-
-
-def test_read_file_returns_numbered_lines(ctx):
-    (ctx.workspace / "a.txt").write_text("第一行\n第二行\n第三行", encoding="utf-8")
-    out = make_read_file(ctx)("a.txt")
-    assert "1\t第一行" in out["content"]
-    assert "3\t第三行" in out["content"]
-    assert out["line_count"] == 3
-
-
-def test_read_file_supports_offset_and_limit(ctx):
-    (ctx.workspace / "a.txt").write_text("\n".join(f"line{i}" for i in range(10)), encoding="utf-8")
-    out = make_read_file(ctx)("a.txt", offset=2, limit=3)
-    assert "line2" in out["content"] and "line4" in out["content"]
-    assert "line5" not in out["content"]
-    assert out["truncated"] is True
-
-
-def test_read_missing_file_raises(ctx):
-    with pytest.raises(CapabilityError) as exc:
-        make_read_file(ctx)("nope.txt")
-    assert "文件不存在" in exc.value.message
-    assert exc.value.code == ErrorCode.INVALID_ARGUMENTS
-
-
-def test_read_file_cannot_escape_workspace(ctx):
-    with pytest.raises(CapabilityError) as exc:
-        make_read_file(ctx)("../evil.txt")
-    assert exc.value.code == ErrorCode.PERMISSION_DENIED
-
-
-# ---------- 文件：写 ----------
-
-
-def test_write_then_read(ctx):
-    assert "创建" in make_write_file(ctx)("a/b.txt", "hello")["content"]
-    assert make_read_file(ctx)("a/b.txt")["content"].endswith("hello")
-
-
-def test_write_overwrites_existing(ctx):
-    make_write_file(ctx)("a.txt", "第一版")
-    assert "覆盖" in make_write_file(ctx)("a.txt", "第二版")["content"]
-    assert "第二版" in make_read_file(ctx)("a.txt")["content"]
-
-
-def test_write_reports_created_flag(ctx):
-    assert make_write_file(ctx)("a.txt", "x")["created"] is True
-    assert make_write_file(ctx)("a.txt", "y")["created"] is False
-
-
-# ---------- 文件：改 ----------
-
-
-def test_edit_file_replaces_unique_match(ctx):
-    (ctx.workspace / "a.txt").write_text("hello world", encoding="utf-8")
-    out = make_edit_file(ctx)("a.txt", "world", "there")
-    assert "已替换" in out["content"]
-    assert out["replaced_count"] == 1
-    assert "hello there" in (ctx.workspace / "a.txt").read_text(encoding="utf-8")
-
-
-def test_edit_file_refuses_ambiguous_match(ctx):
-    (ctx.workspace / "a.txt").write_text("x\nx\n", encoding="utf-8")
-    with pytest.raises(CapabilityError) as exc:
-        make_edit_file(ctx)("a.txt", "x", "y")
-    assert "出现了 2 次" in exc.value.message
-
-
-def test_edit_file_replace_all(ctx):
-    (ctx.workspace / "a.txt").write_text("x\nx\n", encoding="utf-8")
-    make_edit_file(ctx)("a.txt", "x", "y", replace_all=True)
-    assert (ctx.workspace / "a.txt").read_text(encoding="utf-8") == "y\ny\n"
-
-
-def test_edit_file_reports_missing_text(ctx):
-    (ctx.workspace / "a.txt").write_text("hello", encoding="utf-8")
-    with pytest.raises(CapabilityError) as exc:
-        make_edit_file(ctx)("a.txt", "nope", "y")
-    assert "没有找到" in exc.value.message
-
-
-# ---------- 文件：移动 / 复制 / 建目录 ----------
-
-
-def test_make_dir_creates_nested_directories(ctx):
-    out = make_make_dir(ctx)("a/b/c")
-    assert "已创建" in out["content"]
-    assert (ctx.workspace / "a" / "b" / "c").is_dir()
-
-
-def test_make_dir_on_existing_directory_is_ok(ctx):
-    (ctx.workspace / "a").mkdir()
-    assert "已存在" in make_make_dir(ctx)("a")["content"]
-
-
-def test_move_file_moves_file(ctx):
-    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
-    out = make_move_file(ctx)("a.txt", "b.txt")
-    assert "已移动" in out["content"]
-    assert not (ctx.workspace / "a.txt").exists()
-    assert (ctx.workspace / "b.txt").read_text(encoding="utf-8") == "x"
-
-
-def test_move_file_into_existing_directory(ctx):
-    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
-    (ctx.workspace / "sub").mkdir()
-    make_move_file(ctx)("a.txt", "sub")
-    assert (ctx.workspace / "sub" / "a.txt").exists()
-
-
-def test_move_file_creates_missing_parent(ctx):
-    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
-    make_move_file(ctx)("a.txt", "out/b.txt")
-    assert (ctx.workspace / "out" / "b.txt").exists()
-
-
-def test_move_file_refuses_to_overwrite(ctx):
-    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
-    (ctx.workspace / "b.txt").write_text("y", encoding="utf-8")
-    with pytest.raises(CapabilityError) as exc:
-        make_move_file(ctx)("a.txt", "b.txt")
-    assert "已存在" in exc.value.message
-    assert (ctx.workspace / "b.txt").read_text(encoding="utf-8") == "y"
-
-
-def test_move_file_reports_missing_source(ctx):
-    with pytest.raises(CapabilityError) as exc:
-        make_move_file(ctx)("nope.txt", "b.txt")
-    assert "源不存在" in exc.value.message
-
-
-def test_move_file_cannot_escape_workspace(ctx):
-    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
-    with pytest.raises(CapabilityError):
-        make_move_file(ctx)("a.txt", "../escaped.txt")
-
-
-def test_copy_file_copies_file(ctx):
-    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
-    out = make_copy_file(ctx)("a.txt", "b.txt")
-    assert "已复制" in out["content"]
-    assert (ctx.workspace / "a.txt").exists()
-    assert (ctx.workspace / "b.txt").read_text(encoding="utf-8") == "x"
-
-
-def test_copy_file_copies_directory(ctx):
-    (ctx.workspace / "src").mkdir()
-    (ctx.workspace / "src" / "a.txt").write_text("x", encoding="utf-8")
-    make_copy_file(ctx)("src", "dst")
-    assert (ctx.workspace / "dst" / "a.txt").read_text(encoding="utf-8") == "x"
-
-
-def test_copy_file_refuses_to_overwrite(ctx):
-    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
-    (ctx.workspace / "b.txt").write_text("y", encoding="utf-8")
-    with pytest.raises(CapabilityError) as exc:
-        make_copy_file(ctx)("a.txt", "b.txt")
-    assert "已存在" in exc.value.message
-    assert (ctx.workspace / "b.txt").read_text(encoding="utf-8") == "y"
-
-
-# ---------- 当前目录（cd） ----------
-
-
-def test_change_directory_switches_relative_base(ctx):
-    (ctx.workspace / "src").mkdir()
-    (ctx.workspace / "src" / "a.txt").write_text("x", encoding="utf-8")
-    out = make_change_directory(ctx)("src")
-    assert "已切换" in out["content"]
-    # 切换之后，相对路径基于新目录
-    assert "1\tx" in make_read_file(ctx)("a.txt")["content"]
-    # "~" 回到工作区根目录，就看不到了
-    make_change_directory(ctx)("~")
-    assert "文件不存在" in _read_error_message(ctx, "a.txt")
-
-
-def test_change_directory_dot_is_current_directory(ctx):
-    (ctx.workspace / "src").mkdir()
-    make_change_directory(ctx)("src")
-    make_change_directory(ctx)(".")
-    assert ctx.workdir == (ctx.workspace / "src").resolve()
-
-
-def test_change_directory_rejects_escape_from_root(ctx):
-    with pytest.raises(CapabilityError):
-        make_change_directory(ctx)("..")
-
-
-def test_change_directory_allows_going_up_inside_workspace(ctx):
-    (ctx.workspace / "src").mkdir()
-    make_change_directory(ctx)("src")
-    assert "已切换" in make_change_directory(ctx)("..")["content"]
-
-
-def test_change_directory_reports_missing_dir(ctx):
-    with pytest.raises(CapabilityError) as exc:
-        make_change_directory(ctx)("nope")
-    assert "目录不存在" in exc.value.message
-
-
-def test_change_directory_rejects_file(ctx):
-    (ctx.workspace / "a.txt").write_text("x", encoding="utf-8")
-    with pytest.raises(CapabilityError) as exc:
-        make_change_directory(ctx)("a.txt")
-    assert "不是目录" in exc.value.message
-
-
-def test_current_directory_persists_across_contexts(tmp_path):
-    """同一会话的多次请求之间，当前目录要保持。"""
-    (tmp_path / "src").mkdir()
-    first = ExecutionContext.build(workspace=tmp_path)
-    make_change_directory(first)("src")
-    assert first.workdir == (tmp_path / "src").resolve()
-
-    second = ExecutionContext.build(workspace=tmp_path)
-    assert second.workdir == (tmp_path / "src").resolve()
-
-
-def test_current_directory_falls_back_when_directory_is_gone(tmp_path):
-    (tmp_path / "src").mkdir()
-    first = ExecutionContext.build(workspace=tmp_path)
-    make_change_directory(first)("src")
-    shutil.rmtree(tmp_path / "src")
-    second = ExecutionContext.build(workspace=tmp_path)
-    assert second.workdir == tmp_path.resolve()
-
-
-def test_state_file_lives_outside_workspace(tmp_path):
-    """状态文件不能落在工作区里，否则模型的文件工具会看见它。"""
-    (tmp_path / "src").mkdir()
-    context = ExecutionContext.build(workspace=tmp_path)
-    make_change_directory(context)("src")
-    assert not (tmp_path / ".qzd_state").exists()
-    assert (tmp_path.parent / ".qzd_state").is_dir()
-
-
-# ---------- 文件：列 / glob / grep ----------
-
-
-def test_list_files(ctx):
-    (ctx.workspace / "x.txt").write_text("1", encoding="utf-8")
-    (ctx.workspace / "sub").mkdir()
-    out = make_list_files(ctx)(".")
-    assert "x.txt" in out["content"] and "sub/" in out["content"]
-    assert {entry["name"] for entry in out["entries"]} == {"x.txt", "sub"}
-
-
-def test_glob_finds_by_pattern(ctx):
-    (ctx.workspace / "src").mkdir()
-    (ctx.workspace / "src" / "a.py").write_text("x", encoding="utf-8")
-    (ctx.workspace / "src" / "b.txt").write_text("x", encoding="utf-8")
-    out = make_glob(ctx)("**/*.py")
-    assert "src/a.py" in out["matches"]
-    assert "b.txt" not in out["matches"]
-
-
-def test_grep_finds_content(ctx):
-    (ctx.workspace / "a.py").write_text("import os\nprint('hi')\n", encoding="utf-8")
-    out = make_grep(ctx)("import os")
-    assert "a.py:1" in out["content"]
-    assert out["matches"][0]["file"] == "a.py"
-
-
-def test_grep_reports_no_match(ctx):
-    (ctx.workspace / "a.py").write_text("x = 1\n", encoding="utf-8")
-    assert "没有匹配" in make_grep(ctx)("nothing-here")["content"]
-
-
-# ---------- 沙箱执行 ----------
+# ---------- 内置能力：执行 Python ----------
 
 
 @pytest.mark.asyncio
 async def test_run_python_executes_code(ctx):
     out = await make_run_python(ctx)("print('hi from sandbox')")
     assert out["exit_code"] == 0
-    assert "hi from sandbox" in out["stdout"]
+    assert "hi from sandbox" in out["output"]
     assert "退出码: 0" in out["content"]
 
 
@@ -416,20 +147,7 @@ async def test_run_python_reports_nonzero_exit(ctx):
 async def test_run_python_can_read_workspace_files(ctx):
     (ctx.workspace / "data.txt").write_text("42", encoding="utf-8")
     out = await make_run_python(ctx)("print(open('data.txt').read().strip())")
-    assert "42" in out["stdout"]
-
-
-@pytest.mark.asyncio
-async def test_run_bash_executes_command(ctx):
-    out = await make_run_bash(ctx)("echo hello-bash")
-    assert out["exit_code"] == 0
-    assert "hello-bash" in out["stdout"]
-
-
-@pytest.mark.asyncio
-async def test_run_bash_reports_nonzero_exit(ctx):
-    out = await make_run_bash(ctx)("exit 7")
-    assert out["exit_code"] == 7
+    assert "42" in out["output"]
 
 
 @pytest.mark.asyncio
@@ -441,27 +159,11 @@ async def test_local_sandbox_is_not_isolated(ctx, tmp_path):
     """
     secret = tmp_path.parent / "outside_secret.txt"
     secret.write_text("s3cret", encoding="utf-8")
-    out = await make_run_bash(ctx)("cat ../outside_secret.txt 2>&1 || echo '看不到'")
-    assert "s3cret" in out["stdout"]
+    out = await make_run_python(ctx)("print(open('../outside_secret.txt').read())")
+    assert "s3cret" in out["output"]
 
 
-@pytest.mark.asyncio
-async def test_run_bash_runs_in_current_directory(ctx):
-    (ctx.workspace / "src").mkdir()
-    make_change_directory(ctx)("src")
-    out = await make_run_bash(ctx)("pwd")
-    assert "src" in out["stdout"]
-
-
-@pytest.mark.asyncio
-async def test_run_python_runs_in_current_directory(ctx):
-    (ctx.workspace / "src").mkdir()
-    make_change_directory(ctx)("src")
-    out = await make_run_python(ctx)("import os;print(os.getcwd())")
-    assert "src" in out["stdout"]
-
-
-# ---------- 网络 ----------
+# ---------- 内置能力：网络 ----------
 
 
 def test_html_to_text_strips_tags_and_scripts():
@@ -495,7 +197,7 @@ async def test_web_search_without_key_gives_actionable_hint(ctx, monkeypatch):
 async def test_docker_sandbox_runs_python(docker_ctx):
     out = await make_run_python(docker_ctx)("print('docker ok')")
     assert out["exit_code"] == 0
-    assert "docker ok" in out["stdout"]
+    assert "docker ok" in out["output"]
 
 
 @pytest.mark.asyncio
@@ -513,19 +215,7 @@ async def test_docker_sandbox_cannot_see_outside_workspace(docker_ctx):
     outside = Path.home() / ".qzd-docker-tests" / "outside_secret.txt"
     outside.write_text("s3cret", encoding="utf-8")
     try:
-        out = await make_run_bash(docker_ctx)("cat ../outside_secret.txt 2>&1 || echo '看不到'")
+        out = await make_run_python(docker_ctx)("print(open('../outside_secret.txt').read())")
     finally:
         outside.unlink(missing_ok=True)
-    assert "s3cret" not in out["stdout"]
-
-
-# ---------- 辅助 ----------
-
-
-def _read_error_message(ctx, path: str) -> str:
-    """读文件失败时的错误信息。"""
-    try:
-        make_read_file(ctx)(path)
-    except CapabilityError as exc:
-        return exc.message
-    return ""
+    assert "s3cret" not in out["output"]

@@ -1,32 +1,56 @@
-"""意图层挂在 LangChain 上的两个挂钩。
+"""治理中间件：模型的一次 tool call → 受治理的一次执行。
 
-- **模型调用前**：按用户输入检索出相关技能，把工具收敛到候选集 ——
-  工具全量暴露会导致 prompt 爆 + 模型选错；同时把本次的策略上下文（信任模式）
-  告诉模型。
-- **工具调用前**：把这次 tool call 翻译成 `CapabilityIntent`，交给执行层走
-  流水线；不再直接落到工具函数上。
+deepAgents 接管文件工具之后，治理落点从"能力实现"上移到**中间件层**：
+deepAgents 的所有工具调用（它自己的文件工具、我们的工具）都会经过
+``awrap_tool_call``，所以在这里能看见每一次调用的名字和参数 ——
+风险判定、审批挂起、留痕都在这一层做。
 
-第二条是这套改造的关键：早先这里直接 `handler(request)`，工具函数被 LangChain
-直接调用，**绕开了执行层** —— 于是没有日志、没有超时、没有重试、没有策略检查。
+三件事：
+
+1. **模型调用前**：把工具收敛到本次允许的范围，并把"哪些工具会要人批"告诉模型；
+2. **工具调用前**：参数级风险规则命中（命令含 ``rm -rf``、URL 指内网）时，
+   用 LangGraph 的 ``interrupt()`` 挂起等人批；
+3. **工具调用后**：写调用记录、更新任务置信度。
+
+审批有两条路径，都落在 LangGraph 的中断机制上：
+
+- **声明级**（执行命令、写文件、联网…）：deepAgents 的 ``interrupt_on``，
+  在工具执行**之前**抛中断；
+- **参数级**（``rm -rf``、SSRF）：本模块的 ``interrupt()``，在工具执行**中**抛中断。
+
+两处中断的载荷形状不同，但恢复值统一成 deepAgents HITL 的格式
+（``[{"type": "accept"}]``），审批接口只需要认一种。
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import logging
+import time
+from datetime import UTC, datetime
+from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest
 from langchain_core.messages import SystemMessage, ToolMessage
+from langgraph.types import interrupt
 
-from app.capabilities.errors import CapabilityError, ErrorCode
-from app.capabilities.intent.resolver import find_spec, resolve
-from app.capabilities.registration.spec import CapabilitySpec
+from app.capabilities.errors import CapabilityError
+from app.capabilities.execution.context import ExecutionContext
+from app.capabilities.execution.redaction import redact
+from app.capabilities.execution.risk import assess
+from app.capabilities.execution.task_state import adjust_confidence, load_task_state
+from app.capabilities.registration.policy import Annotations, PermissionLevel
+from app.capabilities.registration.spec import KIND_TOOL, CapabilitySpec
+from app.capabilities.registration.tool_policy import FS_TOOL_NAMES, ToolPolicy, policy_for_tool
 
-if TYPE_CHECKING:  # pragma: no cover - 只用于类型标注
-    from app.capabilities.execution.context import ExecutionContext
+logger = logging.getLogger(__name__)
+
+# 恢复值的类型：HITL 与我们自己的中断统一用这一套
+APPROVE = "approve"
+REJECT = "reject"
 
 
 class CapabilityMiddleware(AgentMiddleware):
-    """意图层的两个挂钩。"""
+    """能力治理中间件。"""
 
     def __init__(
         self,
@@ -36,13 +60,33 @@ class CapabilityMiddleware(AgentMiddleware):
         thread_id: str = "",
         trust_mode: str = "balanced",
     ) -> None:
+        """构造中间件。
+
+        Args:
+            specs: 统一能力清单（我们的工具用它；文件工具走映射表）。
+            allowed_tool_keys: 本次允许的工具集；``None`` 表示不限制。
+            context: 执行上下文（工作区、数据库会话）。
+            thread_id: 会话 ID。
+            trust_mode: 会话信任模式。
+        """
         self.specs = specs
         self.allowed_tool_keys = allowed_tool_keys
         self.context = context
         self.thread_id = thread_id
         self.trust_mode = trust_mode
 
+    # ---------- 模型调用前 ----------
+
     async def awrap_model_call(self, request: ModelRequest, handler):
+        """收敛工具集 + 追加策略说明。
+
+        Args:
+            request: LangChain 的模型请求。
+            handler: 继续往下走的处理器。
+
+        Returns:
+            模型请求的响应。
+        """
         overrides: dict[str, Any] = {}
         if self.allowed_tool_keys is not None:
             kept = [
@@ -63,109 +107,282 @@ class CapabilityMiddleware(AgentMiddleware):
             return await handler(request)
         return await handler(request.override(**overrides))
 
+    # ---------- 工具调用 ----------
+
     async def awrap_tool_call(self, request, handler):
+        """工具调用：参数级风险挂起 → 执行 → 留痕 → 更新置信度。
+
+        Args:
+            request: LangChain 的工具调用请求。
+            handler: 真正执行工具的处理器。
+
+        Returns:
+            工具结果消息。
+
+        Raises:
+            CapabilityError: 参数级风险规则命中且人工拒绝时（返回错误消息，不抛）。
+        """
         tool_call = request.tool_call or {}
-        name = tool_call.get("name")
-        spec = find_spec(self.specs, str(name or ""))
-        if spec is None or self.context is None:
-            # 不在清单里的能力（理论上不会有）交给原路径
-            return await handler(request)
+        name = str(tool_call.get("name") or "")
+        args = dict(tool_call.get("args") or {})
 
+        # 1) 参数级风险：命中就挂起等人批
+        denied = await self._check_param_risk(name, args)
+        if denied is not None:
+            return denied
+
+        # 2) 执行
+        started = time.perf_counter()
         try:
-            intent = resolve(
-                tool_call,
-                self.specs,
-                thread_id=self.thread_id,
-                workspace=self.context.workspace,
-                trust_mode=self.trust_mode,
-                allowed_keys=self.allowed_tool_keys,
-            )
-            # 延迟导入：意图层是执行层的上游，模块级互相 import 会成环
-            from app.capabilities.execution.pipeline import execute
-
-            result = await execute(intent, self.context)
+            message = await handler(request)
         except CapabilityError as exc:
-            return ToolMessage(
+            message = ToolMessage(
                 content=exc.to_text(),
                 tool_call_id=str(tool_call.get("id") or ""),
                 status="error",
             )
+        duration_ms = int((time.perf_counter() - started) * 1000)
 
+        # 3) 留痕 + 置信度（只对文件工具；我们自己的工具由执行层写记录）
+        blocked = False
+        if name in FS_TOOL_NAMES:
+            blocked = await self._record(name, args, message, duration_ms)
+            if blocked:
+                # 任务越过阻塞线 → 明确告诉模型停下来，别再重试
+                message = _with_blocked_notice(message)
+
+        return message
+
+    async def _check_param_risk(self, name: str, args: dict[str, Any]) -> ToolMessage | None:
+        """参数级风险规则：命中就挂起等人批。
+
+        挂起用 LangGraph 的 ``interrupt()``：它在工具执行过程中抛中断，
+        恢复时把决定值交回这里。批准就继续执行，拒绝就返回一条错误消息给模型。
+
+        Args:
+            name: 工具名。
+            args: 工具参数。
+
+        Returns:
+            人工拒绝时返回一条错误消息；批准或没命中时返回 ``None``（继续执行）。
+        """
+        assessment = assess(self._spec_for(name), args)
+        if not assessment.escalated:
+            return None
+
+        payload = {
+            "kind": "param_risk",
+            "tool": name,
+            "arguments": redact(args),
+            # 风险等级存字符串：中断载荷要进 checkpoint 序列化，枚举类型不被认
+            "risk": str(assessment.risk),
+            "reasons": assessment.reasons,
+            "message": (
+                f"能力 {name} 的参数命中风险规则（{'；'.join(assessment.reasons)}），"
+                f"风险等级 {assessment.risk}，需要人工批准"
+            ),
+        }
+        decision = interrupt(payload)
+        if _is_approved(decision):
+            return None
         return ToolMessage(
-            content=self._render(result),
-            tool_call_id=str(tool_call.get("id") or ""),
-            status="error" if not result.ok else "success",
+            content=(
+                f"[RISK_BLOCKED] {payload['message']}；人工拒绝，未执行。"
+                "请调整参数后再试（不要重复同样的调用）。"
+            ),
+            tool_call_id="",
+            status="error",
         )
 
+    # ---------- 留痕 ----------
+
+    async def _record(
+        self,
+        name: str,
+        args: dict[str, Any],
+        message: Any,
+        duration_ms: int,
+    ) -> bool:
+        """给文件工具写一条调用记录，并更新任务置信度。
+
+        我们的工具（web_* / run_python / MCP）由执行层写记录 —— 那条路径有
+        完整的阶段结论；文件工具不走执行层，所以在这里补一条简化的。
+
+        Returns:
+            任务是否已经越过阻塞线。
+        """
+        if self.context is None or self.context.session is None:
+            return False
+
+        from app.models.invocation import (
+            STATUS_BLOCKED,
+            STATUS_FAILED,
+            STATUS_SUCCEEDED,
+            Invocation,
+        )
+
+        failed = getattr(message, "status", "") == "error"
+        text = str(getattr(message, "content", "") or "")
+        error_code = "EXECUTION_ERROR" if failed else None
+
+        policy = policy_for_tool(name)
+        state = await load_task_state(self.context.session, self.thread_id, name)
+        confidence = adjust_confidence(state.confidence, error_code)
+        blocked = confidence < self._block_threshold()
+
+        record = Invocation(
+            thread_id=self.thread_id or None,
+            capability_key=name,
+            arguments=redact(args),
+            payload=dict(args),
+            status=STATUS_BLOCKED if blocked else (STATUS_FAILED if failed else STATUS_SUCCEEDED),
+            risk=policy.risk,
+            permission=policy.permission,
+            decision_reason="文件工具经由 deepAgents 后端执行",
+            result={"content": text[:2000]},
+            error_code=error_code,
+            error_message=text[:500] if failed else None,
+            duration_ms=duration_ms,
+            confidence=confidence,
+            started_at=datetime.now(UTC),
+            decided_at=datetime.now(UTC),
+            finished_at=datetime.now(UTC),
+        )
+        self.context.session.add(record)
+        await self.context.session.flush()
+        return blocked
+
+    def _block_threshold(self) -> float:
+        """置信度阻塞阈值。"""
+        from app.core.config import settings
+
+        return settings.capability_confidence_block_threshold
+
+    # ---------- 策略说明 ----------
+
     def _policy_note(self) -> str:
-        """把本次的策略上下文告诉模型。"""
+        """把本次的策略上下文告诉模型。
+
+        特别要说清**哪些工具会触发人工审批** —— 模型提前知道了，就知道这类
+        调用要把参数一次做对；不知道的话，它会反复触发审批、反复中断任务。
+        """
         notes = [f"当前信任模式：{self.trust_mode}。"]
         if self.trust_mode == "balanced":
             notes.append("读写类操作会直接执行；执行命令、联网抓取需要人工审批后才能继续。")
         elif self.trust_mode == "strict":
-            notes.append("所有需要确认的操作都会挂起，等待人工审批。")
+            notes.append("所有写类、执行类、联网操作都会挂起，等待人工审批。")
         elif self.trust_mode == "permissive":
             notes.append("只有破坏性操作需要人工审批。")
+
+        approval = self._approval_tool_names()
+        if approval:
+            notes.append(
+                "以下工具需要人工批准才能执行："
+                + "、".join(sorted(approval))
+                + "。每次触发审批都会中断当前任务等人工处理，调用前请把参数一次做对。"
+            )
+            notes.append(
+                "另外：命令里含删除/写设备等特征、或抓取的是内网地址，"
+                "会命中参数级风险规则，需要额外的人工批准。"
+            )
+        count = self._exposed_count()
+        if count:
+            notes.append(f"本次可用工具 {count} 个。")
         return "\n".join(notes)
 
-    @staticmethod
-    def _render(result) -> str:
-        """渲染给模型看的文本。
+    def _approval_tool_names(self) -> set[str]:
+        """本次哪些工具会要人批。
 
-        按失败类型分层给不同的指令 —— 模型知道该怎么反应，任务才不会空转：
-
-        - **格式类**（参数没按 schema 填）：让它改参数重试，但有次数上限；
-        - **语义类**（参数合法但意图错了）：同样回灌，但会拉低任务置信度；
-        - **权限类**：明确不许重试，直接走权限流程；
-        - **阻塞/熔断**：让它停下来转人工，别再撞。
+        文件工具按映射表算；我们自己的工具按声明的 permission + 风险算
+        （规则与执行层一致 —— 两处各写一套迟早对不上）。
         """
-        error = result.error
-        if error is None:
-            return result.to_text()
+        from app.capabilities.registration.tool_policy import approval_tool_names
 
-        if error.code == ErrorCode.APPROVAL_REQUIRED:
-            return (
-                f"[{error.code}] {error.message}\n"
-                f"（调用记录 #{result.invocation_id}，人工批准后会自动执行；"
-                "请停止后续操作并告知用户需要确认）"
-            )
-        if result.blocked:
-            # 这次调用本身可能成功了/失败了，但任务已经越过阻塞线 ——
-            # 错误码还是原来的（要留着算置信度），但要明确告诉模型该停
-            return (
-                f"[{error.code}] {error.message}\n"
-                "（任务已阻塞：重试次数或任务置信度已到阈值；"
-                "请停止重试并告知用户需要人工介入）"
-            )
-        if error.code == ErrorCode.TASK_BLOCKED:
-            return (
-                f"[{error.code}] {error.message}\n（任务已阻塞，请停止重试并告知用户需要人工介入）"
-            )
-        if error.code == ErrorCode.CIRCUIT_OPEN:
-            return (
-                f"[{error.code}] {error.message}\n"
-                "（该能力近期连续失败，已熔断；请换一条路，别再重复调用）"
-            )
-        if error.code in (ErrorCode.PERMISSION_DENIED, ErrorCode.RISK_BLOCKED):
-            return (
-                f"[{error.code}] {error.message}\n"
-                "（权限/风险判定不通过，不允许重复调用；请停止并告知用户）"
-            )
-        if error.code == ErrorCode.SCHEMA_INVALID:
-            return (
-                f"[{error.code}] {error.message}\n"
-                "（参数格式不对，请按上面的要求改正后重试；连续多次不对会转人工）"
-            )
-        if error.code in (ErrorCode.INVALID_ARGUMENTS, ErrorCode.EXECUTION_ERROR):
-            confidence = (
-                f"，任务置信度降到 {result.confidence:.0f}" if result.confidence is not None else ""
-            )
-            return (
-                f"[{error.code}] {error.message}\n"
-                f"（这次调用没成功{confidence}；"
-                "请检查参数是否与实际目标一致后重试，不要重复同样的调用）"
-            )
-        return result.to_text()
+        names = set(approval_tool_names(self.trust_mode))
+        for spec in self.specs:
+            if spec.kind != KIND_TOOL or not spec.enabled:
+                continue
+            if self.allowed_tool_keys is not None and spec.key not in self.allowed_tool_keys:
+                continue
+            if spec.permission == PermissionLevel.CONFIRM:
+                names.add(spec.key)
+            elif spec.permission == PermissionLevel.ADMIN:
+                names.add(spec.key)
+        return names
+
+    def _exposed_count(self) -> int:
+        """本次暴露给模型的工具数量。
+
+        跟 ``_approval_tool_names`` 用同一套过滤条件（tool + enabled +
+        在允许集内），免得提示词里两个数字口径不一致。
+        """
+        count = 0
+        for spec in self.specs:
+            if spec.kind != KIND_TOOL or not spec.enabled:
+                continue
+            if self.allowed_tool_keys is not None and spec.key not in self.allowed_tool_keys:
+                continue
+            count += 1
+        return count + len(FS_TOOL_NAMES)
+
+    # ---------- 内部 ----------
+
+    def _spec_for(self, name: str) -> CapabilitySpec:
+        """取工具对应的声明（文件工具没有声明，用映射表合成一个）。
+
+        合成出来的声明只用于风险评估 —— 风险基线来自映射表，注解按幂等性填，
+        这样 ``execution/risk.py`` 那套参数级规则可以原样复用。
+        """
+        for spec in self.specs:
+            if spec.kind == KIND_TOOL and spec.key == name:
+                return spec
+        policy: ToolPolicy = policy_for_tool(name)
+        return CapabilitySpec(
+            key=name,
+            kind=KIND_TOOL,
+            risk=policy.risk,
+            permission=policy.permission,
+            annotations=Annotations(idempotent=policy.idempotent),
+        )
 
 
-__all__ = ["CapabilityMiddleware"]
+def _with_blocked_notice(message: Any) -> Any:
+    """给工具消息补一句"任务已阻塞，请停下来"。
+
+    置信度低于阈值说明模型在反复做错事 —— 它自己不会停，得我们告诉它。
+    """
+    notice = "\n\n[任务已阻塞] 任务置信度已低于阈值，请停止重试并告知用户需要人工介入。"
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        message.content = content + notice
+    return message
+
+
+def _is_approved(decision: Any) -> bool:
+    """恢复值里是不是"批准"。
+
+    两种中断都用同一套恢复格式（langchain HITL 的形状）：
+    ``{"decisions": [{"type": "approve"}]}`` 批准，
+    ``{"decisions": [{"type": "reject"}]}`` 拒绝。
+    也兼容直接给一个列表的老写法。
+    """
+    if decision is None:
+        return False
+    if isinstance(decision, dict):
+        items = decision.get("decisions")
+        if items is None:
+            items = [decision]
+    elif isinstance(decision, list):
+        items = decision
+    else:
+        items = [decision]
+    for item in items:
+        if isinstance(item, dict):
+            if item.get("type") in (APPROVE, "accept"):
+                return True
+            if item.get("type") in (REJECT, "deny"):
+                return False
+    return False
+
+
+__all__ = ["APPROVE", "REJECT", "CapabilityMiddleware"]

@@ -1,4 +1,4 @@
-"""能力层测试：统一清单、出厂证、意图层的检索与参数校验、执行层流水线与治理。"""
+"""能力层测试：统一清单、出厂证、技能导出、执行层流水线与治理。"""
 
 import pytest
 from httpx import AsyncClient
@@ -11,7 +11,6 @@ from app.capabilities.execution.result import ExecutionResult
 from app.capabilities.execution.risk import assess
 from app.capabilities.intent.intent import CapabilityIntent, compute_idempotency_key
 from app.capabilities.intent.middleware import CapabilityMiddleware
-from app.capabilities.intent.planner import collect_tool_keys, retrieve_skills, select_skills
 from app.capabilities.intent.resolver import resolve
 from app.capabilities.prompt import assemble_prompt
 from app.capabilities.registration.args_model import schema_to_model
@@ -22,6 +21,7 @@ from app.capabilities.registration.validator import (
     validate_arguments,
     validate_output,
 )
+from app.capabilities.skills_export import export_skills, render_skill_md
 
 CAPS = "/api/v1/capabilities"
 TOOLS = "/api/v1/tools"
@@ -30,16 +30,183 @@ MCP = "/api/v1/mcp-servers"
 INVOCATIONS = "/api/v1/invocations"
 
 
+# ---------- 测试用的假能力 ----------
+
+# 假能力的入参 / 出参契约。行为简单，但走的是和真实能力完全一样的执行路径。
+_WRITE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string"},
+        "content": {"type": "string"},
+    },
+    "required": ["path", "content"],
+    "additionalProperties": False,
+}
+_WRITE_OUTPUT = {
+    "type": "object",
+    "properties": {
+        "content": {"type": "string"},
+        "path": {"type": "string"},
+        "bytes": {"type": "integer"},
+        "created": {"type": "boolean"},
+    },
+    "required": ["content", "path", "bytes"],
+}
+_EXEC_SCHEMA = {
+    "type": "object",
+    "properties": {"command": {"type": "string"}},
+    "required": ["command"],
+    "additionalProperties": False,
+}
+_EXEC_OUTPUT = {
+    "type": "object",
+    "properties": {
+        "content": {"type": "string"},
+        "output": {"type": "string"},
+        "exit_code": {"type": "integer"},
+    },
+    "required": ["content", "exit_code"],
+}
+
+
+async def _install_tool(
+    session,
+    *,
+    name: str,
+    source: str,
+    permission: str = "none",
+    risk: str = "read",
+    parameters: dict | None = None,
+    output_schema: dict | None = None,
+    annotations: dict | None = None,
+    timeout_s: int = 10,
+    retry_policy: dict | None = None,
+):
+    """往 tool 表里装一条测试能力。
+
+    直接写库、绕过 API —— API 会校验 builtin 的 source 白名单，而测试要用的
+    是 ``tests.fake_capability`` 里的假能力。``origin`` 记成 user，免得被
+    "下线已被 deepAgents 接管的能力"那套逻辑误伤。
+    """
+    from app.models.tool import Tool
+
+    tool = Tool(
+        name=name,
+        display_name=name,
+        description="测试用能力",
+        type="builtin",
+        source=source,
+        config={},
+        parameters=parameters if parameters is not None else {},
+        enabled=True,
+        origin="user",
+        tags=["测试"],
+        permission=permission,
+        risk=risk,
+        output_schema=output_schema,
+        timeout_s=timeout_s,
+        retry_policy=retry_policy
+        or {"max_attempts": 1, "backoff_s": 0, "retry_on": [], "exponential": True},
+        annotations=annotations
+        or {"read_only": True, "destructive": False, "idempotent": True, "open_world": False},
+        version=1,
+    )
+    session.add(tool)
+    await session.commit()
+    return tool
+
+
+async def _install_write_tool(session, name: str = "test_write") -> None:
+    """装一个"写文件"式的测试能力：权限 none，自动放行。"""
+    await _install_tool(
+        session,
+        name=name,
+        source="tests.fake_capability:make_test_write",
+        permission="none",
+        risk="write",
+        parameters=_WRITE_SCHEMA,
+        output_schema=_WRITE_OUTPUT,
+        annotations={
+            "read_only": False,
+            "destructive": False,
+            "idempotent": True,
+            "open_world": False,
+        },
+    )
+
+
+async def _install_read_tool(session, name: str = "test_read") -> None:
+    """装一个"读文件"式的测试能力：文件不存在时失败。"""
+    await _install_tool(
+        session,
+        name=name,
+        source="tests.fake_capability:make_test_read",
+        permission="none",
+        risk="read",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "content": {"type": "string"},
+                "path": {"type": "string"},
+                "line_count": {"type": "integer"},
+            },
+            "required": ["content", "path"],
+        },
+    )
+
+
+async def _install_exec_tool(session, name: str = "test_exec") -> None:
+    """装一个"执行命令"式的测试能力：权限 confirm，要人批。"""
+    await _install_tool(
+        session,
+        name=name,
+        source="tests.fake_capability:make_test_exec",
+        permission="confirm",
+        risk="execute",
+        parameters=_EXEC_SCHEMA,
+        output_schema=_EXEC_OUTPUT,
+        timeout_s=30,
+        annotations={
+            "read_only": False,
+            "destructive": True,
+            "idempotent": False,
+            "open_world": True,
+        },
+    )
+
+
+async def _spec_of(session, name: str):
+    """从库里取出某个能力的声明。"""
+    from sqlalchemy import select
+
+    from app.capabilities.registration.registry import _tool_spec
+    from app.models.tool import Tool
+
+    row = (await session.execute(select(Tool).where(Tool.name == name))).scalar_one()
+    return _tool_spec(row)
+
+
 # ---------- 出厂证 ----------
 
 
 @pytest.mark.asyncio
 async def test_builtin_capabilities_are_installed(client: AsyncClient) -> None:
-    """内置能力应该已经被出厂源装进数据库，并标记为 builtin。"""
+    """内置能力应该已经被出厂源装进数据库，并标记为 builtin。
+
+    文件类能力不在这里 —— 它们由 deepAgents 的文件系统中间件提供。
+    """
     resp = await client.get(TOOLS, params={"origin": "builtin"})
     assert resp.status_code == 200
     names = {item["name"] for item in resp.json()["data"]["items"]}
-    assert {"read_file", "write_file", "list_files", "run_python"} <= names
+    assert {"run_python", "web_fetch", "web_search"} <= names
+    # 文件类能力不该再作为出厂内置能力出现
+    assert not ({"read_file", "write_file", "list_files", "run_bash"} & names)
 
 
 @pytest.mark.asyncio
@@ -53,21 +220,60 @@ async def test_sync_builtins_does_not_overwrite_operator_changes(
     from app.models.tool import Tool
 
     listing = await client.get(TOOLS, params={"origin": "builtin"})
-    target = next(item for item in listing.json()["data"]["items"] if item["name"] == "read_file")
+    target = next(item for item in listing.json()["data"]["items"] if item["name"] == "run_python")
     await client.put(f"{TOOLS}/{target['id']}", json={"description": "运营改过的说明"})
 
     # 再同步一次
     await CapabilityRegistry.sync_builtins(session)
     await session.commit()
 
-    row = (await session.execute(select(Tool).where(Tool.name == "read_file"))).scalar_one()
+    row = (await session.execute(select(Tool).where(Tool.name == "run_python"))).scalar_one()
     assert row.description == "运营改过的说明"
+
+
+@pytest.mark.asyncio
+async def test_superseded_builtin_capabilities_are_retired(client: AsyncClient, session) -> None:
+    """被 deepAgents 接管的出厂能力要被下线，不能留在清单里当工具。"""
+    from sqlalchemy import select
+
+    from app.capabilities.registration.registry import CapabilityRegistry
+    from app.models.tool import Tool
+
+    # 造一条"以前装过、现在没人提供"的出厂能力
+    session.add(
+        Tool(
+            name="read_file",
+            display_name="读取文件",
+            description="老的能力",
+            type="builtin",
+            source="app.capabilities.registration.builtin.fs:make_read_file",
+            config={},
+            parameters={},
+            enabled=True,
+            origin="builtin",
+            tags=["文件"],
+            permission="none",
+            risk="read",
+            timeout_s=10,
+            retry_policy={},
+            annotations={},
+            version=1,
+        )
+    )
+    await session.commit()
+
+    await CapabilityRegistry.sync_builtins(session)
+    await session.commit()
+
+    row = (await session.execute(select(Tool).where(Tool.name == "read_file"))).scalar_one()
+    assert row.enabled is False
+    assert not row.source
 
 
 @pytest.mark.asyncio
 async def test_builtin_specs_carry_governance_declarations(client: AsyncClient) -> None:
     """内置能力出厂时就要带齐声明：风险、权限、超时、重试、注解。"""
-    resp = await client.get(f"{CAPS}/run_bash/spec")
+    resp = await client.get(f"{CAPS}/run_python/spec")
     assert resp.status_code == 200
     spec = resp.json()["data"]
     assert spec["risk"] == "execute"
@@ -89,7 +295,7 @@ async def test_unified_manifest_lists_all_kinds(client: AsyncClient) -> None:
     data = resp.json()["data"]
     assert set(data["kinds"]) == {"tool", "mcp", "skill"}
     keys = {item["key"] for item in data["items"]}
-    assert "read_file" in keys  # 出厂内置能力
+    assert "run_python" in keys  # 出厂内置能力
     assert "本地 MCP" in keys
     assert "读文件技能" in keys
 
@@ -99,13 +305,13 @@ async def test_manifest_filters_by_kind_and_tag(client: AsyncClient) -> None:
     only_tools = await client.get(CAPS, params={"kind": "tool"})
     assert all(item["kind"] == "tool" for item in only_tools.json()["data"]["items"])
 
-    by_tag = await client.get(CAPS, params={"tag": "文件"})
+    by_tag = await client.get(CAPS, params={"tag": "网络"})
     assert by_tag.json()["data"]["total"] >= 1
 
 
 @pytest.mark.asyncio
 async def test_get_capability_by_key(client: AsyncClient) -> None:
-    resp = await client.get(f"{CAPS}/read_file")
+    resp = await client.get(f"{CAPS}/run_python")
     assert resp.status_code == 200
     assert resp.json()["data"]["kind"] == "tool"
     assert resp.json()["data"]["origin"] == "builtin"
@@ -121,17 +327,15 @@ async def test_get_missing_capability_returns_404(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_invoke_builtin_capability(client: AsyncClient) -> None:
-    """直接调一次内置能力，写进去再读出来。"""
+async def test_invoke_builtin_capability(client: AsyncClient, session) -> None:
+    """直接调一次能力，写进去再读出来。"""
+    await _install_write_tool(session, "test_write")
     written = await client.post(
-        f"{CAPS}/write_file/invoke", json={"path": "invoked.txt", "content": "hello"}
+        f"{CAPS}/test_write/invoke", json={"path": "invoked.txt", "content": "hello"}
     )
     assert written.status_code == 200
     assert written.json()["data"]["ok"] is True
-
-    read = await client.post(f"{CAPS}/read_file/invoke", json={"path": "invoked.txt"})
-    assert read.json()["data"]["ok"] is True
-    assert "hello" in read.json()["data"]["content"]
+    assert "hello" not in written.json()["data"]["content"]  # 只回显状态，不回显内容
 
 
 @pytest.mark.asyncio
@@ -143,8 +347,9 @@ async def test_invoke_missing_capability_returns_404(client: AsyncClient) -> Non
 @pytest.mark.asyncio
 async def test_invoke_records_invocation(client: AsyncClient, session) -> None:
     """执行层统一留痕：调用记录落在 invocation 表里。"""
+    await _install_write_tool(session, "test_write")
     await client.post(
-        f"{CAPS}/write_file/invoke",
+        f"{CAPS}/test_write/invoke",
         json={"path": "logged.txt", "content": "x"},
         params={"thread_id": "thread-log"},
     )
@@ -158,16 +363,17 @@ async def test_invoke_records_invocation(client: AsyncClient, session) -> None:
         .all()
     )
     assert rows
-    assert rows[0].capability_key == "write_file"
+    assert rows[0].capability_key == "test_write"
     assert rows[0].status == "succeeded"
     # 各阶段结论也记下来了
     assert {stage["stage"] for stage in rows[0].stages} >= {"schema", "permission", "risk"}
 
 
 @pytest.mark.asyncio
-async def test_invoke_rejects_arguments_violating_schema(client: AsyncClient) -> None:
+async def test_invoke_rejects_arguments_violating_schema(client: AsyncClient, session) -> None:
     """入参不符合声明的 schema 就该被挡下，而不是把脏数据带进执行。"""
-    resp = await client.post(f"{CAPS}/write_file/invoke", json={"path": "x.txt"})
+    await _install_write_tool(session, "test_write")
+    resp = await client.post(f"{CAPS}/test_write/invoke", json={"path": "x.txt"})
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["ok"] is False
@@ -194,34 +400,71 @@ def _tool(key: str, origin: str = "user") -> CapabilitySpec:
     return CapabilitySpec(key=key, kind=KIND_TOOL, origin=origin)
 
 
-def test_retrieve_skills_matches_tags():
+def test_export_skills_writes_skill_md(tmp_path):
+    """技能要导出成 deepAgents 认的目录结构：每个技能一个目录 + SKILL.md。"""
     specs = [
-        _skill("代码审查", ["代码", "质量"]),
-        _skill("部署上线", ["部署"]),
-        _skill("写测试", ["测试"]),
+        _skill("code-review", ["代码"], knowledge="逐行检查潜在问题。"),
+        _skill("deploy", ["部署"]),
     ]
-    hits = retrieve_skills(specs, "帮我审查一下代码质量")
-    assert [spec.key for spec in hits] == ["代码审查"]
+    sources = export_skills(specs, tmp_path / "skills")
+
+    assert sources == ["/skills/"]
+    skill_dir = tmp_path / "skills" / "code-review"
+    assert (skill_dir / "SKILL.md").exists()
+    text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    assert "name: code-review" in text
+    assert "逐行检查潜在问题。" in text
 
 
-def test_retrieve_skills_returns_empty_when_no_match():
-    specs = [_skill("部署上线", ["部署"])]
-    assert retrieve_skills(specs, "帮我写个爬虫") == []
+def test_export_skills_keeps_chinese_name_in_description(tmp_path):
+    """中文技能名转不出合法目录名 —— 退化成哈希名，但中文名要留在描述里。
+
+    否则模型看到的是一串看不懂的目录名，认不出这个技能是干什么的。
+    """
+    specs = [_skill("代码审查", ["代码"], knowledge="逐行检查。")]
+    export_skills(specs, tmp_path / "skills")
+
+    dirs = [p for p in (tmp_path / "skills").iterdir() if p.is_dir()]
+    assert len(dirs) == 1
+    text = (dirs[0] / "SKILL.md").read_text(encoding="utf-8")
+    assert "代码审查" in text
+    assert dirs[0].name.startswith("skill-")
 
 
-def test_select_skills_prefers_explicit_ids():
+def test_export_skills_respects_explicit_ids(tmp_path):
+    """显式指定了技能 id 就只导出那几个。"""
     specs = [_skill("A", ["x"]), _skill("B", ["y"])]
-    chosen = select_skills(specs, "随便什么", skill_ids=[specs[1].db_id])
-    assert [spec.key for spec in chosen] == ["B"]
+    specs[0].db_id = 1
+    specs[1].db_id = 2
+    export_skills(specs, tmp_path / "skills", skill_ids=[2])
+    assert (tmp_path / "skills" / "B" / "SKILL.md").exists()
+    assert not (tmp_path / "skills" / "A").exists()
 
 
-def test_collect_tool_keys_includes_builtin_capabilities():
-    skill = _skill("带工具的技能")
-    skill.members = ["custom_tool"]
-    specs = [skill, _tool("custom_tool"), _tool("read_file", origin="builtin")]
-    keys = collect_tool_keys([skill], specs)
-    assert "custom_tool" in keys
-    assert "read_file" in keys  # 出厂内置能力始终保留
+def test_export_skills_clears_stale_directory(tmp_path):
+    """上一次导出的技能不该留在目录里 —— 模型会看到已经不存在的技能。"""
+    skills_dir = tmp_path / "skills"
+    export_skills([_skill("old-skill", ["x"])], skills_dir)
+    assert (skills_dir / "old-skill").exists()
+
+    export_skills([], skills_dir)
+    assert not skills_dir.exists()
+
+
+def test_render_skill_md_puts_knowledge_before_constraints():
+    skill = _skill("写测试", ["测试"], knowledge="先写用例。")
+    skill.checklist = ["用例覆盖边界"]
+    skill.constraints = "不要写脆弱断言"
+    text = render_skill_md(skill, "write-test")
+    assert text.index("先写用例。") < text.index("不要写脆弱断言")
+
+
+def test_slugify_rejects_illegal_characters():
+    """技能目录名必须合法：小写 ASCII 字母 / 数字 / 单个连字符。"""
+    from app.capabilities.skills_export import _slugify
+
+    assert _slugify("My Skill!!") == "my-skill"
+    assert _slugify("--a--b--") == "a-b"
 
 
 def test_validate_arguments_reports_missing_required():
@@ -391,17 +634,11 @@ def test_redact_recurses_into_structures():
 @pytest.mark.asyncio
 async def test_pipeline_records_stages(session, tmp_path):
     """七阶段的结果都要落进调用记录，便于定位卡在哪一关。"""
-    from sqlalchemy import select
-
-    from app.capabilities.registration.registry import _tool_spec
-    from app.models.tool import Tool
-
-    spec = _tool_spec(
-        (await session.execute(select(Tool).where(Tool.name == "write_file"))).scalar_one()
-    )
+    await _install_write_tool(session, "test_write")
+    spec = await _spec_of(session, "test_write")
     context = ExecutionContext.build(workspace=tmp_path)
     context.session = session
-    intent = resolve({"name": "write_file", "args": {"path": "a.txt", "content": "x"}}, [spec])
+    intent = resolve({"name": "test_write", "args": {"path": "a.txt", "content": "x"}}, [spec])
     result = await execute(intent, context)
     await session.commit()
 
@@ -418,17 +655,11 @@ async def test_pipeline_records_stages(session, tmp_path):
 
 @pytest.mark.asyncio
 async def test_pipeline_blocks_on_invalid_arguments(session, tmp_path):
-    from sqlalchemy import select
-
-    from app.capabilities.registration.registry import _tool_spec
-    from app.models.tool import Tool
-
-    spec = _tool_spec(
-        (await session.execute(select(Tool).where(Tool.name == "write_file"))).scalar_one()
-    )
+    await _install_write_tool(session, "test_write")
+    spec = await _spec_of(session, "test_write")
     context = ExecutionContext.build(workspace=tmp_path)
     context.session = session
-    intent = resolve({"name": "write_file", "args": {"path": "a.txt"}}, [spec], validate=False)
+    intent = resolve({"name": "test_write", "args": {"path": "a.txt"}}, [spec], validate=False)
     result = await execute(intent, context)
 
     assert result.ok is False
@@ -438,18 +669,12 @@ async def test_pipeline_blocks_on_invalid_arguments(session, tmp_path):
 
 @pytest.mark.asyncio
 async def test_pipeline_requires_approval_for_execute_in_balanced_mode(session, tmp_path):
-    from sqlalchemy import select
-
-    from app.capabilities.registration.registry import _tool_spec
-    from app.models.tool import Tool
-
-    spec = _tool_spec(
-        (await session.execute(select(Tool).where(Tool.name == "run_bash"))).scalar_one()
-    )
+    await _install_exec_tool(session, "test_exec")
+    spec = await _spec_of(session, "test_exec")
     context = ExecutionContext.build(workspace=tmp_path)
     context.session = session
     intent = resolve(
-        {"name": "run_bash", "args": {"command": "echo hi"}}, [spec], trust_mode="balanced"
+        {"name": "test_exec", "args": {"command": "echo hi"}}, [spec], trust_mode="balanced"
     )
     result = await execute(intent, context)
 
@@ -460,18 +685,12 @@ async def test_pipeline_requires_approval_for_execute_in_balanced_mode(session, 
 
 @pytest.mark.asyncio
 async def test_pipeline_runs_in_permissive_mode(session, tmp_path):
-    from sqlalchemy import select
-
-    from app.capabilities.registration.registry import _tool_spec
-    from app.models.tool import Tool
-
-    spec = _tool_spec(
-        (await session.execute(select(Tool).where(Tool.name == "run_bash"))).scalar_one()
-    )
+    await _install_exec_tool(session, "test_exec")
+    spec = await _spec_of(session, "test_exec")
     context = ExecutionContext.build(workspace=tmp_path)
     context.session = session
     intent = resolve(
-        {"name": "run_bash", "args": {"command": "echo hi"}}, [spec], trust_mode="permissive"
+        {"name": "test_exec", "args": {"command": "echo hi"}}, [spec], trust_mode="permissive"
     )
     result = await execute(intent, context)
 
@@ -482,19 +701,13 @@ async def test_pipeline_runs_in_permissive_mode(session, tmp_path):
 @pytest.mark.asyncio
 async def test_pipeline_dedupes_idempotent_calls(session, tmp_path):
     """同键的重复调用不重复执行。"""
-    from sqlalchemy import select
-
-    from app.capabilities.registration.registry import _tool_spec
-    from app.models.tool import Tool
-
-    spec = _tool_spec(
-        (await session.execute(select(Tool).where(Tool.name == "write_file"))).scalar_one()
-    )
+    await _install_write_tool(session, "test_write")
+    spec = await _spec_of(session, "test_write")
     context = ExecutionContext.build(workspace=tmp_path)
     context.session = session
     context.thread_id = "idem-thread"
     intent = resolve(
-        {"name": "write_file", "args": {"path": "a.txt", "content": "x"}},
+        {"name": "test_write", "args": {"path": "a.txt", "content": "x"}},
         [spec],
         thread_id="idem-thread",
     )
@@ -511,10 +724,11 @@ async def test_pipeline_dedupes_idempotent_calls(session, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_approval_flow(client: AsyncClient) -> None:
+async def test_approval_flow(client: AsyncClient, session) -> None:
     """待审批 → 批准 → 执行。"""
+    await _install_exec_tool(session, "test_exec")
     pending = await client.post(
-        f"{CAPS}/run_bash/invoke",
+        f"{CAPS}/test_exec/invoke",
         json={"command": "echo approved"},
         params={"thread_id": "approve-thread"},
     )
@@ -538,9 +752,10 @@ async def test_approval_flow(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_deny_flow(client: AsyncClient) -> None:
+async def test_deny_flow(client: AsyncClient, session) -> None:
+    await _install_exec_tool(session, "test_exec")
     pending = await client.post(
-        f"{CAPS}/run_bash/invoke", json={"command": "echo nope"}, params={"thread_id": "deny"}
+        f"{CAPS}/test_exec/invoke", json={"command": "echo nope"}, params={"thread_id": "deny"}
     )
     invocation_id = pending.json()["data"]["invocation_id"]
     denied = await client.post(f"{INVOCATIONS}/{invocation_id}/deny", json={"reason": "不放心"})
@@ -549,9 +764,10 @@ async def test_deny_flow(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cannot_approve_twice(client: AsyncClient) -> None:
+async def test_cannot_approve_twice(client: AsyncClient, session) -> None:
+    await _install_exec_tool(session, "test_exec")
     pending = await client.post(
-        f"{CAPS}/run_bash/invoke", json={"command": "echo x"}, params={"thread_id": "twice"}
+        f"{CAPS}/test_exec/invoke", json={"command": "echo x"}, params={"thread_id": "twice"}
     )
     invocation_id = pending.json()["data"]["invocation_id"]
     await client.post(f"{INVOCATIONS}/{invocation_id}/deny")
@@ -709,16 +925,16 @@ async def test_timeout_on_non_idempotent_capability_is_not_retryable(tmp_path):
     context.sandbox_type = "local"
     context.sandbox_timeout = 1  # 沙箱内部超时压到 1s
     spec = CapabilitySpec(
-        key="run_bash",
+        key="test_exec",
         source_type="builtin",
-        locator={"source": "app.capabilities.registration.builtin.sandbox:make_run_bash"},
+        locator={"source": "tests.fake_capability:make_test_exec"},
         risk="execute",
         timeout_s=1,
         retry=RetryPolicy(max_attempts=3, backoff_s=0.1, retry_on=("TIMEOUT",)),
         annotations=Annotations(destructive=True, open_world=True),  # 不幂等
     )
     intent = CapabilityIntent(
-        capability_key="run_bash", arguments={"command": "sleep 5"}, spec=spec
+        capability_key="test_exec", arguments={"command": "sleep 5"}, spec=spec
     )
     result = await execute(intent, context)
     assert result.ok is False
@@ -832,18 +1048,15 @@ async def test_repeated_format_errors_block_the_task(session):
 @pytest.mark.asyncio
 async def test_blocked_task_refuses_further_calls(session, tmp_path):
     """阻塞之后不再执行，直接转人工。"""
-    from sqlalchemy import select
-
     from app.capabilities.execution.pipeline import execute
-    from app.capabilities.registration.registry import _tool_spec
     from app.models.invocation import Invocation
-    from app.models.tool import Tool
 
+    await _install_write_tool(session, "test_write")
     for _ in range(3):
         session.add(
             Invocation(
                 thread_id="blocked-1",
-                capability_key="write_file",
+                capability_key="test_write",
                 arguments={},
                 status="failed",
                 error_code="SCHEMA_INVALID",
@@ -851,14 +1064,12 @@ async def test_blocked_task_refuses_further_calls(session, tmp_path):
         )
     await session.commit()
 
-    spec = _tool_spec(
-        (await session.execute(select(Tool).where(Tool.name == "write_file"))).scalar_one()
-    )
+    spec = await _spec_of(session, "test_write")
     context = ExecutionContext.build(workspace=tmp_path)
     context.session = session
     context.thread_id = "blocked-1"
     intent = CapabilityIntent(
-        capability_key="write_file",
+        capability_key="test_write",
         arguments={"path": "a.txt", "content": "x"},
         spec=spec,
         thread_id="blocked-1",
@@ -875,22 +1086,17 @@ async def test_blocked_task_refuses_further_calls(session, tmp_path):
 @pytest.mark.asyncio
 async def test_capability_outside_allowed_set_goes_to_approval(session, tmp_path):
     """权限类错误不许模型重试，但可以转人工授权。"""
-    from sqlalchemy import select
-
     from app.capabilities.execution.pipeline import execute
-    from app.capabilities.registration.registry import _tool_spec
-    from app.models.tool import Tool
 
-    spec = _tool_spec(
-        (await session.execute(select(Tool).where(Tool.name == "write_file"))).scalar_one()
-    )
+    await _install_write_tool(session, "test_write")
+    spec = await _spec_of(session, "test_write")
     context = ExecutionContext.build(workspace=tmp_path)
     context.session = session
     intent = CapabilityIntent(
-        capability_key="write_file",
+        capability_key="test_write",
         arguments={"path": "a.txt", "content": "x"},
         spec=spec,
-        allowed_keys={"read_file"},
+        allowed_keys={"别的能力"},
     )
     result = await execute(intent, context)
     assert result.ok is False
@@ -901,20 +1107,15 @@ async def test_capability_outside_allowed_set_goes_to_approval(session, tmp_path
 @pytest.mark.asyncio
 async def test_task_blocks_as_soon_as_confidence_crosses_threshold(session, tmp_path):
     """置信度跌破阈值的那一刻就标记阻塞，不等下一次调用。"""
-    from sqlalchemy import select
-
     from app.capabilities.execution.pipeline import execute
-    from app.capabilities.registration.registry import _tool_spec
-    from app.models.tool import Tool
 
-    spec = _tool_spec(
-        (await session.execute(select(Tool).where(Tool.name == "read_file"))).scalar_one()
-    )
+    await _install_read_tool(session, "test_read")
+    spec = await _spec_of(session, "test_read")
     context = ExecutionContext.build(workspace=tmp_path)
     context.session = session
     context.thread_id = "cross-thread"
     intent = CapabilityIntent(
-        capability_key="read_file",
+        capability_key="test_read",
         arguments={"path": "不存在.txt"},
         spec=spec,
         thread_id="cross-thread",
@@ -931,69 +1132,32 @@ async def test_task_blocks_as_soon_as_confidence_crosses_threshold(session, tmp_
     assert result.blocked is True
 
 
-@pytest.mark.asyncio
-async def test_middleware_tells_model_to_stop_when_blocked():
-    """阻塞时给模型的提示要说清楚"停下来"，而不是让它继续撞。"""
-    from app.capabilities.execution.result import ExecutionResult
+def test_middleware_tells_model_to_stop_when_blocked():
+    """阻塞时给模型的提示要说清楚"停下来"，而不是让它继续撞。
 
-    result = ExecutionResult.failed(CapabilityError.of(ErrorCode.INVALID_ARGUMENTS, "文件不存在"))
-    result.blocked = True
-    text = CapabilityMiddleware._render(result)
+    新架构里这条提示由中间件的 ``_with_blocked_notice`` 追加在工具消息末尾。
+    """
+    from langchain_core.messages import ToolMessage
+
+    from app.capabilities.intent.middleware import _with_blocked_notice
+
+    message = _with_blocked_notice(ToolMessage(content="文件不存在", tool_call_id="c1"))
+    text = str(message.content)
     assert "任务已阻塞" in text
     assert "停止重试" in text
 
 
 def test_middleware_distinguishes_error_types():
-    """不同失败类型给模型不同的指令。"""
-    from app.capabilities.execution.result import ExecutionResult
+    """不同失败类型给模型不同的指令。
 
-    schema_error = ExecutionResult.failed(
-        CapabilityError.of(ErrorCode.SCHEMA_INVALID, "缺少 content")
-    )
-    assert "改正后重试" in CapabilityMiddleware._render(schema_error)
+    新架构里失败文本由 ``CapabilityError.to_text()`` 统一渲染：
+    可重试的说"修正参数后重试"，不可重试的说"换个思路，不要重复同样的调用"。
+    """
+    schema_error = CapabilityError.of(ErrorCode.SCHEMA_INVALID, "缺少 content")
+    assert "修正参数后重试" in schema_error.to_text()
 
-    semantic_error = ExecutionResult.failed(
-        CapabilityError.of(ErrorCode.INVALID_ARGUMENTS, "文件不存在")
-    )
-    semantic_error.confidence = 75.0
-    assert "置信度降到 75" in CapabilityMiddleware._render(semantic_error)
-
-    permission_error = ExecutionResult.failed(
-        CapabilityError.of(ErrorCode.PERMISSION_DENIED, "能力已停用")
-    )
-    assert "不允许重复调用" in CapabilityMiddleware._render(permission_error)
-
-
-# ---------- 效果确认 ----------
-
-
-def test_effect_verification_catches_missing_file(tmp_path):
-    """契约对了但文件没落盘，也要能抓出来。"""
-    from app.capabilities.registration.builtin.verify import get_verifier
-
-    context = ExecutionContext.build(workspace=tmp_path)
-    verifier = get_verifier("write_file")
-    problem = verifier({"path": "nope.txt", "bytes": 3}, context)
-    assert problem is not None
-    assert "不存在" in problem
-
-
-def test_effect_verification_passes_when_file_exists(tmp_path):
-    from app.capabilities.registration.builtin.verify import get_verifier
-
-    (tmp_path / "a.txt").write_text("abc", encoding="utf-8")
-    context = ExecutionContext.build(workspace=tmp_path)
-    verifier = get_verifier("write_file")
-    assert verifier({"path": "a.txt", "bytes": 3}, context) is None
-
-
-def test_effect_verification_catches_size_mismatch(tmp_path):
-    from app.capabilities.registration.builtin.verify import get_verifier
-
-    (tmp_path / "a.txt").write_text("abc", encoding="utf-8")
-    context = ExecutionContext.build(workspace=tmp_path)
-    verifier = get_verifier("write_file")
-    assert "大小不符" in verifier({"path": "a.txt", "bytes": 99}, context)
+    permission_error = CapabilityError.of(ErrorCode.PERMISSION_DENIED, "能力已停用")
+    assert "不要重复同样的调用" in permission_error.to_text()
 
 
 # ---------- 执行结果 ----------

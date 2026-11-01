@@ -8,6 +8,7 @@
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -106,6 +107,19 @@ class AgentService:
         context.thread_id = thread_id
         return context
 
+    def _make_runner(self, checkpointer: Any, model: Any) -> AgentRunner:
+        """拿一个绑定了 checkpointer 的 runner。
+
+        注入的 runner（测试用）通常只带了假模型，没带 checkpointer ——
+        但审批恢复必须走同一个 checkpointer，否则图接不上（LangGraph 直接
+        报 "Cannot use Command(resume=...) without checkpointer"）。
+        """
+        if self._runner is None:
+            return AgentRunner(checkpointer=checkpointer, model=model)
+        if self._runner.checkpointer is None:
+            self._runner.checkpointer = checkpointer
+        return self._runner
+
     async def chat(
         self,
         message: str,
@@ -113,14 +127,19 @@ class AgentService:
         provider_id: int | None = None,
         skill_ids: list[int] | None = None,
     ) -> AgentRunResult:
-        """跑一轮对话，返回最终回复。"""
+        """跑一轮对话，返回最终回复。
+
+        这一轮可能撞上人工审批 —— 那样返回的结果 ``status`` 是
+        ``pending_approval``，``pending`` 里是待审批的条目，
+        用 :meth:`approve` / :meth:`reject` 恢复。
+        """
         workspace = self.resolve_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(provider_id)
                 specs = await self.load_capabilities()
                 context = await self._build_context(workspace, specs, thread_id)
-                runner = self._runner or AgentRunner(checkpointer=checkpointer, model=model)
+                runner = self._make_runner(checkpointer, model)
                 result = await runner.run(
                     message,
                     thread_id,
@@ -139,6 +158,74 @@ class AgentService:
                 logger.exception("agent 执行失败 thread_id=%s", thread_id)
                 raise AgentError(_readable_error(exc)) from exc
 
+    # ---------- 人工审批 ----------
+
+    async def pending_approvals(self, thread_id: str) -> list[dict[str, Any]]:
+        """这个会话当前挂着哪些待审批的调用。
+
+        审批状态在 LangGraph 的 checkpoint 里（图挂在哪儿只有它知道），
+        不在调用记录表里。
+        """
+        workspace = self.resolve_workspace(thread_id)
+        async with open_checkpointer() as checkpointer:
+            try:
+                specs = await self.load_capabilities()
+                context = await self._build_context(workspace, specs, thread_id)
+                runner = self._make_runner(checkpointer, None)
+                return await runner.pending_approvals(
+                    thread_id,
+                    workspace,
+                    specs=specs,
+                    context=context,
+                )
+            except AppError:
+                raise
+            except Exception as exc:
+                logger.exception("读取待审批列表失败 thread_id=%s", thread_id)
+                raise AgentError(_readable_error(exc)) from exc
+
+    async def approve(self, thread_id: str) -> AgentRunResult:
+        """批准挂起的调用，恢复图继续跑。
+
+        恢复之后 agent 自己接着往下跑 —— 结果直接回到它的上下文，
+        不用等用户再说一句。
+        """
+        return await self._resume(thread_id, "approve")
+
+    async def reject(self, thread_id: str) -> AgentRunResult:
+        """拒绝挂起的调用，恢复图（工具不执行，agent 收到拒绝消息）。"""
+        return await self._resume(thread_id, "reject")
+
+    async def _resume(self, thread_id: str, decision: str) -> AgentRunResult:
+        """恢复挂起的图。
+
+        Args:
+            thread_id: 会话 ID。
+            decision: ``accept``（批准）或 ``reject``（拒绝）。
+        """
+        workspace = self.resolve_workspace(thread_id)
+        async with open_checkpointer() as checkpointer:
+            try:
+                model = await self._resolve_model(None)
+                specs = await self.load_capabilities()
+                context = await self._build_context(workspace, specs, thread_id)
+                runner = self._make_runner(checkpointer, model)
+                result = await runner.resume(
+                    thread_id,
+                    workspace,
+                    decision=decision,
+                    specs=specs,
+                    context=context,
+                )
+                if self.session is not None:
+                    await self.session.commit()
+                return result
+            except AppError:
+                raise
+            except Exception as exc:
+                logger.exception("恢复挂起的调用失败 thread_id=%s", thread_id)
+                raise AgentError(_readable_error(exc)) from exc
+
     async def stream(
         self,
         message: str,
@@ -153,7 +240,7 @@ class AgentService:
                 model = await self._resolve_model(provider_id)
                 specs = await self.load_capabilities()
                 context = await self._build_context(workspace, specs, thread_id)
-                runner = self._runner or AgentRunner(checkpointer=checkpointer, model=model)
+                runner = self._make_runner(checkpointer, model)
                 async for text in runner.stream(
                     message,
                     thread_id,

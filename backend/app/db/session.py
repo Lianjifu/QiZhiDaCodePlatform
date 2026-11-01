@@ -54,6 +54,7 @@ async def init_db() -> None:
     from app.capabilities.registration.registry import CapabilityRegistry
     from app.models import Example  # noqa: F401
     from app.models.invocation import Invocation  # noqa: F401
+    from app.rag.models import RagChunk, RagCollection, RagDocument  # noqa: F401
 
     if settings.db_auto_create_tables:
         async with engine.begin() as conn:
