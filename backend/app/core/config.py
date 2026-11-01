@@ -125,6 +125,25 @@ class Settings(BaseSettings):
     rag_embedding_timeout: int = 60
     rag_embedding_batch_size: int = 32
 
+    # ---- 记忆模块 ----
+    # 长期记忆用的 RAG 集合名；留空 = 只支持会话内记忆
+    #
+    # **平台不自动建这个集合** —— RAG 集合的向量化配置（模型 + 维度）是建集合时
+    # 锁死的，建错了只能重建。平台替用户建一个没配 embedding 的集合，等于把
+    # 用户锁死在"纯关键词检索"上。要用长期记忆，先在 RAG 界面建好集合、选好
+    # embedding 模型，再把集合名配到这里。
+    memory_collection_name: str = ""
+    # 是否每轮自动把记忆目录注入上下文
+    memory_catalog_enabled: bool = True
+    # 目录块的字符预算（每轮都付这笔钱，所以要小）
+    memory_catalog_budget_chars: int = 1200
+    # 目录最多几条
+    memory_catalog_max_entries: int = 40
+    # 单条摘要的长度上限
+    memory_summary_max_chars: int = 200
+    # 时间衰减半衰期（天）。只影响排序微调，不影响召回资格
+    memory_decay_half_life_days: int = 30
+
 
 @lru_cache
 def get_settings() -> Settings:

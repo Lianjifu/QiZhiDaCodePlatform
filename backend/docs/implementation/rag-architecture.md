@@ -2,8 +2,8 @@
 
 > 状态：**R0 + R1 已实现**（2026-11-01）
 >
-> 关联：记忆模块（短期 / 长期两层）是本层的**消费者**，尚未实现 ——
-> 计划见 [plans/memory-module.md](../plans/memory-module.md)。
+> 关联：记忆模块（短期 / 长期两层）是本层的**消费者**，已实现 ——
+> 见 [implementation/memory-module.md](memory-module.md)。
 >
 > 本文只描述**已经落地**的部分；未实现的阶段与前置改动都在 plans/ 下。
 
@@ -12,14 +12,13 @@
 RAG 不是能力层的一个能力，也不是记忆模块的一部分。它是**通用检索基础设施**：
 
 - 记忆模块的长期记忆要落在 RAG 上（可检索、可更新、可淘汰）；
-- 平台自己的知识库（规范文档、代码库、故障手册）也是同一套；
-- 以后做的"引用某段代码回答"也是同一套。
+- 任何需要"把一堆文本切块、检索出来"的场景都是同一套。
 
 所以把它做成**独立的一层** `app/rag/`，不依赖能力层、不依赖记忆模块。
 记忆模块接进来时，是它来消费 RAG，不是反过来。
 
 ```text
-        记忆模块（短期 / 长期）        知识库 / 文档问答
+        记忆模块（短期 / 长期）        其他语料检索场景
                   │                            │
                   └──────────┬─────────────────┘
                              ▼
@@ -47,7 +46,7 @@ app/rag/
 ## 3. 数据模型
 
 ```text
-collection（一个知识库，绑定一套向量化配置）
+collection（一个语料集合，绑定一套向量化配置）
   └─ document（一篇原始文档，按内容哈希去重）
        └─ chunk（检索单元，带向量）
 ```
@@ -188,8 +187,8 @@ POST /api/v1/rag/search
 | **R0** | 集合/文档/分块模型 + 分块 + SQL 存储 + 关键词检索 | ✅ 已实现 |
 | **R1** | 向量化（复用模型接入配置）+ 向量检索 + 混合融合 + 重排钩子 | ✅ 已实现 |
 
-后续阶段（M0 记忆模块骨架、M1 长期记忆落在 RAG 上）见
-[plans/memory-module.md](../plans/memory-module.md)。
+后续阶段（M0 记忆模块骨架、M1 长期记忆落在 RAG 上）已随记忆模块一起实现，
+见 [implementation/memory-module.md](memory-module.md)。
 
 ### 已实现的细节
 
@@ -213,8 +212,8 @@ POST /api/v1/rag/search
 
 ---
 
-## 9. 接记忆模块之前要解决的一件事
+## 9. 记忆模块依赖的 egress 维度拆分
 
-见 [plans/memory-module.md](../plans/memory-module.md#2-前置改动风险模型拆维度) ——
+见 [implementation/memory-module.md](memory-module.md#9-前置改动风险模型拆-egress-维度) ——
 能力层的风险模型要拆出 `egress_target` / `egress_data` 两个维度，
 否则平台自配的向量化端点会被误判成 `network` 风险。

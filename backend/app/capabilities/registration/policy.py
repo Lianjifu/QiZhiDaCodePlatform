@@ -27,7 +27,7 @@ class RiskLevel(StrEnum):
     """
 
     READ = "read"  # 只读，不改任何状态
-    WRITE = "write"  # 改状态（写文件、建目录、改配置）
+    WRITE = "write"  # 改状态（写文件、建目录、改配置），或把数据发到进程外
     EXECUTE = "execute"  # 执行任意代码或命令
     NETWORK = "network"  # 访问外部网络
     DESTRUCTIVE = "destructive"  # 不可逆的破坏性操作（删库、写裸设备、SSRF）
@@ -43,6 +43,21 @@ class PermissionLevel(StrEnum):
     NONE = "none"  # 自动放行
     CONFIRM = "confirm"  # 需要人确认（信任模式可以放宽这一档）
     ADMIN = "admin"  # 需要管理员（信任模式**放宽不了**这一档）
+
+
+# 数据出口的目标是谁定的 —— 决定这个能力是不是"模型能操控的出口"。
+#
+# 这两个值合起来才说得清一件事：能力把数据发出去的时候，**地址是不是模型说了算**。
+#
+# - ``model_controlled``：地址/参数由模型给（抓 URL、搜关键字、跑命令）——
+#   这类才是 SSRF 与数据外泄的真正面，风险顶到 ``network``；
+# - ``fixed``：地址由平台配好（自己配的向量化端点、内部服务）——
+#   模型只能决定"发什么内容"，决定不了"发到哪"，不该按网络风险拦。
+EGRESS_TARGET_FIXED = "fixed"
+EGRESS_TARGET_MODEL_CONTROLLED = "model_controlled"
+
+# egress_target 的合法取值
+EGRESS_TARGETS = (EGRESS_TARGET_FIXED, EGRESS_TARGET_MODEL_CONTROLLED)
 
 
 # 风险由低到高。参数级规则只能把风险**上调**，不能下调。
@@ -239,16 +254,28 @@ class Annotations:
     与 risk 的关系：annotations 描述"工具本来是什么样"，risk 描述"平台判定这次
     调用有多危险"。注册时按 annotations 推导 risk 的**下界**，平台可以上调，
     不允许下调。
+
+    ``egress_target`` 是这里最要紧的一个字段：它把"会联网"拆成了两件事 ——
+    **会不会出进程**（``open_world``）与**出口地址是不是模型说了算**
+    （``egress_target``）。只有后者才是 SSRF 与数据外泄的真正风险面。
     """
 
     read_only: bool = False  # 只读不改状态
     destructive: bool = False  # 可能造成破坏性改动
     idempotent: bool = False  # 重复执行结果相同（重试的前提）
-    open_world: bool = False  # 会访问平台控制不了的外部系统
+    open_world: bool = False  # 会访问进程之外的系统
+    # 数据出口的目标是谁定的：fixed（平台配好）/ model_controlled（模型给）
+    egress_target: str = EGRESS_TARGET_MODEL_CONTROLLED
+    # 会不会把数据发到那个出口
+    egress_data: bool = True
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> Annotations:
         """从数据库/接口的原始字典构造注解。
+
+        **新字段缺失时按保守默认处理**：``egress_target`` 缺失 → 记成
+        ``model_controlled``（当成模型能操控的出口），``egress_data`` 缺失 → 记成
+        True。这样老数据的行为与改造前完全一致，不需要写数据迁移。
 
         Args:
             data: 原始字典，可能为空或字段缺失。
@@ -257,11 +284,16 @@ class Annotations:
             构造好的 ``Annotations``。
         """
         data = data or {}
+        target = str(data.get("egress_target") or "").strip().lower()
+        if target not in EGRESS_TARGETS:
+            target = EGRESS_TARGET_MODEL_CONTROLLED
         return cls(
             read_only=bool(data.get("read_only", False)),
             destructive=bool(data.get("destructive", False)),
             idempotent=bool(data.get("idempotent", False)),
             open_world=bool(data.get("open_world", False)),
+            egress_target=target,
+            egress_data=bool(data.get("egress_data", True)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -271,6 +303,8 @@ class Annotations:
             "destructive": self.destructive,
             "idempotent": self.idempotent,
             "open_world": self.open_world,
+            "egress_target": self.egress_target,
+            "egress_data": self.egress_data,
         }
 
     @classmethod
@@ -281,6 +315,11 @@ class Annotations:
         不同，所以逐个映射。拿不到提示时返回全 False 的空注解 ——
         宁可是"没信息"，也不要瞎猜一个。
 
+        出口维度的推断口径：MCP 工具只要声明了开放世界，地址就是外部给定的
+        （模型能决定调哪个 URL、传什么参数）→ 记成 ``model_controlled``；
+        不开放世界的，地址由 server 决定 → ``fixed``，只读且不开放的连数据
+        都不往外发。
+
         Args:
             annotations: MCP 侧的 annotations 对象，可能为 ``None``。
 
@@ -289,11 +328,15 @@ class Annotations:
         """
         if annotations is None:
             return cls()
+        open_world = bool(getattr(annotations, "openWorldHint", False))
+        read_only = bool(getattr(annotations, "readOnlyHint", False))
         return cls(
-            read_only=bool(getattr(annotations, "readOnlyHint", False)),
+            read_only=read_only,
             destructive=bool(getattr(annotations, "destructiveHint", False)),
             idempotent=bool(getattr(annotations, "idempotentHint", False)),
-            open_world=bool(getattr(annotations, "openWorldHint", False)),
+            open_world=open_world,
+            egress_target=(EGRESS_TARGET_MODEL_CONTROLLED if open_world else EGRESS_TARGET_FIXED),
+            egress_data=open_world or not read_only,
         )
 
     def derived_risk(self) -> str:
@@ -302,20 +345,27 @@ class Annotations:
         注解描述的是"工具本来是什么样"，不是"这次调用有多危险" ——
         真要判定，看 ``risk`` 声明 + 参数级规则。
 
-        推导口径：只读 → read；会访问外部世界 → network；否则按写处理。
+        推导口径：只读且不出进程 → read；出口由模型决定 → network；
+        出口固定但有数据外发 → write；否则按写处理。
         注意是"参考值"：执行层只在**声明明显低估**时才用它上调，
         不会拿它下调声明的风险。
         """
+        if self.open_world and self.egress_target == EGRESS_TARGET_MODEL_CONTROLLED:
+            return RiskLevel.NETWORK
+        if self.open_world and self.egress_data:
+            # 出口固定：有数据出去，但不是模型能操控的地址
+            return RiskLevel.WRITE
         if self.read_only:
             return RiskLevel.READ
-        if self.open_world:
-            return RiskLevel.NETWORK
         return RiskLevel.WRITE
 
 
 __all__ = [
     "APPROVAL_APPROVED",
     "APPROVAL_PENDING",
+    "EGRESS_TARGETS",
+    "EGRESS_TARGET_FIXED",
+    "EGRESS_TARGET_MODEL_CONTROLLED",
     "Annotations",
     "PermissionLevel",
     "RetryPolicy",

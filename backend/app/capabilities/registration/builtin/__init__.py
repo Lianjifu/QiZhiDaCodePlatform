@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.capabilities.registration.policy import (
+    EGRESS_TARGET_FIXED,
     Annotations,
     PermissionLevel,
     RetryPolicy,
@@ -78,6 +79,14 @@ def _obj(properties: dict[str, Any], required: list[str] | None = None) -> dict[
 _EXEC = Annotations(destructive=True, open_world=True)
 # 联网类是只读 GET：同样的请求重发一次结果不变，可以安全重试
 _OPEN = Annotations(read_only=True, idempotent=True, open_world=True)
+# 固定出口：地址由平台配好，模型只能决定发什么内容 —— 不是 SSRF 面
+_FIXED = Annotations(
+    read_only=True,
+    idempotent=True,
+    open_world=True,
+    egress_target=EGRESS_TARGET_FIXED,
+    egress_data=True,
+)
 
 # 重试策略：只对"外部因素导致、且重试安全"的错误重试
 _RETRY_TIMEOUT = RetryPolicy(max_attempts=2, backoff_s=0.5, retry_on=("TIMEOUT",))
@@ -194,6 +203,149 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
                     },
                 },
                 ["content", "query", "results"],
+            ),
+        ),
+        # ---------- 记忆 ----------
+        # memory_search / memory_read / memory_write 的共同约定：
+        #
+        # - 检索与读取都是只读、幂等的；
+        # - **出口是固定的**：长期记忆的检索要打平台自己配的向量化端点，
+        #   地址不是模型给的，所以 egress_target=fixed —— 不按 network 风险拦，
+        #   否则 balanced 模式下每查一次记忆都要人工审批；
+        # - 写入是幂等的（同内容会合并成同一条），风险 write、权限 confirm：
+        #   balanced 模式自动放行，strict 模式每次要人批。
+        BuiltinSpec(
+            key="memory_search",
+            source="app.capabilities.registration.builtin.memory:make_memory_search",
+            display_name="召回记忆",
+            description=(
+                "召回记忆，返回命中条目的摘要与 id（不给全文）。"
+                "scope 默认 all（会话内 + 跨会话都搜），"
+                "可指定 session 只搜会话内、long_term 只搜跨会话。"
+            ),
+            tags=("记忆", "检索"),
+            permission=PermissionLevel.NONE,
+            risk=RiskLevel.READ,
+            timeout_s=20,
+            annotations=_FIXED,
+            input_schema=_obj(
+                {
+                    "query": {"type": "string", "description": "检索词，用真正想找的东西来搜"},
+                    "scope": {
+                        "type": "string",
+                        "enum": ["all", "session", "long_term"],
+                        "description": "会话内 + 跨会话（默认）、会话内、或跨会话",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "返回多少条，默认 8",
+                    },
+                },
+                ["query"],
+            ),
+            output_schema=_obj(
+                {
+                    "content": {"type": "string"},
+                    "query": {"type": "string"},
+                    "scope": {"type": "string"},
+                    "items": {"type": "array", "items": {"type": "object"}},
+                },
+                ["content", "items"],
+            ),
+        ),
+        BuiltinSpec(
+            key="memory_read",
+            source="app.capabilities.registration.builtin.memory:make_memory_read",
+            display_name="读取记忆",
+            description="按 id 取一条记忆的完整正文（memory_search 给的 id）。",
+            tags=("记忆", "检索"),
+            permission=PermissionLevel.NONE,
+            risk=RiskLevel.READ,
+            timeout_s=20,
+            annotations=_FIXED,
+            input_schema=_obj(
+                {"id": {"type": "string", "description": "记忆 id"}},
+                ["id"],
+            ),
+            output_schema=_obj(
+                {
+                    "content": {"type": "string"},
+                    "id": {"type": "string"},
+                    "scope": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "created_at": {"type": "string"},
+                    "source": {"type": "string"},
+                },
+                ["content", "id"],
+            ),
+        ),
+        BuiltinSpec(
+            key="memory_write",
+            source="app.capabilities.registration.builtin.memory:make_memory_write",
+            display_name="写入记忆",
+            description=(
+                "写入一条记忆。只记值得记的：用户明确说过的、未来会用到的、"
+                "且不能从工作区直接读出来的内容。用户改主意时要用 supersedes "
+                "指明覆盖哪一条。"
+            ),
+            tags=("记忆", "写入"),
+            permission=PermissionLevel.CONFIRM,
+            risk=RiskLevel.WRITE,
+            timeout_s=20,
+            annotations=Annotations(
+                idempotent=True,
+                open_world=True,
+                egress_target=EGRESS_TARGET_FIXED,
+                egress_data=True,
+            ),
+            input_schema=_obj(
+                {
+                    "content": {
+                        "type": "string",
+                        "description": "记忆正文，要自包含并带上将来能检索到的关键词",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "preference",
+                            "decision",
+                            "convention",
+                            "fact",
+                            "profile",
+                            "note",
+                        ],
+                        "description": "记忆类型",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "检索标签，用用户会搜的词",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["session", "long_term"],
+                        "description": "会话内（默认）或跨会话",
+                    },
+                    "title": {"type": "string", "description": "一句话摘要"},
+                    "supersedes": {
+                        "type": "string",
+                        "description": "被这条覆盖的记忆 id",
+                    },
+                },
+                ["content", "kind"],
+            ),
+            output_schema=_obj(
+                {
+                    "content": {"type": "string"},
+                    "id": {"type": "string"},
+                    "scope": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                },
+                ["content", "id"],
             ),
         ),
     )

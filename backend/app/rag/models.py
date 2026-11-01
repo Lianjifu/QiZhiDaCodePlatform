@@ -3,7 +3,7 @@
 三层结构，一一对应检索链路上的三步：
 
 ```text
-collection（一个知识库，绑定一套向量化配置）
+collection（一个语料集合，绑定一套向量化配置）
   └─ document（一篇原始文档，按内容哈希去重）
        └─ chunk（检索单元，带向量）
 ```
@@ -32,7 +32,7 @@ def utcnow() -> datetime:
 
 
 class RagCollection(Base):
-    """一个知识库（检索的边界）。"""
+    """一个语料集合（检索的边界）。"""
 
     __tablename__ = "rag_collection"
 

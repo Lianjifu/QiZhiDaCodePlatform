@@ -182,7 +182,9 @@ class CapabilityMiddleware(AgentMiddleware):
             return None
 
         assessment = assess(self._spec_for(name), args)
-        if not assessment.escalated:
+        if not assessment.needs_review:
+            # 没有威胁信号 —— 只是风险分类被调整了（比如"会向固定出口发数据"
+            # 记成 write）。那不是危险，不该再挂一次让人批。
             return None
 
         payload = {

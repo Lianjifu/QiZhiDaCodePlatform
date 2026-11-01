@@ -3,7 +3,7 @@
 > 状态：**未开始**（2026-11-01）
 >
 > 关联文档：[implementation/capability-module.md](../implementation/capability-module.md)（能力模块已实现部分）、
-> [memory-module.md](memory-module.md)（记忆模块计划）、
+> [memory-module.md](../implementation/memory-module.md)（记忆模块计划）、
 > [rag-followups.md](rag-followups.md)（RAG 层待办）
 
 这份文档记录**能力模块还没做完的事**：能力模块的每个已知限制，都是一件待办。

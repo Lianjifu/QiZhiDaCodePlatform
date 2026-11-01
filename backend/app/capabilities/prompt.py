@@ -18,6 +18,7 @@ def assemble_prompt(
     base_prompt: str,
     skills: list[CapabilitySpec] | None = None,
     runtime_notes: list[str] | None = None,
+    extra_blocks: list[str] | None = None,
 ) -> str:
     """组装最终的系统提示词。
 
@@ -25,6 +26,10 @@ def assemble_prompt(
         base_prompt: 基础提示词（全局常量）。
         skills: 本次挂载的技能。
         runtime_notes: 运行时上下文说明（工作区、约束等）。
+        extra_blocks: 额外的独立块（各自带自己的标题，比如记忆目录）。
+            与 ``runtime_notes`` 分开是因为它们性质不同 —— 运行时说明是
+            "环境是什么样"，记忆目录是"可能相关的背景资料"，混在一个标题下
+            模型会分不清。
 
     Returns:
         拼好的系统提示词。空块不拼进去，避免出现空标题。
@@ -37,6 +42,8 @@ def assemble_prompt(
 
     if runtime_notes:
         parts.append("运行环境：\n" + "\n".join(f"- {note}" for note in runtime_notes))
+
+    parts.extend(block.strip() for block in (extra_blocks or []) if block and block.strip())
 
     return "\n\n".join(part for part in parts if part)
 

@@ -5,7 +5,7 @@
 > 关联文档：[rag-architecture.md](rag-architecture.md)（RAG 服务层）、
 > [plans/capability-followups.md](../plans/capability-followups.md)（能力层待办与已知限制）、
 > [plans/agent-migration-deepagents.md](../plans/agent-migration-deepagents.md)（deepAgents 迁移方案与决策记录）、
-> [plans/memory-module.md](../plans/memory-module.md)（记忆模块计划）
+> [memory-module.md](memory-module.md)（记忆模块计划）
 
 这份文档梳理**能力模块**已经做完的能力，以及它是怎么实现的。
 未实现的部分、已知限制与排期，都在 `plans/` 下，不在这里重复。
@@ -148,7 +148,7 @@ query string，其余进 JSON body。
 | `permission` | none / confirm / admin | 谁来放行这次调用 |
 | `timeout_s` | 秒 | 单次调用上限 |
 | `retry` | `RetryPolicy` | 次数 / 退避 / 可重试错误码白名单 / 是否要求幂等 |
-| `annotations` | read_only / destructive / idempotent / open_world | 工具自述，词汇对齐 MCP tool annotations |
+| `annotations` | read_only / destructive / idempotent / open_world / egress_target / egress_data | 工具自述，词汇对齐 MCP tool annotations |
 
 ### 3.4 deepAgents 的文件工具没有声明 —— 用一张表补上
 
@@ -191,10 +191,35 @@ query string，其余进 JSON body。
 风险还会被**参数级规则上调**（规则是纯函数，便于单测、便于向模型解释"这次
 为什么要审批"）：
 
-| 触发 | 上调到 |
-| --- | --- |
-| 命令命中 `rm -rf` / `dd if=` / `mkfs` / `curl … \| sh` / 写裸设备 | `destructive` + 管理员放行 |
-| `web_fetch` 的 URL 指向内网地址 | `destructive` + 管理员放行（SSRF 尝试） |
+| 触发 | 上调到 | 是威胁信号吗 |
+| --- | --- | --- |
+| 命令命中 `rm -rf` / `dd if=` / `mkfs` / `curl … \| sh` / 写裸设备 | `destructive` + 管理员放行 | ✅ |
+| `web_fetch` 的 URL 指向内网地址 | `destructive` + 管理员放行（SSRF 尝试） | ✅ |
+| 注解说开放世界，且**出口由模型决定** | `network` | ✅（SSRF 面） |
+| 注解说会破坏性改动 | `write` | ✅ |
+| 注解说开放世界，但**出口是平台配好的**且有数据外发 | `write` | ❌ 只是分类调整 |
+
+**最后一行是"分类调整"，不是威胁信号** —— 平台自配的向量化端点、数据出内网，
+都是常态。参数级的挂起只由威胁信号触发：声明级已经放过一次了，再挂一次等于
+同一次调用让人批两遍。不分开就会踩一个很实际的坑 —— 记忆检索会被评估成 write，
+于是**每查一次记忆都要人工审批**。
+
+### 3.6 出口维度：会不会出进程，与出口是不是模型说了算
+
+`open_world` 只说"会不会访问进程之外的系统"。真正决定风险面的是**出口地址
+是不是模型给的**：
+
+| 字段 | 取值 | 含义 |
+| --- | --- | --- |
+| `egress_target` | `fixed` / `model_controlled` | 连到哪里是平台定的还是模型定的 |
+| `egress_data` | yes / no | 有没有把数据发出去 |
+
+只有 `model_controlled` 才是 SSRF 面（模型能把数据发到任意地址）。`fixed`
+的出口（平台自配的向量化端点、内部服务）模型只能决定"发什么内容"，决定不了
+"发到哪"。
+
+新字段缺失时按**最保守**的默认处理（`model_controlled`）—— 改造前的老数据
+行为完全不变，不需要写数据迁移。
 
 ---
 
@@ -302,6 +327,14 @@ BuiltinSpec(
 
 启动时 `registry.py::sync_builtins()` 把它同步进 `tool` 表（`origin=builtin`），
 **只补空字段** —— 运营改过的内容不会被启动流程冲掉。
+
+**一条例外：契约以代码为准。** 入参 / 出参 schema **无条件**用出厂声明覆盖 ——
+内置能力的实现是代码里写死的函数签名，契约跟着实现走。数据库里那份要是能
+漂移，模型看到的就是旧契约，调用会被参数校验直接拦下。策略字段（风险等级、
+权限要求、超时、重试、启用状态、描述）仍然听数据库的 —— 那些本来就该由
+运营调。
+
+读清单时（`_tool_spec()`）同样优先用代码里的契约。
 
 同一次同步还会**下线被 deepAgents 接管的出厂能力**（`_retire_superseded()`）：
 `read_file` / `write_file` / `edit_file` / `glob` / `grep` / `list_files` /
@@ -597,7 +630,7 @@ GET    /api/v1/skills/{id}/preview      预览挂载效果：会带哪些能力�
 `create_deep_agent(memory=["/AGENTS.md"])` 把内容注入每轮的系统提示词。
 
 > 真正的记忆模块（短期 / 长期两层）还没做，见
-> [plans/memory-module.md](../plans/memory-module.md)。现在只有一个"agent 能自己
+> [memory-module.md](memory-module.md)。现在只有一个"agent 能自己
 > 改的文件"。
 
 ### 5.11 子代理

@@ -6,7 +6,7 @@
 > 判据只有一条：**deepAgents 有对应物 → 删我们的；deepAgents 没有 → 留我们的。**
 >
 > 关联文档：[implementation/capability-module.md](../implementation/capability-module.md)（当前能力模块的实现，迁移后会被大幅裁剪）、
-> [memory-module.md](memory-module.md)、[capability-followups.md](capability-followups.md)
+> [memory-module.md](../implementation/memory-module.md)、[capability-followups.md](capability-followups.md)
 
 ---
 

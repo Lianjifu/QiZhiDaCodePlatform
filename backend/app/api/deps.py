@@ -8,6 +8,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
+from app.memory.service import MemoryService
 from app.rag.service import RagService
 from app.services.agent import AgentService
 from app.services.capability import CapabilityService
@@ -64,3 +65,19 @@ def get_invocation_service(session: DbSession) -> InvocationService:
 def get_rag_service(session: DbSession) -> RagService:
     """构造 RAG 服务实例。"""
     return RagService(session)
+
+
+def get_memory_service(session: DbSession) -> MemoryService:
+    """构造记忆服务实例。
+
+    跟 RAG 一样，记忆的领域服务直接用（``app/memory/service.py``），不另起
+    一层 ``app/services`` 包装 —— 那层只是转发。
+    """
+    from app.memory.long_term_store import LongTermMemoryStore
+    from app.memory.service import MemoryService
+
+    return MemoryService(
+        session=session,
+        thread_id="",
+        long_term_store=LongTermMemoryStore(session),
+    )

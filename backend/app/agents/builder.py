@@ -14,6 +14,23 @@ deepAgents 额外带来规划（write_todos）、子代理（task）、技能（
 
 同名工具不能同时存在：deepAgents 的文件工具名与我们的旧文件能力重名，
 所以我们的文件类能力不再暴露成工具（它们的能力由 deepAgents 的文件工具接管）。
+
+## 组装的顺序为什么是这样
+
+```text
+1. context.approval_handled = True   ← 必须最先
+2. build_tools(...)                   ← 工具会读这个标记，决定要不要自己再问一次审批
+3. 能力名查重
+4. CapabilityMiddleware + TodoListMiddleware
+5. _interrupt_on(...)                 ← 声明级审批闸，规则来自同一份 policy
+6. _general_subagent(...)             ← 子代理显式挂同一套治理
+7. create_deep_agent(...)
+```
+
+第 1 步的顺序是硬要求：**审批已经由 deepAgents 的 HITL 负责**（``interrupt_on``），
+工具能跑到执行层就说明人已经批过了。执行层如果再问一遍，就出现"批准了等于
+没批准"。这个标记必须在建工具**之前**设上，因为工具构造时就把"要不要自己
+审批"固化进参数里了。
 """
 
 from __future__ import annotations
@@ -90,8 +107,11 @@ async def build_agent(
     # **审批由 deepAgents 的 HITL 负责**（``interrupt_on`` 那一套）。
     # 工具能跑到执行层，就说明人已经批过了 —— 执行层不要再问一遍，
     # 否则"批准了等于没批准"。
+    # 必须在 build_tools 之前设：工具构造时就把这个标记读进去了。
     context.approval_handled = True
 
+    # 我们的工具（走能力层执行流水线）。FS_TOOL_NAMES 里的跳过 —— 那些由
+    # deepAgents 的文件工具提供，两边都有会出现同名工具。
     tools = await build_tools(specs, context, allowed_tool_keys, skip_names=FS_TOOL_NAMES)
 
     # 同名能力必须显式报错，不能让 LangGraph 静默覆盖
@@ -101,6 +121,7 @@ async def build_agent(
             raise ValueError(f"能力名重复：{tool.name}")
         seen.add(tool.name)
 
+    # 治理中间件：工具收敛（意图层选了哪些就只露哪些）、参数级风险判定、留痕。
     governance = CapabilityMiddleware(
         specs,
         allowed_tool_keys=allowed_tool_keys,
@@ -108,8 +129,10 @@ async def build_agent(
         thread_id=thread_id,
         trust_mode=trust_mode,
     )
+    # TodoListMiddleware 提供 write_todos —— deepAgents 的规划能力。
     middleware: list[Any] = [governance, TodoListMiddleware()]
 
+    # 声明级审批闸：哪些工具在执行**之前**就要人批。
     interrupt_on = _interrupt_on(specs, trust_mode, allowed_tool_keys)
     if subagents is None:
         subagents = _general_subagent(
@@ -118,6 +141,7 @@ async def build_agent(
             model=model,
         )
 
+    # 记忆文件必须先存在，记忆中间件才读得到内容
     if memory:
         _ensure_memory_files(context.workspace, memory)
 
@@ -127,6 +151,7 @@ async def build_agent(
         system_prompt=system_prompt or _default_prompt(),
         checkpointer=checkpointer,
         middleware=middleware,
+        # backend 决定文件工具落在哪：文件操作走本地工作区，命令执行走沙箱
         backend=build_backend(context, skills_dir),
         interrupt_on=interrupt_on or None,
         skills=skills,
@@ -135,11 +160,22 @@ async def build_agent(
     )
 
 
-# 记忆文件（AGENTS.md）的初始内容
+# 工作区说明文件（AGENTS.md）的初始内容
+#
+# ⚠️ **这不是记忆模块**。两者容易混：
+#
+# - **AGENTS.md**（本文件）：工作区级、agent 自己维护、**每轮全量注入**的
+#   说明文件 —— 类似项目的 CLAUDE.md，管的是"这个工作区的规矩"；
+# - **记忆模块**（app/memory/）：带评分的、按需召回的**经验** —— 管的是
+#   "用户偏好、项目约定、已定结论"，而且要经能力层写入。
+#
+# AGENTS.md 的内容不受预算控制、不做相关性排序，所以只适合放短而稳定的东西；
+# 篇幅会长、有时效性的内容应该走记忆模块。
 _MEMORY_TEMPLATE = (
-    "# 长期记忆\n\n"
-    "这个文件记录跨轮次要记住的东西（用户偏好、项目约定、已经确定的结论）。\n"
-    "只写真正需要长期保留的内容 —— 写进来的每一句都会进每轮的提示词。\n"
+    "# 工作区说明\n\n"
+    "这个文件记录这个工作区的固定规矩（构建命令、目录约定、注意事项）。\n"
+    "只写简短稳定的内容 —— 这里的每一句都会进每轮的提示词。\n"
+    "会变的、篇幅长的内容请用 memory_write 写进记忆，由记忆模块按需召回。\n"
 )
 
 

@@ -29,7 +29,7 @@ RAG 层已实现的部分（集合 / 文档 / 分块、分块策略、SQL 存储
 
 **现状**：一次查一个集合（`collection_id` 单数）。
 
-**影响**：知识分散在多个集合时（规范文档、代码库、记忆各一集），一次查询
+**影响**：语料分散在多个集合时（规范文档、代码库、记忆各一集），一次查询
 只能覆盖其中一个。
 
 **打算怎么做**：`POST /api/v1/rag/search` 的 `collection_id` 接受列表；
@@ -93,5 +93,5 @@ BM25，扫全库。几千条分块毫秒级。
 
 ## 关联
 
-- 记忆模块（消费 RAG）的计划见 [memory-module.md](memory-module.md)。
+- 记忆模块（消费 RAG）的计划见 [memory-module.md](../implementation/memory-module.md)。
   记忆集合的向量化配置同样是锁死的，换模型要重建集合并重新灌记忆。

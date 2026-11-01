@@ -6,6 +6,19 @@ LangChain 的 provider 名字和国内实际在用的服务对不上：DeepSeek�
 
 绝大多数厂商都提供了 OpenAI 兼容端点，所以 `langchain_provider` 一律填
 `"openai"`，只有 Anthropic 和 Azure 这类原生协议才用别的值。
+
+## 两个容易踩的坑
+
+**一、`langchain_provider` 不是我们的枚举值。** 我们的枚举值是 ``key``
+（``deepseek`` / ``qwen`` / …，存库用）；``langchain_provider`` 是
+``init_chat_model()`` 认识的 provider 名。**填错的后果很具体**：
+``init_chat_model("deepseek:xxx")`` 会去找 ``langchain-deepseek`` 这个包 ——
+没装就直接报 "Initializing ChatDeepSeek requires the langchain-deepseek
+package"。所以国产模型一律填 ``openai`` + 自定义 ``base_url``。
+
+**二、base_url 要按厂商官方文档写。** 带不带 ``/v1`` 各家不一样
+（DeepSeek 官方写的是 ``https://api.deepseek.com``，OpenAI 是
+``https://api.openai.com/v1``），这里照抄文档，不要凭印象加后缀。
 """
 
 from dataclasses import dataclass
@@ -15,7 +28,20 @@ from app.core.exceptions import ValidationError
 
 @dataclass(frozen=True)
 class ProviderPreset:
-    """一个供应商预设。"""
+    """一个供应商预设。
+
+    字段含义：
+
+    - ``key`` —— **我们的**枚举值，存库用（``provider`` 字段就是这个值）；
+    - ``langchain_provider`` —— ``init_chat_model()`` 认识的 provider 名，
+      跟 ``key`` **不是一回事**（见模块说明）；
+    - ``default_base_url`` —— 默认接口地址，用户可以覆盖；
+    - ``api_key_env`` —— 该厂商惯用的环境变量名（仅作提示，不强制）；
+    - ``api_key_required`` —— 该服务是否必须配 Key（Ollama / vLLM 这类本地
+      服务不需要）；
+    - ``openai_compatible`` —— 是否走 OpenAI 兼容协议。``False`` 的是原生协议
+      （Anthropic / Azure），它们的请求格式和参数名都不一样。
+    """
 
     key: str  # 我们的枚举值，存库用
     display_name: str  # 界面展示名
@@ -49,7 +75,8 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         key="deepseek",
         display_name="DeepSeek 深度求索",
         langchain_provider="openai",
-        default_base_url="https://api.deepseek.com/v1",
+        # 官方文档给的 OpenAI 兼容 base_url（带不带 /v1 都收，这里按文档写）
+        default_base_url="https://api.deepseek.com",
         api_key_env="DEEPSEEK_API_KEY",
         docs_url="https://api-docs.deepseek.com",
     ),
@@ -183,10 +210,20 @@ _PRESET_MAP: dict[str, ProviderPreset] = {p.key: p for p in PROVIDER_PRESETS}
 
 
 def list_presets() -> list[ProviderPreset]:
+    """全部预设，按界面展示顺序。
+
+    返回**副本** —— 预设是 frozen dataclass，调用方改不动，但返回新列表能避免
+    有人原地增删全局表。
+    """
     return list(PROVIDER_PRESETS)
 
 
 def get_preset(provider_key: str) -> ProviderPreset | None:
+    """按 key 取预设；不认识返回 ``None``（不报错）。
+
+    与 :func:`resolve_preset` 的区别：这里用于"有没有这个选项"这类查询
+    （比如校验请求里的 provider 值），那报错由调用方决定。
+    """
     return _PRESET_MAP.get(provider_key)
 
 

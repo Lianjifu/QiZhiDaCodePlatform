@@ -23,6 +23,7 @@ from app.models import (  # noqa: F401
     Invocation,
     LLMProvider,
     MCPServer,
+    MemoryItem,
     RagChunk,
     RagCollection,
     RagDocument,

@@ -319,7 +319,7 @@ async def test_service_ingest_and_search(session: AsyncSession):
     service = RagService(session)
 
     collection = await service.create_collection(
-        _CollectionPayload(name="知识库", description="测试")
+        _CollectionPayload(name="语料集", description="测试")
     )
     assert collection.embedding_model == ""
     assert collection.embedding_dim == 0

@@ -52,6 +52,24 @@ def redact_text(text: str, extra_patterns: tuple[str, ...] = ()) -> str:
     return result
 
 
+def contains_secret(text: str) -> bool:
+    """文本里有没有疑似凭据。
+
+    与 :func:`redact_text` 的区别：这里**只检测不掩码**。记忆写入用得上 ——
+    把 ``api_key=xxx`` 掩码成 ``api_key=***`` 再存进去，存的是一条没用的记忆，
+    不如直接拒绝写入。
+
+    Args:
+        text: 待检查的文本。
+
+    Returns:
+        命中任一凭据特征返回 ``True``。
+    """
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in _compiled)
+
+
 def redact(value: Any, extra_patterns: tuple[str, ...] = ()) -> Any:
     """递归脱敏：dict / list / str 逐层处理。
 
@@ -68,4 +86,4 @@ def redact(value: Any, extra_patterns: tuple[str, ...] = ()) -> Any:
     return value
 
 
-__all__ = ["redact", "redact_text"]
+__all__ = ["contains_secret", "redact", "redact_text"]

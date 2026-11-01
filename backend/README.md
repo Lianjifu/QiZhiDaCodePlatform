@@ -90,7 +90,8 @@ backend/
 │   │   │   └── builtin/       # 内置能力出厂源（白名单 + 出厂规格）
 │   │   │       ├── __init__.py# 出厂规格清单（白名单）
 │   │   │       ├── sandbox.py # 执行类能力（run_python，沙箱隔离）
-│   │   │       └── web.py     # 网络类能力（抓取 / 搜索）
+│   │   │       ├── web.py     # 网络类能力（抓取 / 搜索）
+│   │   │       └── memory.py  # 记忆类能力（召回 / 读取 / 写入）
 │   │   ├── intent/            # 意图层：模型的一次 tool call → 一条意图
 │   │   │   ├── intent.py      # CapabilityIntent（与执行层的唯一契约）
 │   │   │   ├── resolver.py    # tool call → 意图（含前置参数校验）
@@ -104,6 +105,13 @@ backend/
 │   │       ├── result.py      # 执行结果
 │   │       └── context.py     # 执行上下文（工作区、沙箱、MCP 通道）
 │   ├── schemas/             # 请求 / 响应模型
+│   ├── memory/              # 记忆模块（短期落表 / 长期落 RAG）
+│   │   ├── models.py        # MemoryEntry、scope / kind、评分口径
+│   │   ├── store.py         # MemoryStore 协议（两种存储的统一接口）
+│   │   ├── session_store.py # 短期：memory_item 表（关键词检索）
+│   │   ├── long_term_store.py # 长期：RAG 集合（混合检索）
+│   │   ├── catalog.py       # 目录组装 + 预算装箱 + MMR 去冗余
+│   │   └── service.py       # 召回 / 读取 / 写入校验
 │   ├── rag/                 # RAG 服务层（通用：语料 → 分块 → 向量 → 检索）
 │   │   ├── models.py        # 集合 / 文档 / 分块
 │   │   ├── chunking.py      # 分块策略（Markdown / 代码 / 纯文本）
@@ -144,7 +152,7 @@ POST /api/v1/agent/stream   SSE 流式推送
 LLM_PROVIDER="openai"        # openai | anthropic | ollama
 LLM_MODEL="gpt-4o-mini"
 LLM_API_KEY="sk-..."
-LLM_BASE_URL=""              # 国产模型走这个：https://api.deepseek.com/v1
+LLM_BASE_URL=""              # 国产模型走这个：https://api.deepseek.com
 SANDBOX_TYPE="docker"        # docker（默认，有隔离）| local（开发用，无隔离）
 WORKSPACE_ROOT="./workspace"
 
@@ -200,7 +208,7 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 | --- | --- | --- |
 | openai | openai | <https://api.openai.com/v1> |
 | anthropic | anthropic | <https://api.anthropic.com> |
-| deepseek | openai | <https://api.deepseek.com/v1> |
+| deepseek | openai | <https://api.deepseek.com> |
 | moonshot（Kimi） | openai | <https://api.moonshot.cn/v1> |
 | qwen（百炼） | openai | <https://dashscope.aliyuncs.com/compatible-mode/v1> |
 | zhipu（智谱） | openai | <https://open.bigmodel.cn/api/paas/v4> |
@@ -474,7 +482,7 @@ query string，其余进 JSON body。
 ## RAG 服务层
 
 RAG 是**独立的一层** `app/rag/`，不依赖能力层、也不依赖记忆模块 ——
-记忆模块（短期 / 长期两层）是它的一个消费者，尚未实现。
+记忆模块（短期 / 长期两层）是它的一个消费者。
 
 > 这一层**不套用**「models / repositories / services」那套目录约定 ——
 > 那是给"业务模块"用的（一个业务用例一个 Service、仓储只管存取）。
@@ -484,7 +492,7 @@ RAG 是**独立的一层** `app/rag/`，不依赖能力层、也不依赖记忆�
 > 所以建表和迁移不会漏。
 
 ```text
-        记忆模块（短期 / 长期）        知识库 / 文档问答
+        记忆模块（短期 / 长期）        其他语料检索场景
                   │                            │
                   └──────────┬─────────────────┘
                              ▼
@@ -496,7 +504,7 @@ RAG 是**独立的一层** `app/rag/`，不依赖能力层、也不依赖记忆�
 ### 三个概念
 
 ```text
-collection（一个知识库，绑定一套向量化配置）
+collection（一个语料集合，绑定一套向量化配置）
   └─ document（一篇原始文档，按内容哈希去重）
        └─ chunk（检索单元，带向量）
 ```
@@ -574,6 +582,112 @@ POST /api/v1/rag/collections/1/documents
 POST /api/v1/rag/search
 { "query": "数据库怎么连", "collection_id": 1, "top_k": 5, "mode": "hybrid" }
 ```
+
+## 记忆模块
+
+记忆模块 `app/memory/` 记的是**关于用户与项目的经验**（偏好、已定结论、
+项目约定）。两层，不设第三层：
+
+> 与 RAG 一样，记忆模块**不套用**「models / repositories / services」那套目录
+> 约定 —— 它是一套自成体系的存储设施（存储抽象 + 召回策略 + 写入校验）。
+> ORM 表仍然注册在 `Base.metadata` 里，所以建表和迁移不会漏。
+
+| 层 | 范围 | 存储 | 生命周期 |
+| --- | --- | --- | --- |
+| 短期 | 会话内 | `memory_item` 表 | 随 thread 存活，删会话才清 |
+| 长期 | 跨会话 | RAG 的专用集合 | 永久，可标记取代 |
+
+**记忆 ≠ 语料 ≠ 工作区说明**：普通文档（文档 / 代码库内容）走 RAG 的集合与
+`/api/v1/rag/*` 接口；AGENTS.md 是工作区级的说明文件（类似 CLAUDE.md），
+每轮全量注入，不做召回。
+
+### 渐进式披露：上下文里只放目录
+
+模型上下文有限，长期记忆会越攒越多。所以分三层，借鉴 deepAgents 技能的
+渐进披露：
+
+```text
+L0 目录    每条一行摘要 —— 每轮自动注入上下文
+L1 摘要    命中条目的正文前段 —— memory_search 返回
+L2 全文    完整正文 —— memory_read 显式取
+```
+
+目录自己也会撑爆，所以目录再分两层（主题目录 → 条目目录）。目录有**预算**
+（默认 1200 字符），装不下就截断；条目用 **MMR** 去冗余，避免同一主题的十几条
+变体占满 top-k。
+
+### 降权 ≠ 淘汰
+
+「很久没用」**不等于**「已过时」（项目用 pnpm 不用 npm —— 第一天说了一次，
+一周后才需要它）。所以：
+
+- 降权只影响**排序**，不影响召回资格 —— 没被删除的记忆永远在候选池里；
+- 时间衰减限制在 **[0.7, 1.0]**、使用次数限制在 **[0.85, 1.0]**，
+  相关性主导，合计最多打三折；
+- **命中即重新激活** —— 衰减从最后一次被召回重新算，不是从创建时间算；
+- 真正的淘汰只有三个来源：用户手动删、被取代、运营清理。
+
+### agent 怎么用上记忆
+
+| 环节 | 在哪 |
+| --- | --- |
+| 三个记忆能力变成模型能调的工具 | 出厂内置 → 同步进数据库 → `build_tools()` |
+| 每轮自动把**目录**注入系统提示词 | `runner._memory_block()`，独立成块，不混进"运行环境" |
+| 告诉模型什么时候查、什么时候写 | 系统提示词准则 7 |
+| 审批恢复那一轮也带目录 | `runner.resume()`，检索词取会话最后一条用户消息 |
+
+`memory_search` 的 `scope` 默认 `all`（会话内 + 跨会话都搜）；`memory_write` 的
+默认 `session`（不默认污染长期记忆）。**长期记忆集合没配时会降级成会话内**，
+而不是报错 —— 模型碰到硬错误往往不会重试，而是自己找个别的办法记（比如改写
+工作区的 AGENTS.md），那比记在会话里更糟。
+
+### 写入：什么该记，什么不该记
+
+模型经 `memory_write` 写入，走能力层的七阶段流水线（风险判定、审批、留痕）。
+平台侧兜底做硬校验：含凭据**直接拒**、空内容拒、超长拒、同内容合并、
+同主题冲突要求显式覆盖。
+
+冲突判据是「类型相同 + 有共同标签」，而且是**两步协议**：先拒绝并把旧记忆的
+内容给模型看，模型确认要取代才带 `supersedes` 重试。取代是**标记不是删除**
+—— 模型的判断可能错，删了就找不回来。
+
+### 用起来
+
+```bash
+# 会话内记忆（不需要额外配置）
+curl -X POST '/api/v1/capabilities/memory_write/invoke?thread_id=t1' \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"项目用 pnpm 而不是 npm","kind":"preference","tags":["pnpm"]}'
+
+# 召回 / 读取
+curl -X POST '/api/v1/capabilities/memory_search/invoke?thread_id=t1' \
+  -H 'Content-Type: application/json' -d '{"query":"包管理器"}'
+
+# 管理接口：查看 / 目录预览 / 删除
+curl 'http://127.0.0.1:8000/api/v1/memory?scope=session&thread_id=t1'
+curl 'http://127.0.0.1:8000/api/v1/memory/catalog?query=pnpm&thread_id=t1'
+```
+
+**长期记忆需要先配集合**：在 RAG 界面建好集合、选好 embedding 模型，再把集合名
+填到 `MEMORY_COLLECTION_NAME`。平台不自动建 —— 集合的向量化配置是建集合时锁死的，
+建错了只能重建。
+
+已配好的示例：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/rag/collections \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"agent-memory","description":"长期记忆集合","scope":"private","embedding_model":""}'
+# 然后在 .env 里：MEMORY_COLLECTION_NAME="agent-memory"
+```
+
+（`embedding_model` 留空 = 只走关键词检索。想要向量检索就填模型名 —— 但
+**集合的向量化配置建时就锁死**，换模型要重建集合、重新灌记忆。）
+
+> ⚠️ 记忆接口**当前没有鉴权**（整个平台都没做）。任何人都能读别人的会话内记忆、
+> 读长期记忆集合、往里塞东西。上线前必须补。
+
+实现细节见 [`docs/implementation/memory-module.md`](docs/implementation/memory-module.md)。
 
 ## 数据库迁移（Alembic）
 

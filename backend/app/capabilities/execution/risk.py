@@ -18,7 +18,11 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-from app.capabilities.registration.policy import RiskLevel, max_risk
+from app.capabilities.registration.policy import (
+    EGRESS_TARGET_FIXED,
+    RiskLevel,
+    max_risk,
+)
 from app.capabilities.registration.spec import CapabilitySpec
 
 # 破坏性命令特征
@@ -54,11 +58,32 @@ class RiskAssessment:
     reasons: list[str] = field(default_factory=list)  # 上调原因（说给模型/人听）
     # 需要管理员才能放行（参数级规则可以把风险顶到 destructive）
     require_admin: bool = False
+    # 有没有**威胁信号**。
+    #
+    # 区分两件不同的事：
+    #
+    # - **分类调整**：比如"会向固定出口发数据" → 风险记成 write。这是给这次
+    #   调用贴标签，不是发现了危险；
+    # - **威胁信号**：比如出口由模型决定（SSRF 面）、命令含 ``rm -rf``、
+    #   URL 指向内网 —— 这些才是"这次调用可能出事"的证据。
+    #
+    # 参数级的挂起只该被**威胁信号**触发：声明级已经放过一次了，
+    # 再挂一次等于同一次调用让人批两遍。
+    threat: bool = False
 
     @property
     def escalated(self) -> bool:
         """风险是否被参数级规则上调过。"""
         return bool(self.reasons)
+
+    @property
+    def needs_review(self) -> bool:
+        """这次调用要不要单独拎出来给人看一次。
+
+        只有威胁信号算数。风险分类的调整（"固定出口 → write"）不算 ——
+        平台自配的向量化端点、数据出内网都属于这一类，它们是常态，不是危险。
+        """
+        return self.threat
 
 
 def assess(spec: CapabilitySpec, arguments: dict[str, Any] | None = None) -> RiskAssessment:
@@ -78,16 +103,31 @@ def assess(spec: CapabilitySpec, arguments: dict[str, Any] | None = None) -> Ris
     risk = spec.risk or RiskLevel.READ
     reasons: list[str] = []
     require_admin = False
+    threat = False
 
     # 声明的注解只在"声明明显低估"时上调风险。注解描述的是**工具本来是什么样**
     # （MCP 语义），不是"这次调用有多危险" —— 直接拿它当风险基线的话，
     # 每个 run_bash 都会变成 destructive，永远要管理员批。
     if spec.annotations.open_world and risk == RiskLevel.READ:
-        risk = RiskLevel.NETWORK
-        reasons.append("能力声明为开放世界（会访问外部网络），风险等级上调")
+        if spec.annotations.egress_target == EGRESS_TARGET_FIXED:
+            # 出口地址是平台配好的，模型只能决定发什么内容、决定不了发到哪。
+            # 这不是 SSRF 面，不该按 network 风险拦 —— 否则平台自配的向量化端点
+            # 之类的调用每次都要人批。有数据外发就记成 write。
+            #
+            # 注意这只是**分类调整**，不是威胁信号：数据出内网是常态。
+            if spec.annotations.egress_data:
+                risk = RiskLevel.WRITE
+                reasons.append("能力会向固定出口发送数据，风险等级上调到 write")
+        else:
+            risk = RiskLevel.NETWORK
+            reasons.append("能力声明为开放世界（出口由模型决定），风险等级上调")
+            # 出口由模型说了算 —— 这是 SSRF 面，是威胁信号
+            threat = True
     if spec.annotations.destructive and risk == RiskLevel.READ:
         risk = RiskLevel.WRITE
         reasons.append("能力声明可能造成破坏性改动，风险等级上调")
+        # 声明与注解矛盾：这个能力可能造成破坏性改动，值得单独看一眼
+        threat = True
 
     command = arguments.get("command")
     if isinstance(command, str):
@@ -97,6 +137,7 @@ def assess(spec: CapabilitySpec, arguments: dict[str, Any] | None = None) -> Ris
                 risk = max_risk(risk, RiskLevel.DESTRUCTIVE)
                 reasons.append(f"命令包含{label}")
                 require_admin = True
+                threat = True
 
     url = arguments.get("url")
     if isinstance(url, str) and url.startswith(("http://", "https://")):
@@ -104,8 +145,14 @@ def assess(spec: CapabilitySpec, arguments: dict[str, Any] | None = None) -> Ris
             risk = max_risk(risk, RiskLevel.DESTRUCTIVE)
             reasons.append("URL 指向内网地址（可能是 SSRF）")
             require_admin = True
+            threat = True
 
-    return RiskAssessment(risk=risk, reasons=reasons, require_admin=require_admin)
+    return RiskAssessment(
+        risk=risk,
+        reasons=reasons,
+        require_admin=require_admin,
+        threat=threat,
+    )
 
 
 def _is_internal_url(url: str) -> bool:

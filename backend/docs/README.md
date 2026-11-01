@@ -18,13 +18,13 @@
 | --- | --- | --- |
 | [capability-module.md](implementation/capability-module.md) | 能力模块：注册 / 意图 / 执行三层，deepAgents 工具 + 我们自己的工具，七阶段流水线，治理与审批 | ✅ 已实现（2026-11-01，deepAgents 迁移后） |
 | [rag-architecture.md](implementation/rag-architecture.md) | RAG 服务层：集合 / 文档 / 分块，分块策略，向量化，混合检索 | ✅ R0 + R1 已实现（2026-11-01） |
+| [memory-module.md](implementation/memory-module.md) | 记忆模块：短期落表 / 长期落 RAG，三层渐进式召回，写入判据与硬校验 | ✅ 已实现（2026-11-01） |
 
 ## 计划文档
 
 | 文档 | 内容 | 状态 |
 | --- | --- | --- |
 | [agent-migration-deepagents.md](plans/agent-migration-deepagents.md) | Agent 层迁移到 deepAgents：能力层 → Backend、审批改 HITL、规划/子代理/skills/记忆/摘要 | ✅ 已实施（2026-11-01，含实施记录与偏差说明） |
-| [memory-module.md](plans/memory-module.md) | 记忆模块（短期 / 长期两层）计划，含风险模型拆维度的前置改动 | ⬜ 未开始 |
 | [capability-followups.md](plans/capability-followups.md) | 能力层的已知限制与待办（并发配额、审批过期、MCP 注解链路、鉴权…） | ⬜ 未开始（A 已解决） |
 | [rag-followups.md](plans/rag-followups.md) | RAG 层待办（重排、跨集合、增量更新、本地向量模型、规模化） | ⬜ 未开始 |
 

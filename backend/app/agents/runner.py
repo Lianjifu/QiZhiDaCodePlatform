@@ -2,11 +2,34 @@
 
 这一层只做编排，不碰数据库、不做鉴权 —— 那是 Service 层的事。
 
-两种结束状态：
+## 一轮对话的三种状态
 
-- **completed**：这一轮跑完了，模型给了最终回复；
-- **pending_approval**：中途撞上人工审批，图挂起了 —— 审批通过后用同一个
-  ``thread_id`` 恢复图，agent 会自己接着往下跑。
+```text
+run()  ──→ completed            模型给了最终回复，这一轮结束
+       └─→ pending_approval    中途撞上人工审批，图挂在 checkpoint 里，本轮结束
+                    │
+                    │  前端把决定发给 resume()
+                    ▼
+             resumed            agent 自己接着往下跑，不需要用户再说一句
+```
+
+**pending_approval 和 completed 都是"一轮正常结束"**，区别只是这一轮有没有
+产出最终回复。pending 时 ``content`` 是空的，待批清单在 ``pending`` 里。
+
+## 恢复的约定
+
+恢复必须用**同一个 ``thread_id``** —— 图挂在 checkpoint 里，换了 thread_id
+就找不回来了。恢复时发的是 deepAgents 约定的载荷：
+
+```python
+Command(resume={"decisions": [{"type": "approve"}]})   # 或 "reject"
+```
+
+**恢复时不用再传用户输入**：图从挂起处继续，模型能接着上一次的上下文往下想。
+传空字符串只是为了满足 ``ainvoke`` 的签名。
+
+另外，**审批恢复是另一次 HTTP 请求**，可能落在另一个进程上，所以 checkpointer
+必须是文件（见 `checkpointer.py`）。
 """
 
 from __future__ import annotations
@@ -43,7 +66,15 @@ MEMORY_FILE = "AGENTS.md"
 
 @dataclass
 class AgentRunResult:
-    """一轮 agent 执行的结果。"""
+    """一轮 agent 执行的结果。
+
+    - ``content`` —— 最终回复文本（pending 时为空）；
+    - ``steps`` —— 这一轮的工具调用次数；
+    - ``tool_calls`` —— 每次调用的名字、参数、结果摘要（状态 / 耗时 / 记录 ID）；
+    - ``skills`` —— 本会话挂载的技能；
+    - ``status`` —— ``completed`` 或 ``pending_approval``；
+    - ``pending`` —— 待审批条目（只有 pending 时有值）。
+    """
 
     thread_id: str
     content: str = ""
@@ -72,7 +103,10 @@ class AgentRunner:
         context: ExecutionContext | None = None,
         skill_ids: list[int] | None = None,
     ) -> AgentRunResult:
-        """跑完一轮，返回最终回复与过程中的工具调用。"""
+        """跑完一轮，返回最终回复与过程中的工具调用。
+
+        撞上要审批的调用时不会抛异常 —— 图挂起，返回 ``pending_approval``。
+        """
         agent, skills = await self._build(
             message,
             thread_id,
@@ -99,6 +133,7 @@ class AgentRunner:
         """这个会话当前挂着哪些待审批的调用。
 
         数据源是 LangGraph 的 checkpoint —— 图挂在哪儿只有它知道。
+        用来做"刷新页面后待批列表还在"这类场景。
         """
         agent, _skills = await self._build(
             "",
@@ -107,6 +142,8 @@ class AgentRunner:
             specs=specs,
             context=context,
             skill_ids=skill_ids,
+            # 只是查状态，不跑模型 —— 不必为此付一次召回
+            with_memory=False,
         )
         state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
         interrupts = getattr(state, "interrupts", ()) or ()
@@ -125,6 +162,12 @@ class AgentRunner:
         """恢复挂起的图（人工批准 / 拒绝之后）。
 
         恢复之后 agent 自己接着往下跑 —— 不需要用户再说一句。
+
+        ``decision`` 取 ``"approve"`` / ``"reject"``，对应 deepAgents 的恢复载荷。
+
+        恢复这一轮**没有新的用户输入**，但记忆目录仍要带 —— agent 还在接着做
+        同一件事，没有目录就等于凭空丢了记忆。检索词取会话里最后一条用户
+        消息，所以这里先造一次图把那条消息读出来，再带着目录重造一次。
         """
         from langgraph.types import Command
 
@@ -135,7 +178,19 @@ class AgentRunner:
             specs=specs,
             context=context,
             skill_ids=skill_ids,
+            with_memory=False,
         )
+        query = await self._last_user_message(agent, thread_id)
+        if query:
+            agent, skills = await self._build(
+                "",
+                thread_id,
+                workspace,
+                specs=specs,
+                context=context,
+                skill_ids=skill_ids,
+                memory_query=query,
+            )
         result = await agent.ainvoke(
             Command(resume={"decisions": [{"type": decision}]}),
             config={"configurable": {"thread_id": thread_id}},
@@ -149,7 +204,11 @@ class AgentRunner:
         thread_id: str,
         context: ExecutionContext | None,
     ) -> AgentRunResult:
-        """把图的结果整理成 ``AgentRunResult``。"""
+        """把图的结果整理成 ``AgentRunResult``。
+
+        分两条路：有中断 → ``pending_approval``（没有最终回复）；没中断 →
+        ``completed``（取最后一条 AI 消息作为回复）。
+        """
         messages = result.get("messages", [])
         # 用了 checkpointer 后，state 里带着历史消息；只统计本轮（最后一条用户输入之后）的结果
         start = 0
@@ -212,6 +271,69 @@ class AgentRunner:
                 if isinstance(text, str) and text:
                     yield text
 
+    async def _memory_block(
+        self,
+        message: str,
+        context: ExecutionContext,
+    ) -> str:
+        """召回记忆目录，渲染成可注入上下文的块。
+
+        **每轮自动注入的是目录，不是记忆正文** —— 上下文里只放一行摘要，
+        模型觉得相关了再调 ``memory_read`` 取全文。这是渐进式披露的第一层。
+
+        没有数据库会话（测试、纯编排场景）就跳过；有会话但召回失败也不该
+        让整轮对话挂掉 —— 记忆是加分项，不是前提。
+        """
+        if context.session is None or not message.strip():
+            return ""
+        try:
+            from app.memory.long_term_store import LongTermMemoryStore
+            from app.memory.service import MemoryService
+
+            # 长期记忆要连 RAG 集合，没配集合名就别建它 —— 否则每轮都会
+            # 抛一次"未配置长期记忆集合"，日志全是它。
+            long_term = None
+            if settings.memory_collection_name:
+                long_term = LongTermMemoryStore(context.session)
+
+            service = MemoryService(
+                session=context.session,
+                thread_id=context.thread_id,
+                long_term_store=long_term,
+            )
+            catalog = await service.recall_catalog(message)
+            return catalog.render()
+        except Exception as exc:  # pragma: no cover - 召回失败不该拖垮对话
+            logger.warning("召回记忆目录失败，本轮不带记忆: %s", exc)
+            return ""
+
+    async def _last_user_message(self, agent: Any, thread_id: str) -> str:
+        """从图的状态里取这个会话最后一条用户消息。
+
+        恢复挂起的图时没有新的用户输入，但记忆检索仍需要知道"用户在聊什么"
+        —— 所以回退到最后一条用户消息。
+
+        只能从**编译好的图**上读状态：LangGraph 把消息存在单独的 blob 表里，
+        checkpointer 的 ``aget`` / ``aget_tuple`` 都拿不到它。
+        """
+        try:
+            state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
+        except Exception as exc:  # pragma: no cover - 读状态失败不该拖垮对话
+            logger.debug("读会话最后一条用户消息失败: %s", exc)
+            return ""
+        values = getattr(state, "values", None) or {}
+        for msg in reversed(values.get("messages") or []):
+            # 只要**用户**的消息 —— agent 自己说的话不是检索词
+            if isinstance(msg, HumanMessage):
+                content = msg.content
+            elif isinstance(msg, dict) and msg.get("type") == "human":
+                content = msg.get("content")
+            else:
+                continue
+            if isinstance(content, str) and content.strip():
+                return content
+        return ""
+
     async def _build(
         self,
         message: str,
@@ -221,6 +343,8 @@ class AgentRunner:
         specs: list[CapabilitySpec] | None,
         context: ExecutionContext | None,
         skill_ids: list[int] | None,
+        with_memory: bool = True,
+        memory_query: str = "",
     ):
         """组装 agent。
 
@@ -228,7 +352,11 @@ class AgentRunner:
 
         - **技能**：数据库里的技能导出成 ``SKILL.md``，交给 deepAgents 的技能
           中间件 —— 由模型按描述自己挑，不再由我们做关键词检索；
-        - **记忆**：工作区里的 ``AGENTS.md``，每次会话前确保它存在。
+        - **记忆**：工作区里的 ``AGENTS.md``，每次会话前确保它存在；
+        - **记忆目录**：每轮召回一次，注入系统提示词（``with_memory=False`` 时跳过）。
+
+        ``memory_query`` 是记忆检索用的词；不给就用本轮的 ``message``。
+        恢复挂起的图那一轮没有新的用户输入，调用方会显式传入最后一条用户消息。
         """
         specs = specs or []
         context = context or ExecutionContext.build(workspace)
@@ -238,12 +366,23 @@ class AgentRunner:
         skill_sources = export_skills(specs, skills_dir, skill_ids)
         skill_specs = [spec for spec in specs if spec.kind == KIND_SKILL and spec.enabled]
 
+        memory_block = ""
+        if with_memory:
+            memory_block = await self._memory_block(memory_query or message, context)
+
         # 技能知识**不进系统提示词** —— deepAgents 的技能中间件按渐进披露来：
         # 提示词里只有技能的名字和描述，模型觉得相关了才去读正文。
         # 提前全塞进去就把"按需加载"退化成"每次都全量加载"了。
         system_prompt = assemble_prompt(
             CODE_AGENT_PROMPT,
-            runtime_notes=[f"工作区：{workspace}"],
+            runtime_notes=[
+                # 文件工具走的是**虚拟路径**（以 "/" 为工作区根），宿主路径只
+                # 在拼命令时用。把宿主路径混进提示词，模型会拿它去调文件工具，
+                # 换来一串 path_not_found —— 白烧好几轮。
+                f"文件工具的路径是虚拟路径，以 `/` 为工作区根目录；"
+                f"宿主路径 {workspace} 只在拼命令时用。"
+            ],
+            extra_blocks=[memory_block],
         )
         agent = await build_agent(
             specs=specs,

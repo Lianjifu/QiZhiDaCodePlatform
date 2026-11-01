@@ -10,13 +10,25 @@
 
 数据库是唯一事实来源：运营改过的描述、风险等级、权限要求都算数，代码里的出厂
 清单只负责"首次安装 + 补空字段"。
+
+## 一条例外：契约（参数 schema）以代码为准
+
+内置能力的**入参 / 出参 schema 跟着实现走** —— 实现是代码里写死的函数签名，
+改了 schema 就得改实现，两者必须一致。所以出厂源里的 schema 每次启动都会
+覆盖数据库里的那份。
+
+这不是"冲掉运营的修改"，是**契约本来就不该由运营改**：运营改了参数 schema，
+代码里的实现接不住，调用必然失败。真要改行为，改代码。
+
+策略字段（风险等级、权限要求、超时、重试、启用状态、描述）仍然以数据库为准
+—— 那些是**运行策略**，本来就该由运营调。
 """
 
 from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.capabilities.registration.builtin import list_builtin_specs
+from app.capabilities.registration.builtin import get_builtin_by_source, list_builtin_specs
 from app.capabilities.registration.policy import Annotations, RetryPolicy
 from app.capabilities.registration.spec import (
     KIND_MCP,
@@ -142,14 +154,10 @@ class CapabilityRegistry:
                 # 用户自建的能力（origin=user）完全不动 —— 出厂源里同名也不该覆盖
                 if not tool.description:
                     tool.description = spec.description
-                if not tool.parameters:
-                    tool.parameters = spec.input_schema
                 if not tool.tags:
                     tool.tags = list(spec.tags)
                 if not tool.risk:
                     tool.risk = spec.risk
-                if not tool.output_schema:
-                    tool.output_schema = spec.output_schema
                 if not tool.timeout_s:
                     tool.timeout_s = spec.timeout_s
                 if not tool.retry_policy:
@@ -159,6 +167,11 @@ class CapabilityRegistry:
                 if tool.permission in ("low", "high", ""):
                     # 老值域迁移后兜底：low→none、high→confirm
                     tool.permission = "none" if tool.permission != "high" else "confirm"
+                # **契约以代码为准**（无条件覆盖）：入参 / 出参 schema 跟着实现
+                # 走。运营改了它，代码里的实现接不住 —— 契约不是能运营改的东西。
+                # 策略字段在上面仍然听数据库的。
+                tool.parameters = spec.input_schema
+                tool.output_schema = spec.output_schema
         retired = _retire_superseded(existing)
         await session.flush()
         return created + retired
@@ -201,7 +214,21 @@ def _tool_spec(tool: Tool) -> CapabilitySpec:
 
     数据库的列名是平台早期的叫法（``name`` / ``parameters``），声明层叫
     ``key`` / ``input_schema`` —— 转换只发生在这里，别处一律用声明层的名字。
+
+    内置能力的**契约**（入参 / 出参 schema）以代码为准 —— 实现是代码里写死的
+    函数签名，schema 必须跟它一致（见模块说明）。策略字段仍然以数据库为准。
     """
+    builtin = None
+    if tool.origin == ORIGIN_BUILTIN:
+        builtin = get_builtin_by_source(tool.source or "")
+    input_schema = (
+        dict(builtin.input_schema) if builtin is not None else dict(tool.parameters or {})
+    )
+    output_schema = (
+        dict(builtin.output_schema or {})
+        if builtin is not None
+        else (dict(tool.output_schema) if tool.output_schema else None)
+    )
     return CapabilitySpec(
         key=tool.name,
         kind=KIND_TOOL,
@@ -214,8 +241,8 @@ def _tool_spec(tool: Tool) -> CapabilitySpec:
         origin=tool.origin,
         version=tool.version,
         source_type=tool.type,
-        input_schema=dict(tool.parameters or {}),
-        output_schema=dict(tool.output_schema) if tool.output_schema else None,
+        input_schema=input_schema,
+        output_schema=output_schema,
         locator=_tool_locator(tool),
         risk=tool.risk,
         timeout_s=tool.timeout_s or 30,
