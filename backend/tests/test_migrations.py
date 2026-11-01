@@ -129,6 +129,38 @@ async def test_migration_upgrades_legacy_data_without_loss(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_migration_backfills_context_window_from_preset(tmp_path) -> None:
+    """存量供应商记录要按厂商预设回填上下文窗口。
+
+    不回填的话压缩阈值会退回到"170000 token 触发、保留 6 条"，
+    对 DeepSeek 这种 1M 窗口的模型来说是错的。
+    """
+    db_path = str(tmp_path / "window.db")
+
+    _alembic("upgrade", "0009_memory_item", db_path=db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "insert into llm_provider (name, provider, default_model, temperature, max_tokens,"
+        " timeout, is_default, is_active, available_models, embedding_model, embedding_dim,"
+        " api_key_masked, created_at, updated_at)"
+        " values ('DS', 'deepseek', 'deepseek-flash', 0.0, 4096, 60, 0, 1, '[]', '', 0,"
+        " '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+    conn.commit()
+    conn.close()
+
+    _alembic("upgrade", "head", db_path=db_path)
+
+    conn = sqlite3.connect(db_path)
+    window = conn.execute("select context_window from llm_provider").fetchone()[0]
+    conn.close()
+
+    from app.agents.providers import get_preset
+
+    assert window == get_preset("deepseek").context_window > 0
+
+
+@pytest.mark.asyncio
 async def test_migration_downgrade_restores_legacy_schema(tmp_path) -> None:
     """降级要能把新字段退回去。"""
     db_path = str(tmp_path / "downgrade.db")

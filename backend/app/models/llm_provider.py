@@ -38,6 +38,12 @@ class LLMProvider(Base):
     embedding_dim: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     temperature: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     max_tokens: Mapped[int] = mapped_column(Integer, default=4096, nullable=False)
+    # 上下文窗口（token）。0 = 未知 —— 不给模型挂 profile，框架用保守默认值。
+    #
+    # 这个值决定对话历史什么时候被压缩、按什么比例保留。不填的话，
+    # deepAgents 只能按固定的"170000 token 触发、保留 6 条消息"来，
+    # 对大窗口的模型来说提前太多、保留得太少。
+    context_window: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     timeout: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

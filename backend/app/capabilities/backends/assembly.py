@@ -20,12 +20,16 @@ from typing import Any
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 
+from app.capabilities.backends.platform_backend import PlatformBackend
 from app.capabilities.backends.sandbox_backend import DockerSandbox
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.skills_export import SKILLS_ROUTE
 
+# 产物目录的路由前缀（对话历史外置等）。挂在工作区**外面**。
+ARTIFACTS_ROUTE = "/.artifacts/"
 
-def build_backend(context: ExecutionContext, skills_dir: Path | None = None) -> CompositeBackend:
+
+def build_backend(context: ExecutionContext, skills_dir: Path | None = None) -> PlatformBackend:
     """按执行上下文组装后端。
 
     Args:
@@ -34,7 +38,10 @@ def build_backend(context: ExecutionContext, skills_dir: Path | None = None) -> 
             deepAgents 的技能中间件按虚拟路径读它。
 
     Returns:
-        组装好的 ``CompositeBackend``：文件操作本地、命令执行进沙箱。
+        组装好的后端：文件操作本地、命令执行进沙箱。
+
+    外面包了一层 ``PlatformBackend`` —— 用来补 ``ls("/")`` 看不到子路由的
+    问题（见 ``platform_backend.py``）。
 
     沙箱不可用时（没有 docker）不静默降级 —— 宁可让 agent 直接失败，
     也不要让它在没有隔离的环境里执行命令。调用方（agent 组装）负责处理这个
@@ -47,10 +54,33 @@ def build_backend(context: ExecutionContext, skills_dir: Path | None = None) -> 
         # 技能目录挂在工作区外面：agent 的文件工具只看得见工作区里的东西，
         # 改不到这些导出文件。
         routes[SKILLS_ROUTE] = FilesystemBackend(root_dir=skills_dir)
-    return CompositeBackend(
-        default=default,
+    # 产物目录（对话历史外置）同样挂在工作区外面 —— 见 _artifacts_root。
+    routes[ARTIFACTS_ROUTE] = FilesystemBackend(root_dir=_artifacts_dir(context))
+    # 包一层：补上 `ls("/")` 看不到子路由的问题（见 platform_backend.py）
+    return PlatformBackend(
+        CompositeBackend(
+            default=default,
+            routes=routes,
+            artifacts_root=_artifacts_root(context),
+        ),
         routes=routes,
     )
+
+
+def _artifacts_dir(context: ExecutionContext) -> Path:
+    """产物目录在宿主上的位置（工作区外面）。"""
+    return Path(context.workspace).parent / ".artifacts" / Path(context.workspace).name
+
+
+def _artifacts_root(context: ExecutionContext) -> str:
+    """产物目录（对话历史外置等）的路由前缀。
+
+    deepAgents 把**被压缩掉的对话历史**写到 ``{artifacts_root}/conversation_history/``。
+    默认的 ``/`` 会落进工作区 —— 用户在工作区里就能看到自己的对话历史
+    （含脱敏可能遗漏的内容）。所以这里指到工作区**外面**的目录，
+    跟技能导出目录同理：agent 的文件工具不该看见这些。
+    """
+    return ARTIFACTS_ROUTE
 
 
 def _sandbox_backend(context: ExecutionContext, workspace: Path) -> Any:
@@ -59,6 +89,9 @@ def _sandbox_backend(context: ExecutionContext, workspace: Path) -> Any:
     ``docker`` 模式用我们的 :class:`DockerSandbox`（断网、限资源、限权、只挂载
     工作区）；``local`` 模式用 deepAgents 的 ``LocalShellBackend`` —— 它**没有
     任何隔离**，只适合本地开发。生产必须是 docker。
+
+    docker 模式下容器**按会话复用**（见 ``container_pool.py``）：agent 装的环境、
+    设的变量、cd 的目录都跨轮次保留。每次都新起容器的话这些全丢。
     """
     if context.sandbox_type == "local":
         from deepagents.backends.local_shell import LocalShellBackend
@@ -66,6 +99,7 @@ def _sandbox_backend(context: ExecutionContext, workspace: Path) -> Any:
         return LocalShellBackend(root_dir=workspace)
     return DockerSandbox(
         workspace,
+        session_id=context.thread_id,
         image=context.sandbox_image,
         mount=context.docker_mount,
         timeout=context.sandbox_timeout,

@@ -30,6 +30,12 @@ class LLMProviderBase(BaseModel):
     )
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1, le=1_000_000)
+    context_window: int = Field(
+        default=0,
+        ge=0,
+        le=10_000_000,
+        description="上下文窗口（token），0=未知。决定对话历史何时被压缩",
+    )
     timeout: int = Field(default=60, ge=1, le=3600)
     is_default: bool = Field(default=False, description="是否默认供应商（全局唯一）")
     is_active: bool = Field(default=True)
@@ -61,6 +67,9 @@ class LLMProviderUpdate(BaseModel):
     embedding_model: str | None = Field(default=None, max_length=128)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
+    context_window: int | None = Field(
+        default=None, ge=0, le=10_000_000, description="上下文窗口（token），0=未知"
+    )
     timeout: int | None = Field(default=None, ge=1, le=3600)
     is_default: bool | None = None
     is_active: bool | None = None
@@ -89,6 +98,7 @@ class LLMProviderOut(BaseModel):
     embedding_dim: int = Field(default=0, description="向量维度")
     temperature: float
     max_tokens: int
+    context_window: int = Field(default=0, description="上下文窗口（token），0=未知")
     timeout: int
     is_default: bool
     is_active: bool
@@ -119,6 +129,7 @@ class ProviderPresetOut(BaseModel):
     api_key_required: bool
     openai_compatible: bool
     docs_url: str
+    context_window: int = Field(default=0, description="该厂商的上下文窗口（token），0=未知")
 
 
 class ProviderTestOut(BaseModel):

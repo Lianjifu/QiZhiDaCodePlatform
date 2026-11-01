@@ -49,9 +49,10 @@ from langchain_core.messages import (
 from app.agents.builder import build_agent
 from app.agents.prompts import CODE_AGENT_PROMPT
 from app.capabilities.execution.context import ExecutionContext
-from app.capabilities.prompt import assemble_prompt
+from app.capabilities.intent.middleware import build_policy_note
 from app.capabilities.registration.spec import KIND_SKILL, CapabilitySpec
 from app.capabilities.skills_export import export_skills
+from app.context.service import ContextRequest, build_context_service
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -355,6 +356,9 @@ class AgentRunner:
         - **记忆**：工作区里的 ``AGENTS.md``，每次会话前确保它存在；
         - **记忆目录**：每轮召回一次，注入系统提示词（``with_memory=False`` 时跳过）。
 
+        提示词的**装配**交给上下文模块（``app/context/``）—— 它管预算与
+        配额。这里只负责把各来源的内容收集齐了交过去。
+
         ``memory_query`` 是记忆检索用的词；不给就用本轮的 ``message``。
         恢复挂起的图那一轮没有新的用户输入，调用方会显式传入最后一条用户消息。
         """
@@ -370,26 +374,28 @@ class AgentRunner:
         if with_memory:
             memory_block = await self._memory_block(memory_query or message, context)
 
+        # 策略说明：告诉模型本次哪些工具要人批。它由能力层生成，但**注入到
+        # 上下文里** —— 挤不出去的话模型会反复触发审批。
+        policy_note = build_policy_note(specs, settings.capability_trust_mode)
+
         # 技能知识**不进系统提示词** —— deepAgents 的技能中间件按渐进披露来：
         # 提示词里只有技能的名字和描述，模型觉得相关了才去读正文。
         # 提前全塞进去就把"按需加载"退化成"每次都全量加载"了。
-        system_prompt = assemble_prompt(
-            CODE_AGENT_PROMPT,
-            runtime_notes=[
-                # 文件工具走的是**虚拟路径**（以 "/" 为工作区根），宿主路径只
-                # 在拼命令时用。把宿主路径混进提示词，模型会拿它去调文件工具，
-                # 换来一串 path_not_found —— 白烧好几轮。
-                f"文件工具的路径是虚拟路径，以 `/` 为工作区根目录；"
-                f"宿主路径 {workspace} 只在拼命令时用。"
-            ],
-            extra_blocks=[memory_block],
+        assembled = build_context_service().assemble(
+            ContextRequest(
+                base_prompt=CODE_AGENT_PROMPT,
+                workspace=workspace,
+                memory_catalog=memory_block,
+                policy_note=policy_note,
+                context_window=_model_window(self.model),
+            )
         )
         agent = await build_agent(
             specs=specs,
             context=context,
             checkpointer=self.checkpointer,
             model=self.model,
-            system_prompt=system_prompt,
+            system_prompt=assembled.text,
             thread_id=thread_id,
             trust_mode=settings.capability_trust_mode,
             skills=skill_sources or None,
@@ -397,6 +403,19 @@ class AgentRunner:
             memory=[f"/{MEMORY_FILE}"],
         )
         return agent, skill_specs
+
+
+def _model_window(model: Any) -> int:
+    """取模型的上下文窗口（token）；取不到就是 0（未知）。
+
+    窗口决定上下文预算与压缩阈值。模型对象上的 ``profile`` 是唯一来源 ——
+    ``app/agents/llm.py`` 在构造模型时会按供应商配置把窗口挂上去。
+    """
+    profile = getattr(model, "profile", None)
+    if not isinstance(profile, dict):
+        return 0
+    value = profile.get("max_input_tokens")
+    return int(value) if isinstance(value, int) and value > 0 else 0
 
 
 def _input_messages(message: str) -> list[Any]:

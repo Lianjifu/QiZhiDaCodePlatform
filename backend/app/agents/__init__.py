@@ -39,11 +39,12 @@ POST /api/v1/agent/chat
      ├─ _build()
      │   ├─ 导出技能 → <工作区外>/.skills/<会话>/<技能>/SKILL.md
      │   ├─ 确保记忆 → 工作区/AGENTS.md
-     │   ├─ assemble_prompt() 拼系统提示词
+     │   ├─ 上下文模块装配系统提示词（app/context/：块 + 配额）
      │   └─ builder.build_agent()
      │        ├─ 我们的工具 → build_tools()（走能力层执行流水线）
      │        ├─ 文件工具   → deepAgents 自带，backend 指向我们的工作区与沙箱
      │        ├─ CapabilityMiddleware  治理：工具收敛 / 参数级风险 / 留痕
+     │        ├─ 压缩中间件（接管 deepAgents 的摘要，阈值按窗口比例）
      │        ├─ interrupt_on            声明级审批（挂起等人批）
      │        └─ 自带的 general 子代理（显式挂同一套治理中间件）
      │

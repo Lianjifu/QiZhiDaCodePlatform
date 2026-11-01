@@ -19,6 +19,8 @@
 | [capability-module.md](implementation/capability-module.md) | 能力模块：注册 / 意图 / 执行三层，deepAgents 工具 + 我们自己的工具，七阶段流水线，治理与审批 | ✅ 已实现（2026-11-01，deepAgents 迁移后） |
 | [rag-architecture.md](implementation/rag-architecture.md) | RAG 服务层：集合 / 文档 / 分块，分块策略，向量化，混合检索 | ✅ R0 + R1 已实现（2026-11-01） |
 | [memory-module.md](implementation/memory-module.md) | 记忆模块：短期落表 / 长期落 RAG，三层渐进式召回，写入判据与硬校验 | ✅ 已实现（2026-11-01） |
+| [context-module.md](implementation/context-module.md) | 上下文模块：块抽象 / 配额装配 / 压缩接管（deepAgents 摘要中间件） | ✅ 已实现（2026-11-02） |
+| [backend-strategy.md](implementation/backend-strategy.md) | 后端存储：deepAgents 六种 backend 的选型 + 容器按会话复用 | ✅ 已实现（2026-11-02） |
 
 ## 计划文档
 

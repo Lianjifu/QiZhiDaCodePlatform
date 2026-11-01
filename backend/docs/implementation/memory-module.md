@@ -631,7 +631,8 @@ class MemoryService:
     async def remember(self, item: MemoryItem) -> str
 ```
 
-**「每轮自动注入目录」这个决策归上下文组装模块**（见 agent 方案的 P2）。
+**「每轮自动注入目录」这个决策归上下文组装模块**（见
+[context-module.md](context-module.md)）。
 记忆模块先把 `recall_catalog` 做好、预算机制做对，上下文模块来决定调不调、什么时候调。
 
 召回时机因此**不再是二选一**：

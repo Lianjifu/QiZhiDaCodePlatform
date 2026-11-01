@@ -40,7 +40,14 @@ class ProviderPreset:
     - ``api_key_required`` —— 该服务是否必须配 Key（Ollama / vLLM 这类本地
       服务不需要）；
     - ``openai_compatible`` —— 是否走 OpenAI 兼容协议。``False`` 的是原生协议
-      （Anthropic / Azure），它们的请求格式和参数名都不一样。
+      （Anthropic / Azure），它们的请求格式和参数名都不一样；
+    - ``context_window`` —— 该厂商模型的**上下文窗口**（token 数，0 = 未知）。
+
+      这个值不只是"展示用"：deepAgents 的摘要阈值按
+      ``model.profile["max_input_tokens"]`` 算比例，而 OpenAI 兼容端点挂上去的
+      模型对象**没有 profile** —— 不显式告诉它，框架只能退回到固定的
+      "170000 token 触发、保留 6 条消息"，对大窗口的模型来说是提前太多、
+      保留得太少。
     """
 
     key: str  # 我们的枚举值，存库用
@@ -51,6 +58,8 @@ class ProviderPreset:
     api_key_required: bool = True
     openai_compatible: bool = True
     docs_url: str = ""
+    # 上下文窗口（token）。0 = 未知 —— 此时不挂 profile，让框架用保守默认值
+    context_window: int = 0
 
 
 PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
@@ -61,6 +70,7 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         default_base_url="https://api.openai.com/v1",
         api_key_env="OPENAI_API_KEY",
         docs_url="https://platform.openai.com/docs",
+        context_window=128000,
     ),
     ProviderPreset(
         key="anthropic",
@@ -70,6 +80,7 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         api_key_env="ANTHROPIC_API_KEY",
         openai_compatible=False,
         docs_url="https://docs.anthropic.com",
+        context_window=200000,
     ),
     ProviderPreset(
         key="deepseek",
@@ -79,6 +90,8 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         default_base_url="https://api.deepseek.com",
         api_key_env="DEEPSEEK_API_KEY",
         docs_url="https://api-docs.deepseek.com",
+        # 实测官方 /models 接口返回 context_window=1048576
+        context_window=1048576,
     ),
     ProviderPreset(
         key="moonshot",
@@ -87,6 +100,7 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         default_base_url="https://api.moonshot.cn/v1",
         api_key_env="MOONSHOT_API_KEY",
         docs_url="https://platform.moonshot.cn/docs",
+        context_window=131072,
     ),
     ProviderPreset(
         key="qwen",
@@ -103,6 +117,7 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         default_base_url="https://open.bigmodel.cn/api/paas/v4",
         api_key_env="ZHIPUAI_API_KEY",
         docs_url="https://open.bigmodel.cn/dev/api",
+        context_window=128000,
     ),
     ProviderPreset(
         key="doubao",
@@ -143,6 +158,7 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         default_base_url="https://api.mistral.ai/v1",
         api_key_env="MISTRAL_API_KEY",
         docs_url="https://docs.mistral.ai",
+        context_window=128000,
     ),
     ProviderPreset(
         key="together",
@@ -167,6 +183,7 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         default_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         api_key_env="GEMINI_API_KEY",
         docs_url="https://ai.google.dev/docs",
+        context_window=1048576,
     ),
     ProviderPreset(
         key="azure_openai",

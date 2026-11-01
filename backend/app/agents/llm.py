@@ -40,6 +40,33 @@ from app.core.crypto import decrypt_secret
 from app.models.llm_provider import LLMProvider
 
 
+def _apply_context_window(model: BaseChatModel, context_window: int) -> BaseChatModel:
+    """把上下文窗口告诉模型对象。
+
+    **为什么必须显式设**：deepAgents 的摘要中间件按
+    ``model.profile["max_input_tokens"]`` 算触发阈值，而 OpenAI 兼容端点挂上去的
+    模型对象**没有 profile** —— 不设的话框架退回到固定的"170000 token 触发、
+    保留 6 条消息"。对 1M 窗口的模型来说，那等于只用了不到两成窗口就开始
+    压缩，压完只剩 6 条消息（一轮工具调用就有好几条，等于只留当前这一轮）。
+
+    窗口未知（0）时不设 —— 那就让框架用保守默认值，比瞎猜一个大窗口安全。
+
+    Args:
+        model: 构造好的模型对象。
+        context_window: 上下文窗口（token 数），0 = 未知。
+
+    Returns:
+        原样返回（就地改了 profile）。
+    """
+    if context_window <= 0:
+        return model
+    try:
+        model.profile = {**(model.profile or {}), "max_input_tokens": context_window}
+    except Exception:  # pragma: no cover - 个别模型对象的 profile 是只读的
+        pass
+    return model
+
+
 def get_chat_model() -> BaseChatModel:
     """按环境变量配置构造对话模型（不走数据库）。
 
@@ -57,7 +84,10 @@ def get_chat_model() -> BaseChatModel:
 
     # 厂商名来自环境变量。国产模型要写 `openai`（配 base_url 指到厂商），
     # 写 `deepseek` 会去找没装的 langchain-deepseek 包。
-    return init_chat_model(f"{settings.llm_provider}:{settings.llm_model}", **kwargs)
+    return _apply_context_window(
+        init_chat_model(f"{settings.llm_provider}:{settings.llm_model}", **kwargs),
+        settings.llm_context_window,
+    )
 
 
 def build_model_for_provider(provider: LLMProvider) -> BaseChatModel:
@@ -95,7 +125,10 @@ def build_model_for_provider(provider: LLMProvider) -> BaseChatModel:
     if not provider.default_model:
         raise ValueError(f"供应商配置 {provider.name} 没有设置默认模型")
 
-    return init_chat_model(f"{preset.langchain_provider}:{provider.default_model}", **kwargs)
+    return _apply_context_window(
+        init_chat_model(f"{preset.langchain_provider}:{provider.default_model}", **kwargs),
+        provider.context_window or preset.context_window,
+    )
 
 
 __all__ = ["build_model_for_provider", "get_chat_model"]

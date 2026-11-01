@@ -48,6 +48,9 @@ from app.capabilities.execution.tooling import build_tools
 from app.capabilities.intent.middleware import CapabilityMiddleware
 from app.capabilities.registration.spec import CapabilitySpec
 from app.capabilities.registration.tool_policy import FS_TOOL_NAMES, approval_required_tools
+from app.context.compaction import build_compaction_middleware
+from app.context.skills_quota import QuotaSkillsMiddleware
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +135,33 @@ async def build_agent(
     # TodoListMiddleware 提供 write_todos —— deepAgents 的规划能力。
     middleware: list[Any] = [governance, TodoListMiddleware()]
 
+    backend = build_backend(context, skills_dir)
+
+    # 压缩中间件：**同名替换** deepAgents 默认的那份（见 app/context/compaction.py）。
+    #
+    # 替换而不是另加 —— 另加会变成两份摘要中间件同时跑，谁先谁后说不清。
+    # 接管之后阈值按模型窗口走比例，而不是框架的固定"170000 token / 6 条"。
+    resolved_model = model or _default_model()
+    middleware.append(
+        build_compaction_middleware(
+            model=resolved_model,
+            backend=backend,
+        )
+    )
+
+    # 技能中间件：**同名替换**框架默认的那份，加上清单配额。
+    #
+    # 渐进披露本身不动（提示词里只有 name + description，正文按需读）——
+    # 要改的只是"清单最多列几个"。技能多的时候每轮几千 token 的清单不划算。
+    if skills:
+        middleware.append(
+            QuotaSkillsMiddleware(
+                backend=backend,
+                sources=skills,
+                max_skills=settings.context_max_skills_in_prompt,
+            )
+        )
+
     # 声明级审批闸：哪些工具在执行**之前**就要人批。
     interrupt_on = _interrupt_on(specs, trust_mode, allowed_tool_keys)
     if subagents is None:
@@ -146,13 +176,12 @@ async def build_agent(
         _ensure_memory_files(context.workspace, memory)
 
     return create_deep_agent(
-        model=model or _default_model(),
+        model=resolved_model,
         tools=tools,
         system_prompt=system_prompt or _default_prompt(),
         checkpointer=checkpointer,
         middleware=middleware,
-        # backend 决定文件工具落在哪：文件操作走本地工作区，命令执行走沙箱
-        backend=build_backend(context, skills_dir),
+        backend=backend,
         interrupt_on=interrupt_on or None,
         skills=skills,
         memory=memory,

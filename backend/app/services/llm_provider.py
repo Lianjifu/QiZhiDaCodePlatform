@@ -98,6 +98,9 @@ class LLMProviderService(BaseService[LLMProviderRepository]):
                 embedding_dim=embedding_dim,
                 temperature=payload.temperature,
                 max_tokens=payload.max_tokens,
+                # 没显式填就取厂商预设的窗口 —— 填 0 表示"我也不知道"，
+                # 但预设知道的话没理由不用
+                context_window=payload.context_window or preset.context_window,
                 timeout=payload.timeout,
                 is_default=payload.is_default,
                 is_active=payload.is_active,
@@ -122,6 +125,11 @@ class LLMProviderService(BaseService[LLMProviderRepository]):
 
         if "provider" in data and data["provider"]:
             resolve_preset(data["provider"])
+
+        # 换了供应商但没显式给窗口 → 跟着新供应商的预设走。
+        # 旧供应商的窗口对不上新模型，留着会让压缩阈值算错。
+        if "provider" in data and data["provider"] and "context_window" not in data:
+            data["context_window"] = resolve_preset(data["provider"]).context_window
 
         plain_api_key: str | None = None
         if "api_key" in data:

@@ -44,7 +44,12 @@ from app.capabilities.execution.risk import assess
 from app.capabilities.execution.task_state import adjust_confidence, load_task_state
 from app.capabilities.registration.policy import Annotations
 from app.capabilities.registration.spec import KIND_TOOL, CapabilitySpec
-from app.capabilities.registration.tool_policy import FS_TOOL_NAMES, ToolPolicy, policy_for_tool
+from app.capabilities.registration.tool_policy import (
+    FS_TOOL_NAMES,
+    ToolPolicy,
+    approval_required_tools,
+    policy_for_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -283,29 +288,7 @@ class CapabilityMiddleware(AgentMiddleware):
         特别要说清**哪些工具会触发人工审批** —— 模型提前知道了，就知道这类
         调用要把参数一次做对；不知道的话，它会反复触发审批、反复中断任务。
         """
-        notes = [f"当前信任模式：{self.trust_mode}。"]
-        if self.trust_mode == "balanced":
-            notes.append("一般读写操作会直接执行；执行命令、联网抓取、删除文件需要人工审批。")
-        elif self.trust_mode == "strict":
-            notes.append("所有写类、执行类、联网操作都会挂起，等待人工审批。")
-        elif self.trust_mode == "permissive":
-            notes.append("只有破坏性操作与删除文件需要人工审批。")
-
-        approval = self._approval_tool_names()
-        if approval:
-            notes.append(
-                "以下工具需要人工批准才能执行："
-                + "、".join(sorted(approval))
-                + "。每次触发审批都会中断当前任务等人工处理，调用前请把参数一次做对。"
-            )
-            notes.append(
-                "另外：平时不用人批的工具，碰到命令里含删除/写设备等特征、"
-                "或抓取的是内网地址，也会命中参数级风险规则，单独问一次。"
-            )
-        count = self._exposed_count()
-        if count:
-            notes.append(f"本次可用工具 {count} 个。")
-        return "\n".join(notes)
+        return build_policy_note(self.specs, self.trust_mode, self.allowed_tool_keys)
 
     def _approval_tool_names(self) -> set[str]:
         """本次哪些工具会要人批。
@@ -316,21 +299,6 @@ class CapabilityMiddleware(AgentMiddleware):
         from app.capabilities.registration.tool_policy import approval_required_tools
 
         return approval_required_tools(self.specs, self.trust_mode, self.allowed_tool_keys)
-
-    def _exposed_count(self) -> int:
-        """本次暴露给模型的工具数量。
-
-        跟 ``_approval_tool_names`` 用同一套过滤条件（tool + enabled +
-        在允许集内），免得提示词里两个数字口径不一致。
-        """
-        count = 0
-        for spec in self.specs:
-            if spec.kind != KIND_TOOL or not spec.enabled:
-                continue
-            if self.allowed_tool_keys is not None and spec.key not in self.allowed_tool_keys:
-                continue
-            count += 1
-        return count + len(FS_TOOL_NAMES)
 
     # ---------- 内部 ----------
 
@@ -351,6 +319,65 @@ class CapabilityMiddleware(AgentMiddleware):
             permission=policy.permission,
             annotations=Annotations(idempotent=policy.idempotent),
         )
+
+
+def build_policy_note(
+    specs: list[CapabilitySpec],
+    trust_mode: str,
+    allowed_tool_keys: set[str] | None = None,
+) -> str:
+    """生成策略说明（告诉模型本次的审批规则与可用工具数）。
+
+    抽成模块级函数是为了让**上下文模块**也能生成同一份说明 ——
+    它要进上下文预算，就得能独立拿到内容，不能只依赖中间件往提示词上追加。
+
+    Args:
+        specs: 统一能力清单。
+        trust_mode: 会话信任模式。
+        allowed_tool_keys: 本次允许的工具集；``None`` 表示不限制。
+
+    Returns:
+        策略说明正文。没有可说的内容时返回空串。
+    """
+    notes = [f"当前信任模式：{trust_mode}。"]
+    if trust_mode == "balanced":
+        notes.append("一般读写操作会直接执行；执行命令、联网抓取、删除文件需要人工审批。")
+    elif trust_mode == "strict":
+        notes.append("所有写类、执行类、联网操作都会挂起，等待人工审批。")
+    elif trust_mode == "permissive":
+        notes.append("只有破坏性操作与删除文件需要人工审批。")
+
+    approval = approval_required_tools(specs, trust_mode, allowed_tool_keys)
+    if approval:
+        notes.append(
+            "以下工具需要人工批准才能执行："
+            + "、".join(sorted(approval))
+            + "。每次触发审批都会中断当前任务等人工处理，调用前请把参数一次做对。"
+        )
+        notes.append(
+            "另外：平时不用人批的工具，碰到命令里含删除/写设备等特征、"
+            "或抓取的是内网地址，也会命中参数级风险规则，单独问一次。"
+        )
+    count = _exposed_count(specs, allowed_tool_keys)
+    if count:
+        notes.append(f"本次可用工具 {count} 个。")
+    return "\n".join(notes)
+
+
+def _exposed_count(specs: list[CapabilitySpec], allowed_tool_keys: set[str] | None) -> int:
+    """本次暴露给模型的工具数量。
+
+    跟"哪些工具会要人批"用同一套过滤条件（tool + enabled + 在允许集内），
+    免得提示词里两个数字口径不一致。
+    """
+    count = 0
+    for spec in specs:
+        if spec.kind != KIND_TOOL or not spec.enabled:
+            continue
+        if allowed_tool_keys is not None and spec.key not in allowed_tool_keys:
+            continue
+        count += 1
+    return count + len(FS_TOOL_NAMES)
 
 
 def _with_blocked_notice(message: Any) -> Any:
@@ -392,4 +419,4 @@ def _is_approved(decision: Any) -> bool:
     return False
 
 
-__all__ = ["APPROVE", "REJECT", "CapabilityMiddleware"]
+__all__ = ["APPROVE", "REJECT", "CapabilityMiddleware", "build_policy_note"]

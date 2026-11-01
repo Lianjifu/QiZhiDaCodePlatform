@@ -96,6 +96,11 @@ backend/
 │   │   │   ├── intent.py      # CapabilityIntent（与执行层的唯一契约）
 │   │   │   ├── resolver.py    # tool call → 意图（含前置参数校验）
 │   │   │   └── middleware.py  # 治理中间件（工具收敛 / 参数级风险 / 留痕）
+│   │   ├── backends/          # deepAgents 后端：文件从哪来、命令在哪跑
+│   │   │   ├── assembly.py    # 后端组装（路由表）
+│   │   │   ├── platform_backend.py # 包装层：ls("/") 补虚拟目录项
+│   │   │   ├── sandbox_backend.py  # DockerSandbox（只提供 execute）
+│   │   │   └── container_pool.py    # 容器生命周期（复用 / 回收 / 容量上限）
 │   │   └── execution/         # 执行层：七阶段流水线
 │   │       ├── pipeline.py    # 校验→授权→风险→审批→调用→验证→回写
 │   │       ├── adapters.py    # 执行适配器（builtin / http / mcp）
@@ -105,6 +110,13 @@ backend/
 │   │       ├── result.py      # 执行结果
 │   │       └── context.py     # 执行上下文（工作区、沙箱、MCP 通道）
 │   ├── schemas/             # 请求 / 响应模型
+│   ├── context/             # 上下文模块（装配 / 配额 / 压缩）
+│   │   ├── blocks.py        # ContextBlock 抽象（标题、优先级、溢出策略）
+│   │   ├── budget.py        # 预算计算（按模型窗口的比例）
+│   │   ├── assembler.py     # 装箱：按优先级与配额拼成提示词
+│   │   ├── compaction.py    # 接管 deepAgents 的摘要中间件
+│   │   ├── skills_quota.py  # 技能清单配额
+│   │   └── service.py       # 对外入口：collect + assemble
 │   ├── memory/              # 记忆模块（短期落表 / 长期落 RAG）
 │   │   ├── models.py        # MemoryEntry、scope / kind、评分口径
 │   │   ├── store.py         # MemoryStore 协议（两种存储的统一接口）
@@ -226,6 +238,55 @@ POST   /api/v1/llm-providers/{id}/test  连通性测试（真实发一次最小�
 - 另外存一份脱敏串（`sk-t***cdef`），所以**列表接口不需要解密、不需要主密钥也能展示**。
 - 明文只在真正调模型前解密，绝不进响应体、日志。
 - 主密钥生成：`python scripts/gen_encryption_key.py`。**换密钥会让已存的 key 解不开，只能重录。**
+
+## 后端存储（deepAgents backends）
+
+后端决定**文件从哪来、命令在哪跑**。deepAgents 提供六种 backend，我们的选型：
+
+| backend | 存哪 | 跨会话 | execute | 我们的判断 |
+| --- | --- | --- | --- | --- |
+| `FilesystemBackend` | 宿主文件系统 | ✅ | ❌ | ✅ **主力**（文件操作） |
+| `DockerSandbox`（我们的） | 工作区挂载进容器 | ✅ | ✅ | ✅ **命令执行** |
+| `LocalShellBackend` | 宿主 + subprocess | ✅ | ✅ | ⚠️ 仅本地开发（无隔离） |
+| `StateBackend` | LangGraph state | ❌ | ❌ | ❌ **不用**（文件进 checkpoint，体积爆炸） |
+| `StoreBackend` | LangGraph BaseStore | ✅ | ❌ | ⏸ 暂不上（与记忆模块职责重叠） |
+| `ContextHubBackend` | LangSmith Hub | ✅ | ❌ | ❌ 不用（依赖 LangSmith） |
+
+### 路由结构
+
+```text
+CompositeBackend(
+    default=DockerSandbox(...),                    # 只提供 execute
+    routes={
+        "/": FilesystemBackend(工作区),              # 文件操作走宿主（快）
+        "/skills/": FilesystemBackend(技能目录),      # 工作区外，agent 改不到
+        "/.artifacts/": FilesystemBackend(产物目录),  # 对话历史外置，不给 agent 看
+    },
+)
+```
+
+外面包一层 `PlatformBackend` —— 补 `ls("/")` 看不到子路由的问题（`CompositeBackend`
+的 route `/` 命中后走单 backend 分支，而 `glob`/`grep` 会搜所有 backend，三种操作
+三种可见性）。
+
+### 沙箱容器按会话复用
+
+容器**常驻**，按会话命名。收益是**装好的依赖、生成的文件跨轮次保留** ——
+agent 装完 pnpm，下一轮还能用。
+
+```text
+第一次: export FOO=hello; cd /tmp; pwd  ->  /tmp  FOO=hello
+第二次: echo FOO=$FOO; pwd              ->  FOO=（空）  /workspace
+```
+
+> ⚠️ **`export` 和 `cd` 不跨命令** —— `docker exec` 每次都是新进程。容器复用保住
+> 的是**文件系统**（装好的包、生成的文件），不是 shell 状态。要设变量就 export 和
+> 使用写在同一条命令里（系统提示词准则 8 说了）。
+
+**回收**：平台里没有"会话结束"这个事件，所以靠空闲超时（默认 30 分钟）+
+容器数上限（默认 32）+ 启动时清理残留。
+
+实现细节见 [`docs/implementation/backend-strategy.md`](docs/implementation/backend-strategy.md)。
 
 ## 能力层（注册 / 意图 / 执行）
 
@@ -688,6 +749,54 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/collections \
 > 读长期记忆集合、往里塞东西。上线前必须补。
 
 实现细节见 [`docs/implementation/memory-module.md`](docs/implementation/memory-module.md)。
+
+## 上下文模块
+
+上下文模块 `app/context/` 决定**一次模型调用看到什么**：把多来源的内容
+（基准提示词、运行环境、策略说明、记忆目录）按配额装成一份提示词，并在对话
+历史过长时压缩。
+
+**它不负责**：召回到什么（记忆模块）、怎么执行（能力层）、对话历史存哪
+（checkpointer）。
+
+### 块与配额
+
+各来源的内容登记成**块**，每块自带优先级与溢出策略：
+
+| 块 | 优先级 | 装不下时 |
+| --- | --- | --- |
+| 基准提示词 | 0（必装） | 截断 |
+| 运行环境 | 10 | 丢 |
+| 策略说明（哪些工具要人批） | 20 | 丢（**会警告**） |
+| 记忆目录 | 40 | 丢 |
+
+预算按**模型窗口的比例**算（默认 50%），另一半留给输出、工具 schema 和
+deepAgents 自己追加的提示词 —— 那部分我们控制不了。
+
+### 压缩：接管，不重造
+
+deepAgents 自带摘要中间件，而且比 LangChain 原版多做了一件事：**被压缩掉的
+历史先落到文件里**，agent 需要时能 `read_file` 回去翻。
+
+我们**同名替换**它（`name = "SummarizationMiddleware"`），只改阈值 —— 压缩的
+机制沿用框架的。
+
+> ⚠️ **这里有个容易忽略的坑**：模型的 `profile.max_input_tokens` 没告诉框架时，
+> deepAgents 的阈值会退化成固定的"170000 token 触发、保留 6 条消息"。我们用
+> OpenAI 兼容端点挂的模型**默认没有 profile** —— 不显式设的话，1M 窗口的
+> DeepSeek 只用不到两成窗口就开始压缩，压完只剩 6 条（一轮工具调用就有好几条）。
+>
+> 修法：给模型挂上 `profile`（`app/agents/llm.py` 的 `_apply_context_window`），
+> 窗口大小来自供应商配置的 `context_window` 字段（默认取厂商预设）。
+
+### 排查
+
+```bash
+# 预览这次会给模型看什么，以及哪些块被丢了 / 截断了
+curl 'http://127.0.0.1:8000/api/v1/context/preview?query=pnpm&workspace=/tmp/ws'
+```
+
+实现细节见 [`docs/implementation/context-module.md`](docs/implementation/context-module.md)。
 
 ## 数据库迁移（Alembic）
 

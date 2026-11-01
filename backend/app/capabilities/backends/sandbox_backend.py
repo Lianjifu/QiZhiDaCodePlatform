@@ -1,28 +1,77 @@
 """Docker 沙箱后端：把我们的 docker 隔离接成 deepAgents 的 backend。
 
+## 这个后端**只提供 execute**
+
 deepAgents 的 ``BaseSandbox`` 是"只实现 ``execute()``，其余文件操作由它在沙箱里
-跑命令实现"的抽象基类。我们的 docker 沙箱正好是这个形状。
+跑命令实现"的抽象基类。**但那些文件方法在我们这儿是不能用的** ——
+它们把虚拟路径**原样**塞进容器命令：
+
+```python
+# BaseSandbox.read
+result = self.execute(_build_read_cmd(file_path, offset, limit))
+# 生成的命令里是：path = base64.b64decode('Lw==').decode('utf-8')   ← "/"
+```
+
+我们的工作区挂在容器里的 ``/workspace``，虚拟路径 ``/a.txt`` 在容器里**根本
+不存在**（那是容器的根目录）。而 ``upload_files`` / ``download_files`` 我们
+实现的是**工作区相对**路径 —— 三方基准不一致。
+
+所以文件操作一律交给宿主侧的 ``FilesystemBackend``（见 ``assembly.py`` 的
+route ``"/"``）：快（不用每次起容器），而且路径天然就是虚拟路径。
+
+**本类覆写了全部文件方法，让误用立刻炸出来**，而不是静默返回"文件不存在"。
 
 隔离参数原样保留（``--network none`` / ``--cap-drop ALL`` / 限内存限进程），
 只挂载会话工作区 —— 这是 deepAgents 自带的 ``LocalShellBackend`` 给不了的
 （它是 ``subprocess.run(shell=True)``，没有任何隔离）。
 
-命令**写进脚本文件再执行**，不做 ``sh -c "<用户输入>"`` 拼接：避免引号与元字符
-在拼接层出问题。
+## 容器按会话复用
+
+容器**常驻**，按会话标识命名。复用带来的收益：
+
+| 保留 | 不保留 |
+| --- | --- |
+| 装好的包（pip / npm install…） | **环境变量**（``export FOO=1``） |
+| 容器里生成的文件 | **当前目录**（``cd``） |
+| 跑起来的后台进程 | |
+
+后两项不保留是 ``docker exec`` 的固有语义 —— **每次 exec 都是新进程**。
+要保留它们得改成"持久 shell + 管道"的实现（复杂，且 shell 状态跨请求容易
+失控），当前不做。
+
+所以 agent 装依赖、跑构建这类操作是有效的；但"设个环境变量，下一条命令要用"
+这种**同一条命令内**的用法才成立 —— agent 得把 export 和使用写在同一条命令里。
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 from deepagents.backends.protocol import (
+    DeleteResult,
+    EditResult,
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
+    GlobResult,
+    GrepResult,
+    LsResult,
+    ReadResult,
+    WriteResult,
+)
+
+from app.capabilities.backends.container_pool import (
+    KEEPALIVE_COMMAND,
+    container_exists,
+    container_name,
+    container_workspace,
+    get_pool,
+    remove_container,
 )
 
 try:  # pragma: no cover - 依赖缺失时给出明确提示
@@ -30,25 +79,37 @@ try:  # pragma: no cover - 依赖缺失时给出明确提示
 except ImportError as exc:  # pragma: no cover
     raise ImportError("缺少 deepagents 依赖，请先安装：pip install 'deepagents==0.7.32'") from exc
 
+logger = logging.getLogger(__name__)
+
 # 单次执行输出的最大字符数：命令可能打印巨量内容，全塞进模型上下文会挤爆它
 _MAX_OUTPUT = 20000
 
 # 挂载预检用的标记文件：写进工作区，进容器后确认它真的看得见
 _MOUNT_CHECK_FILE = ".qzd_mount_check"
 
+# 误用文件方法时的提示
+_FILE_METHODS_UNSUPPORTED = (
+    "DockerSandbox 只提供 execute，文件操作不走这里。"
+    "原因：基类把虚拟路径原样塞进容器命令，而我们的工作区挂在 {mount} —— "
+    "虚拟路径在容器里不存在。文件操作由宿主侧的 FilesystemBackend 负责。"
+)
+
 
 class DockerSandbox(BaseSandbox):
     """在 docker 容器里执行命令的后端。
 
-    只实现 deepAgents 要求的四个抽象成员（``execute`` / ``id`` /
-    ``upload_files`` / ``download_files``），文件操作交给 ``BaseSandbox``
-    在容器内跑命令实现。
+    **只提供 execute** —— 文件操作由宿主侧的 ``FilesystemBackend`` 负责
+    （原因见模块说明）。基类的文件方法被覆写成报错，误用会立刻炸出来。
+
+    容器**按会话复用**（见 ``container_pool.py``）：环境变量、cd、装好的依赖
+    都跨轮次保留。
     """
 
     def __init__(
         self,
         workspace: Path,
         *,
+        session_id: str = "",
         image: str = "python:3.13-slim",
         mount: str = "/workspace",
         timeout: int = 60,
@@ -60,6 +121,8 @@ class DockerSandbox(BaseSandbox):
 
         Args:
             workspace: 会话工作区（挂进容器的唯一目录）。
+            session_id: 会话标识。**容器按它复用** —— 不同会话各自一个容器，
+                互不干扰。留空则按工作区名兜底。
             image: 容器镜像。
             mount: 工作区在容器里的挂载点。
             timeout: 单次执行的默认超时（秒）。
@@ -68,6 +131,8 @@ class DockerSandbox(BaseSandbox):
             pids_limit: 容器进程数上限。
         """
         self.workspace = Path(workspace).resolve()
+        # 会话标识决定容器名：同一个会话一直用同一个容器
+        self.session_id = session_id or self.workspace.name
         self.image = image
         self.mount = mount.rstrip("/")
         self.timeout = timeout
@@ -80,6 +145,44 @@ class DockerSandbox(BaseSandbox):
     def id(self) -> str:
         """沙箱标识。"""
         return f"docker:{self.workspace.name}"
+
+    # ---------- 文件方法：不支持 ----------
+
+    def _unsupported(self) -> NotImplementedError:
+        """构造"文件方法不可用"的异常。
+
+        基类的文件方法把**虚拟路径原样**塞进容器命令（``/a.txt``），而我们的
+        工作区挂在 ``/workspace`` —— 那个路径在容器里不存在，基类会返回
+        "文件不存在"这种**看起来像正常结果**的错误。宁可响亮地炸掉。
+        """
+        return NotImplementedError(_FILE_METHODS_UNSUPPORTED.format(mount=self.mount))
+
+    def ls(self, path: str) -> LsResult:
+        raise self._unsupported()
+
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+        raise self._unsupported()
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        raise self._unsupported()
+
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        raise self._unsupported()
+
+    def delete(self, file_path: str) -> DeleteResult:
+        raise self._unsupported()
+
+    def grep(self, pattern: str, path: str | None = None, **kwargs: object) -> GrepResult:
+        raise self._unsupported()
+
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
+        raise self._unsupported()
 
     # ---------- 执行 ----------
 
@@ -103,27 +206,15 @@ class DockerSandbox(BaseSandbox):
 
         script = self._write_script(command)
         try:
+            name = self._ensure_container()
+            get_pool().touch(self.session_id)
             argv = [
                 "docker",
-                "run",
-                "--rm",
-                "--network",
-                "none",  # 断网，阻断数据外泄
-                "--memory",
-                self.memory,
-                "--cpus",
-                self.cpus,
-                "--pids-limit",
-                str(self.pids_limit),
-                "--cap-drop",
-                "ALL",
-                "--security-opt",
-                "no-new-privileges",
-                "-v",
-                f"{self.workspace}:{self.mount}",
+                "exec",
+                # 每次都回到工作区根 —— 容器是常驻的，上一轮的 cd 会留在里面
                 "-w",
                 self.mount,
-                self.image,
+                name,
                 "sh",
                 f"{self.mount}/{script.name}",
             ]
@@ -151,9 +242,89 @@ class DockerSandbox(BaseSandbox):
         finally:
             script.unlink(missing_ok=True)
 
+    def _ensure_container(self) -> str:
+        """确保这个会话有一个活着的容器，返回容器名。
+
+        容器是**按会话复用**的 —— 环境变量、cd、装好的依赖都留着。
+
+        探活发现容器没了（被外部清理、机器重启）就重建。
+
+        Returns:
+            容器名。
+
+        Raises:
+            RuntimeError: 容器建不起来。
+        """
+        name = container_name(self.session_id)
+        if container_exists(name):
+            # 复用的容器可能挂载着**别的工作区**（平台重启前建的、或者
+            # 工作区被重新分配过）。挂载不对的话，agent 写的文件会落到
+            # 别人的目录里 —— 静默但危险。校验不过就重建。
+            mounted = container_workspace(name, self.mount)
+            if mounted is not None and mounted.resolve() == self.workspace:
+                return name
+            logger.info(
+                "沙箱容器 %s 挂载的工作区不对（%s ≠ %s），重建",
+                name,
+                mounted,
+                self.workspace,
+            )
+            remove_container(name)
+        # 常驻容器占内存 —— 太多的话先回收最久没用的
+        get_pool().enforce_capacity()
+        argv = [
+            "docker",
+            "run",
+            "-d",  # 后台常驻，不随命令结束而退出
+            "--name",
+            name,
+            "--network",
+            "none",  # 断网，阻断数据外泄
+            "--memory",
+            self.memory,
+            "--cpus",
+            self.cpus,
+            "--pids-limit",
+            str(self.pids_limit),
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "-v",
+            f"{self.workspace}:{self.mount}",
+            "-w",
+            self.mount,
+            self.image,
+            *KEEPALIVE_COMMAND,
+        ]
+        try:
+            completed = subprocess.run(  # noqa: S603
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(f"创建沙箱容器失败: {exc}") from exc
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            # 创建失败可能留下一个占着名字的容器（名字冲突、启动失败等）。
+            # 不清掉的话下次再建还是失败 —— 而且那个容器是死的，白占资源。
+            remove_container(name)
+            raise RuntimeError(f"创建沙箱容器失败: {detail}")
+        logger.info("会话 %s 的沙箱容器已创建: %s", self.session_id, name)
+        return name
+
     async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        """异步执行（docker 调用丢线程池，不占着事件循环）。"""
-        return await asyncio.to_thread(self.execute, command, timeout=timeout)
+        """异步执行（docker 调用丢线程池，不占着事件循环）。
+
+        **同一会话串行执行** —— 容器是常驻的，共享 cwd 和环境变量，并行会
+        打架（一个命令 ``cd`` 了，另一个还在原地）。不同会话各有容器，可以并行。
+        """
+        lock = get_pool().lock_for(self.session_id)
+        async with lock:
+            return await asyncio.to_thread(self.execute, command, timeout=timeout)
 
     # ---------- 文件传输 ----------
 

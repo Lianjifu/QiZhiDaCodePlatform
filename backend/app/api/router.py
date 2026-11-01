@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     agent,
     capability,
+    context,
     example,
     health,
     invocation,
@@ -30,3 +31,4 @@ api_router.include_router(capability.router)
 api_router.include_router(invocation.router)
 api_router.include_router(rag.router)
 api_router.include_router(memory.router)
+api_router.include_router(context.router)

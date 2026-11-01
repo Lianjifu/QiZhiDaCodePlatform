@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     llm_base_url: str = ""  # OpenAI 兼容网关：DeepSeek / 通义 / Kimi / vLLM 等
     llm_temperature: float = 0.0
     llm_max_tokens: int = 4096
+    # 上下文窗口（token）。0 = 未知。
+    #
+    # 这个值决定对话历史什么时候被压缩、按什么比例保留 —— deepAgents 的摘要
+    # 阈值按 `model.profile["max_input_tokens"]` 算，而 OpenAI 兼容端点挂上去的
+    # 模型对象没有 profile。不设的话框架只能用固定的"170000 token 触发、
+    # 保留 6 条消息"，对大窗口的模型来说太激进。
+    llm_context_window: int = 0
     agent_max_steps: int = 20
     # 代码沙箱模式：docker（默认，有隔离）| local（开发用，无隔离）
     #
@@ -62,6 +69,16 @@ class Settings(BaseSettings):
     sandbox_type: str = "docker"
     sandbox_image: str = "python:3.13-slim"
     sandbox_timeout: int = 60
+    # 沙箱容器空闲多久回收（秒）
+    #
+    # 容器按会话**复用**，所以 agent 装的环境、设的变量、cd 的目录都留着 ——
+    # 每次执行都新起容器的话这些全丢。
+    #
+    # 平台里没有"会话结束"这个事件（没人调 adelete_thread），所以只能靠空闲
+    # 超时回收：这段时间没人用就把容器删掉。
+    sandbox_idle_timeout: int = 1800
+    # 同时存活的沙箱容器上限。超了就把最久没用的那个回收掉。
+    sandbox_max_containers: int = 32
 
     # Agent 工作区
     workspace_root: str = "./workspace"
@@ -124,6 +141,18 @@ class Settings(BaseSettings):
     rag_embedding_dim: int = 0
     rag_embedding_timeout: int = 60
     rag_embedding_batch_size: int = 32
+
+    # ---- 上下文模块 ----
+    # 上下文占模型窗口的比例。另一半留给模型输出、工具 schema 和
+    # deepAgents 自己追加的提示词 —— 那部分我们控制不了，只能留地方。
+    context_budget_ratio: float = 0.5
+    # 一个 token 折算多少字符。英文约 4，中文约 1.5，取折中。
+    context_chars_per_token: float = 4.0
+    # 上下文预算的兜底字符数（窗口未知时用）
+    context_fallback_budget_chars: int = 16000
+    # 技能清单里最多列几个技能（0 = 不限制）。正文本来就按需读，
+    # 这里限的是每轮都进提示词的那份 name + description 清单。
+    context_max_skills_in_prompt: int = 20
 
     # ---- 记忆模块 ----
     # 长期记忆用的 RAG 集合名；留空 = 只支持会话内记忆
