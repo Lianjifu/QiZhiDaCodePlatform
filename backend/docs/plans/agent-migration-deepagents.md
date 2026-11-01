@@ -402,6 +402,10 @@ deepagents 已锁定到 0.7.32 精确版本，"回退"实际等于降级依赖�
 | **`invoke` 不能按路径路由**，固定走 `CompositeBackend` 的 default —— 正好对上"文件本地、命令进沙箱" | 无需处理，这是 `CompositeBackend` 的语义 |
 | **`SANDBOX_TYPE=local` 之前只对我们自己的执行器生效**，迁移后 deepAgents 的 `execute` 也要认 | `local` → deepAgents 的 `LocalShellBackend`（无隔离，仅开发）；`docker` → 我们的 `DockerSandbox` |
 | **审批恢复是另一次 HTTP 请求** —— checkpointer 必须是**文件**而不是内存，否则图接不上 | `conftest.py` 的 checkpointer 改成临时目录里的文件 |
+| **审批判了两遍**：deepAgents 的 HITL 放行之后，执行层的审批阶段又判了一次"要人批" —— **批准了等于没批准**，`run_python` / `web_fetch` 这些我们自己的工具在 balanced 模式下批准后照样不执行 | 执行层不再重复问：agent 路径上审批由 HITL 负责（`ExecutionContext.approval_handled`），工具能跑到执行层就说明人已经批过了 |
+| **同一次调用让人批两遍**：声明级（HITL）批过之后，参数级（`rm -rf`）又挂一次 | 参数级只管**声明级放行过的那类调用**：平时不用人批的工具，碰到破坏性命令才单独问一次。一次调用一次审批 |
+| **"要不要人批"有三套判定**：文件工具按风险表算、我们的工具按 permission 算、执行层又按另一套算 | 并成一份（`policy.needs_approval`），三处（`interrupt_on` / 告诉模型的提示 / 执行层）都用它 |
+| **沙箱模式有两套**：`execute`（deepAgents 的命令工具）恒定走 docker，`run_python`（我们的执行能力）看 `SANDBOX_TYPE` —— 看着"更安全"，实际没人说得清哪个工具跑在哪 | 并成一条规则：两个工具都看 `SANDBOX_TYPE`，并且**默认值改成 `docker`**（平台执行 LLM 生成的代码，隔离是安全底线，不是可选项）；`local` 要显式打开 |
 
 ### 11.3 下线被接管的能力
 

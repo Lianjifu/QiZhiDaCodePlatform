@@ -37,7 +37,7 @@ class ExecutionContext:
     workspace: Path  # 工作区根目录，所有路径的边界
     mcp_servers: dict[str, MCPServer] = field(default_factory=dict)  # 本次可用的 MCP 供给通道
     max_file_bytes: int = 200000  # 单个文件读入的上限
-    sandbox_type: str = "local"  # 沙箱模式：local / docker
+    sandbox_type: str = "docker"  # 沙箱模式：docker / local
     sandbox_image: str = "python:3.13-slim"  # docker 模式用的镜像
     sandbox_timeout: int = 60  # 沙箱内单次执行的超时（秒）
     docker_mount: str = "/workspace"  # 工作区在容器里的挂载点
@@ -45,6 +45,13 @@ class ExecutionContext:
     session: AsyncSession | None = None
     # 会话 ID：调用记录按它归集，幂等键也带上它
     thread_id: str = ""
+    # **审批已经由上层处理过了** —— 执行层不要再问一遍。
+    #
+    # agent 路径：审批走 deepAgents 的 HITL，工具能跑到执行层就说明人已经批过了
+    # （或者这个工具压根不需要批）。执行层再判一次，等于批准了又被拦下。
+    #
+    # 直接调用的路径：不设这个标志，执行层自己决定要不要挂起等人批。
+    approval_handled: bool = False
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace)

@@ -54,7 +54,12 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.0
     llm_max_tokens: int = 4096
     agent_max_steps: int = 20
-    sandbox_type: str = "local"  # local | docker
+    # 代码沙箱模式：docker（默认，有隔离）| local（开发用，无隔离）
+    #
+    # 默认 docker —— 平台执行的是 LLM 生成的代码，隔离是安全底线，不是可选项。
+    # local 模式没有任何隔离（能读写本机任意文件、能联网），只给不装 docker 的
+    # 本地开发用，而且要**显式**打开。
+    sandbox_type: str = "docker"
     sandbox_image: str = "python:3.13-slim"
     sandbox_timeout: int = 60
 

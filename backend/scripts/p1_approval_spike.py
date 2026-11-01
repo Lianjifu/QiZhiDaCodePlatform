@@ -61,6 +61,8 @@ async def main() -> int:
 
     workspace = Path(tempfile.mkdtemp(prefix="qzd-p1-", dir=str(Path.home())))
     context = ExecutionContext.build(workspace)
+    # 这个脚本验的就是 docker 沙箱 —— 显式写出来，别靠默认值
+    context.sandbox_type = "docker"
 
     model = ScriptedModel(tool_name="execute", tool_args={"command": "echo hello"})
     async with AsyncSqliteSaver.from_conn_string(":memory:") as saver:

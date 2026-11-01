@@ -216,12 +216,16 @@ def _check_permission(intent: CapabilityIntent) -> CapabilityError | None:
 def _decide_approval(intent: CapabilityIntent, assessment: RiskAssessment) -> str:
     """审批决策：``approved`` / ``pending``。
 
-    规则本体在 ``registration/policy.py::approval_decision`` —— 意图层要提前
-    告诉模型"哪些能力会要人批"，两处必须用同一套规则。
+    规则本体在 ``registration/policy.py::approval_decision`` —— 判定只有这一份，
+    deepAgents 的 ``interrupt_on``、中间件告诉模型的那句话，用的都是它。
 
     - ``permission=admin``：一律要人批；
     - ``permission=confirm``：strict 模式要人批；风险被参数级规则顶到破坏性也要人批；
     - 信任模式只能放宽 ``confirm``，放宽不了 ``admin``。
+
+    **agent 路径上这里不会再问一遍**：审批由 deepAgents 的 HITL 负责，工具能跑到
+    执行层就说明人已经批过了（``intent.pre_approved``）。这个阶段只对**直接调
+    API** 的路径起作用 —— 那条路径不走图，只能靠调用记录 + 审批接口。
     """
     if intent.pre_approved:
         # 已经人工批准过（审批接口执行挂起调用时走这条路）

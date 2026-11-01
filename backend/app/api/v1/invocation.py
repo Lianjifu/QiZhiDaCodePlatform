@@ -1,10 +1,14 @@
 """调用记录接口：查询与审批。
 
-审批流程在这里闭环：
+**审批有两个入口，别搞混**：
 
-    POST /api/v1/invocations/{id}/approve   批准并执行
-    POST /api/v1/invocations/{id}/deny      拒绝
-    POST /api/v1/invocations/{id}/cancel    取消
+- agent 在跑，撞上了要人批的调用 →
+  ``POST /api/v1/agent/{thread_id}/approve``（恢复 LangGraph 的图）
+- 直接调 API（``POST /api/v1/capabilities/{key}/invoke``），能力要人批 →
+  ``POST /api/v1/invocations/{id}/approve``（按记录里的参数执行这一次调用）
+
+agent 路径的审批状态在 **LangGraph 的 checkpoint** 里，不在调用记录表里 ——
+本文件的接口只服务"直接调用"那条路径。
 """
 
 from __future__ import annotations
@@ -58,7 +62,7 @@ async def get_invocation(
 @router.post(
     "/{invocation_id}/approve",
     response_model=ResponseModel[CapabilityInvokeOut],
-    summary="批准并执行待审批的调用",
+    summary="批准并执行待审批的调用（直接调用路径；agent 路径用 /agent/{thread_id}/approve）",
 )
 async def approve_invocation(
     invocation_id: int,
@@ -71,7 +75,7 @@ async def approve_invocation(
 @router.post(
     "/{invocation_id}/deny",
     response_model=ResponseModel[InvocationOut],
-    summary="拒绝待审批的调用",
+    summary="拒绝待审批的调用（直接调用路径）",
 )
 async def deny_invocation(
     invocation_id: int,
@@ -85,7 +89,7 @@ async def deny_invocation(
 @router.post(
     "/{invocation_id}/cancel",
     response_model=ResponseModel[InvocationOut],
-    summary="取消待审批的调用",
+    summary="取消待审批的调用（直接调用路径）",
 )
 async def cancel_invocation(
     invocation_id: int,

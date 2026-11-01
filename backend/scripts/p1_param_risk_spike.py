@@ -58,6 +58,8 @@ class ScriptedModel(BaseChatModel):
 async def main() -> int:
     workspace = Path(tempfile.mkdtemp(prefix="qzd-p1r-", dir=str(Path.home())))
     context = ExecutionContext.build(workspace)
+    # 这个脚本验的就是 docker 沙箱 —— 显式写出来，别靠默认值
+    context.sandbox_type = "docker"
 
     # permissive 模式：执行命令不触发声明级审批，
     # 只有参数级规则（rm -rf）才该挂起

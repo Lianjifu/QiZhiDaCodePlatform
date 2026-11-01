@@ -17,8 +17,9 @@ deepAgents 接管文件工具之后，那部分能力不再由我们声明（没
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
-from app.capabilities.registration.policy import PermissionLevel, RiskLevel
+from app.capabilities.registration.policy import PermissionLevel, RiskLevel, needs_approval
 
 # deepAgents 的文件工具名（由 FilesystemMiddleware 注册）
 FS_TOOL_NAMES: frozenset[str] = frozenset(
@@ -91,16 +92,6 @@ TOOL_POLICIES: dict[str, ToolPolicy] = {
     ),
 }
 
-# 信任模式 → 哪些风险等级以上的工具要人工审批
-_TRUST_APPROVAL_RISKS: dict[str, tuple[str, ...]] = {
-    # 写类 + 执行类 + 网络类都要批
-    "strict": (RiskLevel.WRITE, RiskLevel.EXECUTE, RiskLevel.NETWORK, RiskLevel.DESTRUCTIVE),
-    # 执行类 + 网络类要批（读写类自动放行，与改造前一致）
-    "balanced": (RiskLevel.EXECUTE, RiskLevel.NETWORK, RiskLevel.DESTRUCTIVE),
-    # 只有破坏性要批
-    "permissive": (RiskLevel.DESTRUCTIVE,),
-}
-
 
 def policy_for_tool(name: str) -> ToolPolicy:
     """取某个工具的策略。
@@ -115,7 +106,7 @@ def policy_for_tool(name: str) -> ToolPolicy:
 
 
 def approval_tool_names(trust_mode: str) -> set[str]:
-    """按信任模式算出"哪些工具要人工审批"。
+    """deepAgents 的文件工具里，哪些要人工审批。
 
     Args:
         trust_mode: 会话信任模式（strict / balanced / permissive）。
@@ -128,12 +119,54 @@ def approval_tool_names(trust_mode: str) -> set[str]:
     "按风险多严来卡"，不是"这一类操作不用问人"。
     """
     mode = (trust_mode or "balanced").lower()
-    risks = _TRUST_APPROVAL_RISKS.get(mode, _TRUST_APPROVAL_RISKS["balanced"])
     return {
         name
         for name, policy in TOOL_POLICIES.items()
-        if policy.needs_approval or policy.risk in risks
+        if needs_approval(
+            policy.permission,
+            policy.risk,
+            mode,
+            always=policy.needs_approval,
+        )
     }
+
+
+def approval_required_tools(
+    specs: list[Any],
+    trust_mode: str,
+    allowed_keys: set[str] | None = None,
+) -> set[str]:
+    """本次会话里，哪些工具要人工审批 —— **审批规则的唯一出口**。
+
+    文件工具按策略表算，我们自己的工具按声明算，但两边用**同一个判定函数**
+    （``policy.needs_approval``）。
+
+    三个地方必须用这一份，否则迟早对不上：
+
+    - ``builder.py`` 算出 deepAgents 的 ``interrupt_on``（谁要挂起等人批）；
+    - ``middleware.py`` 告诉模型"哪些工具会要人批"；
+    - 执行层在直接调用的路径上决定要不要挂起。
+
+    Args:
+        specs: 统一能力清单（我们的工具用它）。
+        trust_mode: 会话信任模式。
+        allowed_keys: 本次允许的能力集；``None`` 表示不限制。
+
+    Returns:
+        工具名集合。
+    """
+    mode = (trust_mode or "balanced").lower()
+    names = set(approval_tool_names(mode))
+    for spec in specs:
+        if spec.kind != "tool" or not spec.enabled:
+            continue
+        if allowed_keys is not None and spec.key not in allowed_keys:
+            continue
+        if spec.key in names:
+            continue
+        if needs_approval(spec.permission, spec.risk, mode):
+            names.add(spec.key)
+    return names
 
 
 __all__ = [
@@ -141,6 +174,7 @@ __all__ = [
     "SUPERSEDED_BUILTIN_TOOLS",
     "TOOL_POLICIES",
     "ToolPolicy",
+    "approval_required_tools",
     "approval_tool_names",
     "policy_for_tool",
 ]

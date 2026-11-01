@@ -216,8 +216,3 @@ def get_builtin_by_source(source: str) -> BuiltinSpec | None:
     """
     key = _SOURCE_INDEX.get(source)
     return BUILTIN_SPECS.get(key) if key else None
-
-
-def get_builtin_by_key(key: str) -> BuiltinSpec | None:
-    """按 key 取出厂规格（没有就返回 None）。"""
-    return BUILTIN_SPECS.get(key)

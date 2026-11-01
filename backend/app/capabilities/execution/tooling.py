@@ -79,13 +79,17 @@ def _build_generic_tool(spec: CapabilitySpec, context: ExecutionContext) -> Base
 
     async def call(**kwargs: Any) -> str:
         # 注意：这里**不执行能力**，只构造意图 —— 执行由执行层统一做，
-        # 于是 agent 内部调用和直接调 API 走的是同一条流水线
+        # 于是 agent 内部调用和直接调 API 走的是同一条流水线。
+        #
+        # pre_approved 跟着上下文走：agent 路径的审批由 deepAgents 的 HITL 负责，
+        # 工具能跑到这里就说明人已经批过了（或压根不需要批）—— 执行层不要再问一遍。
         intent = CapabilityIntent(
             capability_key=spec.key,
             arguments=dict(kwargs),
             spec=spec,
             thread_id=context.thread_id,
             workspace=context.workspace,
+            pre_approved=context.approval_handled,
         )
         result = await execute(intent, context)
         return result.to_text()
@@ -123,6 +127,7 @@ async def _build_mcp_tool(spec: CapabilitySpec, context: ExecutionContext) -> Ba
             spec=spec,
             thread_id=context.thread_id,
             workspace=context.workspace,
+            pre_approved=context.approval_handled,
         )
         result = await execute(intent, context)
         return result.to_text()

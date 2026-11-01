@@ -242,3 +242,88 @@ def test_policy_note_counts_exposed_capabilities() -> None:
     ]
     note = CapabilityMiddleware(specs, trust_mode="balanced")._policy_note()
     assert f"本次可用工具 {len(FS_TOOL_NAMES) + 2} 个" in note
+
+
+@pytest.mark.asyncio
+async def test_approved_own_tool_actually_runs(app, client, session) -> None:
+    """批准之后，我们自己的工具要**真的跑起来**。
+
+    agent 路径的审批走 deepAgents 的 HITL；执行层自己的审批阶段不能把它再拦一遍
+    —— 两处各判一次，批准了等于没批准。
+    """
+    thread_id = "t-own-tool"
+    model = RecordingModel(
+        tool_name="run_python",
+        tool_args={"code": "print('ok')"},
+        reply="跑完了",
+    )
+    _override(app, model, session)
+
+    resp = await client.post(API + "/chat", json={"message": "跑一下", "thread_id": thread_id})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    # run_python 是 confirm/execute，balanced 下要人批
+    assert data["status"] == "pending_approval"
+    assert data["pending"][0]["tool"] == "run_python"
+
+    approve = await client.post(f"{API}/{thread_id}/approve")
+    assert approve.status_code == 200, approve.text
+    approved = approve.json()["data"]
+    assert approved["status"] == "completed"
+    calls = approved["tool_calls"]
+    assert calls, "批准后应该有工具调用"
+    assert calls[0]["name"] == "run_python"
+    assert calls[0].get("ok") is True, f"批准后工具没有真正执行：{calls[0]}"
+
+
+@pytest.mark.asyncio
+async def test_one_call_one_approval(app, client, session) -> None:
+    """一次调用只让人批一次。
+
+    声明级（deepAgents HITL）与参数级（我们的 interrupt）是**两道闸，不是两轮审批**：
+    声明级放行过的调用，参数级不再重复问 —— 否则同一条命令要人批两遍。
+    """
+    thread_id = "t-one-approval"
+    model = RecordingModel(
+        tool_name="execute",
+        tool_args={"command": "echo hi"},
+        reply="跑完了",
+    )
+    _override(app, model, session)
+
+    resp = await client.post(API + "/chat", json={"message": "跑个命令", "thread_id": thread_id})
+    data = resp.json()["data"]
+    assert data["status"] == "pending_approval"
+    # balanced 模式下 execute 走声明级审批
+    assert data["pending"][0]["kind"] == "declared"
+
+    approve = await client.post(f"{API}/{thread_id}/approve")
+    assert approve.status_code == 200, approve.text
+    approved = approve.json()["data"]
+    # 批准之后不该再挂起（没有第二轮审批）
+    assert approved["status"] == "completed"
+    assert approved["tool_calls"], "批准后工具应该真的执行了"
+    assert approved["tool_calls"][0].get("ok") is True
+
+
+@pytest.mark.asyncio
+async def test_param_risk_still_gates_tools_that_need_no_approval(
+    app, client, session, monkeypatch
+) -> None:
+    """平时不用人批的工具，碰到破坏性命令时要单独拎出来问一次。"""
+    monkeypatch.setattr(settings, "capability_trust_mode", "permissive")
+
+    thread_id = "t-param-only"
+    model = RecordingModel(
+        tool_name="execute",
+        tool_args={"command": "rm -rf /tmp/qzd-canary"},
+        reply="好",
+    )
+    _override(app, model, session)
+
+    resp = await client.post(API + "/chat", json={"message": "删个目录", "thread_id": thread_id})
+    data = resp.json()["data"]
+    assert data["status"] == "pending_approval"
+    # permissive 下 execute 不用人批 —— 这一轮是参数级规则拦下来的
+    assert data["pending"][0]["kind"] == "param_risk"
+    assert data["pending"][0]["risk"] == "destructive"

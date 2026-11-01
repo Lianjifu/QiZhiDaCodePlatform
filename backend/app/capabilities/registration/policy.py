@@ -127,6 +127,38 @@ def approval_decision(
     return APPROVAL_APPROVED
 
 
+def needs_approval(
+    permission: str,
+    risk: str,
+    trust_mode: str,
+    *,
+    require_admin: bool = False,
+    always: bool = False,
+) -> bool:
+    """这次调用要不要人批 —— 审批规则的**唯一实现**。
+
+    文件工具（deepAgents 的）与我们的工具（web_* / run_python / MCP）都用这一
+    个函数判定。两边各写一套规则，迟早对不上：模型被告知"直接放行"、实际却被
+    拦下，或者更糟 —— 批准过了，执行层又拦一次。
+
+    Args:
+        permission: 权限要求（none / confirm / admin）。
+        risk: 风险等级（可以是参数级规则上调后的值）。
+        trust_mode: 会话信任模式。
+        require_admin: 参数级规则是否要求管理员放行。
+        always: 无论信任模式都要人批（删除这类不可逆的操作）。
+
+    Returns:
+        要人批返回 ``True``。
+    """
+    if always:
+        return True
+    return (
+        approval_decision(permission, risk, trust_mode, require_admin=require_admin)
+        == APPROVAL_PENDING
+    )
+
+
 @dataclass(frozen=True)
 class RetryPolicy:
     """重试策略。

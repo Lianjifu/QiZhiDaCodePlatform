@@ -92,6 +92,8 @@ async def main() -> int:
     )
 
     context = ExecutionContext.build(workspace)
+    # 这个脚本验的就是 docker 沙箱 —— 显式写出来，别靠默认值
+    context.sandbox_type = "docker"
     backend = build_backend(context)
 
     model = ScriptedModel(

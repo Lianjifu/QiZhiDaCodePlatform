@@ -145,7 +145,7 @@ LLM_PROVIDER="openai"        # openai | anthropic | ollama
 LLM_MODEL="gpt-4o-mini"
 LLM_API_KEY="sk-..."
 LLM_BASE_URL=""              # 国产模型走这个：https://api.deepseek.com/v1
-SANDBOX_TYPE="docker"        # local（开发）| docker（生产）
+SANDBOX_TYPE="docker"        # docker（默认，有隔离）| local（开发用，无隔离）
 WORKSPACE_ROOT="./workspace"
 
 WEB_SEARCH_PROVIDER=""       # tavily | serper | bing（联网搜索用）
@@ -160,8 +160,9 @@ CAPABILITY_APPROVAL_TIMEOUT=300    # 审批请求超时自动拒绝（秒）
 
 agent 会执行 **LLM 生成的代码**，而 LLM 可以被提示词注入诱导。所以：
 
-- `SANDBOX_TYPE=local` **没有任何隔离** —— 生成的代码能读写本机任意文件、能联网。仅限本地开发。
-- `SANDBOX_TYPE=docker` 才是生产可用形态：容器内执行、`--network none` 断网、限内存与进程数、`--cap-drop ALL`、只挂载当前会话的工作区。
+- 默认就是 `SANDBOX_TYPE=docker`：容器内执行、`--network none` 断网、限内存与进程数、`--cap-drop ALL`、只挂载当前会话的工作区。
+- `SANDBOX_TYPE=local` **没有任何隔离** —— 生成的代码能读写本机任意文件、能联网。仅限本地开发，而且要**显式**打开。
+- 这条规则**一处**说了算：`execute`（deepAgents 的命令工具）与 `run_python`（我们的执行能力）都看它。两边各写一套就会跑偏。
 - 文件路径由 deepAgents 的 `FilesystemBackend`（虚拟模式）把关：`..` 穿越一律拒绝，绝对路径映射进工作区（`/etc/passwd` → `<工作区>/etc/passwd`），resolve 后必须仍在工作区内。
 - 每个会话一个独立工作区（`WORKSPACE_ROOT/<thread_id>`），互不串味。
 

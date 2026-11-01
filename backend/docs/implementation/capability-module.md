@@ -169,6 +169,10 @@ query string，其余进 JSON body。
 `delete` 单独一档：写文件能靠再写一遍补救，**删掉的回不来** —— 信任模式再宽松
 也要人批。
 
+我们自己的工具（`web_fetch` / `web_search` / `run_python` / MCP）走同一套判定 ——
+它们的 `permission` / `risk` 来自声明。两边合起来才是完整的工具集，判定函数
+只有一个（`policy.needs_approval`）。
+
 ### 3.5 风险与权限是两个正交维度
 
 - `risk` —— 这能力**最坏**能造成什么（描述能力本身）；
@@ -241,8 +245,16 @@ query string，其余进 JSON body。
 
 | 模式 | 后端 | 隔离 |
 | --- | --- | --- |
-| `docker`（生产） | 我们的 `DockerSandbox`（`BaseSandbox` 子类） | `--network none --cpus 1 --memory 512m --pids-limit 256 --cap-drop ALL --security-opt no-new-privileges`，只挂载当前会话的工作区 |
+| `docker`（默认） | 我们的 `DockerSandbox`（`BaseSandbox` 子类） | `--network none --cpus 1 --memory 512m --pids-limit 256 --cap-drop ALL --security-opt no-new-privileges`，只挂载当前会话的工作区 |
 | `local`（开发） | deepAgents 的 `LocalShellBackend` | **没有任何隔离**，仅限本地开发 |
+
+默认是 `docker`：平台执行的是 LLM 生成的代码，隔离是安全底线而不是可选项。
+`local` 要**显式**打开。
+
+这条规则**一处**说了算 —— `execute`（deepAgents 的命令工具）与 `run_python`
+（我们的执行能力）都看 `SANDBOX_TYPE`。两边各写一套，迟早跑偏：曾经
+`execute` 恒定走 docker、`run_python` 看配置，看起来是"更安全"，实际是没人
+说得清哪个工具跑在哪。
 
 两条硬约束：
 
@@ -400,11 +412,23 @@ deepAgents 的所有工具调用（它自己的文件工具、我们的工具）
 | **声明级** | 工具在 `interrupt_on` 里（执行命令、联网、删除…） | 工具执行**之前**（deepAgents 的 HITL） |
 | **参数级** | 命令含 `rm -rf`、URL 指内网 | 工具执行**中**（我们自己的 `interrupt()`） |
 
+**一次调用只让人批一次。** 声明级先于工具执行发生 —— 工具能跑到参数级检查，
+说明人已经看过这次调用并批过了，参数级就不再重复问。参数级只管**声明级放行过
+的那类调用**：平时不用人批的工具，碰到破坏性命令 / 内网地址时单独拎出来问一次。
+
 两处中断的载荷形状不同，但恢复值统一成 deepAgents HITL 的格式：
 
 ```json
 {"decisions": [{"type": "approve"}]}
 ```
+
+**"要不要人批"的判定只有一份**（`registration/policy.py::needs_approval`），
+三个地方都用它：deepAgents 的 `interrupt_on`、中间件告诉模型的那句话、执行层
+在直接调用路径上的判定。三处各写一套，批准过了又被拦一次就是这么来的。
+
+执行层在 agent 路径上**不再问一遍**：审批已经由 HITL 负责，工具能跑到执行层就
+说明人已经批过了（`ExecutionContext.approval_handled`）。直接调 API 的那条路径
+不走图，仍然由执行层自己决定要不要挂起。
 
 ### 5.6 审批：挂起 → 批准 → 图恢复
 
@@ -448,14 +472,15 @@ POST /api/v1/agent/chat
 
 ```text
 当前信任模式：balanced。
-读写类操作会直接执行；执行命令、联网抓取需要人工审批后才能继续。
+一般读写操作会直接执行；执行命令、联网抓取、删除文件需要人工审批。
 以下工具需要人工批准才能执行：delete、execute。
 每次触发审批都会中断当前任务等人工处理，调用前请把参数一次做对。
-另外：命令里含删除/写设备等特征、或抓取的是内网地址，会命中参数级风险规则。
+另外：平时不用人批的工具，碰到命令里含删除/写设备等特征、或抓取的是内网地址，
+也会命中参数级风险规则，单独问一次。
 ```
 
-两处各写一套规则，迟早对不上 —— 模型被告知"直接放行"、实际却被拦下，
-就是这么来的。
+判定只有一份（`policy.needs_approval`），三处都用它 —— 模型被告知"直接放行"、
+实际却被拦下，或者批准过了又被拦一次，都是因为各写了一套规则。
 
 ### 5.6.2 执行摘要回到调用方
 

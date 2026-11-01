@@ -30,7 +30,7 @@ from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.tooling import build_tools
 from app.capabilities.intent.middleware import CapabilityMiddleware
 from app.capabilities.registration.spec import CapabilitySpec
-from app.capabilities.registration.tool_policy import FS_TOOL_NAMES, approval_tool_names
+from app.capabilities.registration.tool_policy import FS_TOOL_NAMES, approval_required_tools
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,11 @@ async def build_agent(
         ``ainvoke`` / ``astream``。
     """
     from deepagents import create_deep_agent
+
+    # **审批由 deepAgents 的 HITL 负责**（``interrupt_on`` 那一套）。
+    # 工具能跑到执行层，就说明人已经批过了 —— 执行层不要再问一遍，
+    # 否则"批准了等于没批准"。
+    context.approval_handled = True
 
     tools = await build_tools(specs, context, allowed_tool_keys, skip_names=FS_TOOL_NAMES)
 
@@ -163,18 +168,11 @@ def _interrupt_on(
 ) -> dict[str, bool]:
     """算出"哪些工具要人工审批"。
 
-    两部分：deepAgents 的文件工具按**风险等级 + 信任模式**算；我们自己的工具
-    按声明的权限要求算（声明写 confirm / admin 就是要人批）。
+    规则只有一份（``tool_policy.approval_required_tools``）—— 中间件告诉模型的
+    那句话、执行层的判定，用的都是它。三处各写一套，批准过了又被拦一次就是这么来的。
     """
-    names = {name: True for name in approval_tool_names(trust_mode)}
-    for spec in specs:
-        if spec.kind != "tool" or not spec.enabled:
-            continue
-        if allowed_tool_keys is not None and spec.key not in allowed_tool_keys:
-            continue
-        if spec.permission in ("confirm", "admin"):
-            names[spec.key] = True
-    return names
+    names = approval_required_tools(specs, trust_mode, allowed_tool_keys)
+    return {name: True for name in names}
 
 
 def _general_subagent(
@@ -212,10 +210,3 @@ def _default_prompt() -> str:
     from app.agents.prompts import CODE_AGENT_PROMPT
 
     return CODE_AGENT_PROMPT
-
-
-def default_workspace() -> Path:
-    """默认工作区（会话级工作区由 Service 覆盖）。"""
-    from app.core.config import settings
-
-    return Path(settings.workspace_root).resolve()

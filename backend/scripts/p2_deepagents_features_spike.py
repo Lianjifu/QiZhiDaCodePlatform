@@ -64,6 +64,8 @@ class ScriptedModel(BaseChatModel):
 async def main() -> int:
     workspace = Path(tempfile.mkdtemp(prefix="qzd-p2-", dir=str(Path.home())))
     context = ExecutionContext.build(workspace)
+    # 这个脚本验的就是 docker 沙箱 —— 显式写出来，别靠默认值
+    context.sandbox_type = "docker"
 
     skills_dir = workspace.parent / ".skills" / workspace.name
     skill = CapabilitySpec(

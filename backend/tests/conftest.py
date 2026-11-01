@@ -19,6 +19,8 @@ os.environ.setdefault(
     os.path.join(tempfile.mkdtemp(prefix="qzd-test-ckpt-"), "checkpoints.db"),
 )
 os.environ.setdefault("WORKSPACE_ROOT", os.path.join(tempfile.gettempdir(), "qzd-test-workspace"))
+# 测试不依赖 docker：沙箱走 local 模式（无隔离，但测试里的命令都是无害的）。
+os.environ.setdefault("SANDBOX_TYPE", "local")
 # API Key 加密主密钥：每个测试会话现生成一把，不依赖本机 .env
 os.environ.setdefault("API_KEY_ENCRYPTION_KEY", Fernet.generate_key().decode())
 

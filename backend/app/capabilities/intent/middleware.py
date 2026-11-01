@@ -18,8 +18,12 @@ deepAgents 的所有工具调用（它自己的文件工具、我们的工具）
   在工具执行**之前**抛中断；
 - **参数级**（``rm -rf``、SSRF）：本模块的 ``interrupt()``，在工具执行**中**抛中断。
 
+**一次调用只让人批一次**：声明级先于工具执行发生，工具能跑到参数级检查就说明
+人已经批过了 —— 参数级不再重复问，只管"声明级放行过的那类调用"（平时不用人批
+的工具碰到破坏性命令时单独拎出来问一次）。
+
 两处中断的载荷形状不同，但恢复值统一成 deepAgents HITL 的格式
-（``[{"type": "accept"}]``），审批接口只需要认一种。
+（``{"decisions": [{"type": "approve"}]}``），审批接口只需要认一种。
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.redaction import redact
 from app.capabilities.execution.risk import assess
 from app.capabilities.execution.task_state import adjust_confidence, load_task_state
-from app.capabilities.registration.policy import Annotations, PermissionLevel
+from app.capabilities.registration.policy import Annotations
 from app.capabilities.registration.spec import KIND_TOOL, CapabilitySpec
 from app.capabilities.registration.tool_policy import FS_TOOL_NAMES, ToolPolicy, policy_for_tool
 
@@ -159,6 +163,13 @@ class CapabilityMiddleware(AgentMiddleware):
         挂起用 LangGraph 的 ``interrupt()``：它在工具执行过程中抛中断，
         恢复时把决定值交回这里。批准就继续执行，拒绝就返回一条错误消息给模型。
 
+        **已经在声明级批过的，不再问第二次。** 声明级（deepAgents 的 HITL）先于
+        工具执行发生 —— 工具能走到这里，说明人已经看过这次调用并批过了。
+        再挂一次等于同一次调用让人批两遍。
+
+        所以参数级只管**声明级放行过的那类调用**：平时不需要人批的工具，
+        碰到破坏性命令 / 内网地址时单独拎出来问一次。
+
         Args:
             name: 工具名。
             args: 工具参数。
@@ -166,6 +177,10 @@ class CapabilityMiddleware(AgentMiddleware):
         Returns:
             人工拒绝时返回一条错误消息；批准或没命中时返回 ``None``（继续执行）。
         """
+        if name in self._approval_tool_names():
+            # 声明级已经批过这一次 —— 参数级不再重复问
+            return None
+
         assessment = assess(self._spec_for(name), args)
         if not assessment.escalated:
             return None
@@ -268,11 +283,11 @@ class CapabilityMiddleware(AgentMiddleware):
         """
         notes = [f"当前信任模式：{self.trust_mode}。"]
         if self.trust_mode == "balanced":
-            notes.append("读写类操作会直接执行；执行命令、联网抓取需要人工审批后才能继续。")
+            notes.append("一般读写操作会直接执行；执行命令、联网抓取、删除文件需要人工审批。")
         elif self.trust_mode == "strict":
             notes.append("所有写类、执行类、联网操作都会挂起，等待人工审批。")
         elif self.trust_mode == "permissive":
-            notes.append("只有破坏性操作需要人工审批。")
+            notes.append("只有破坏性操作与删除文件需要人工审批。")
 
         approval = self._approval_tool_names()
         if approval:
@@ -282,8 +297,8 @@ class CapabilityMiddleware(AgentMiddleware):
                 + "。每次触发审批都会中断当前任务等人工处理，调用前请把参数一次做对。"
             )
             notes.append(
-                "另外：命令里含删除/写设备等特征、或抓取的是内网地址，"
-                "会命中参数级风险规则，需要额外的人工批准。"
+                "另外：平时不用人批的工具，碰到命令里含删除/写设备等特征、"
+                "或抓取的是内网地址，也会命中参数级风险规则，单独问一次。"
             )
         count = self._exposed_count()
         if count:
@@ -293,22 +308,12 @@ class CapabilityMiddleware(AgentMiddleware):
     def _approval_tool_names(self) -> set[str]:
         """本次哪些工具会要人批。
 
-        文件工具按映射表算；我们自己的工具按声明的 permission + 风险算
-        （规则与执行层一致 —— 两处各写一套迟早对不上）。
+        用的是**唯一那份规则**（``tool_policy.approval_required_tools``）——
+        和 deepAgents 的 ``interrupt_on``、执行层的判定完全一致。
         """
-        from app.capabilities.registration.tool_policy import approval_tool_names
+        from app.capabilities.registration.tool_policy import approval_required_tools
 
-        names = set(approval_tool_names(self.trust_mode))
-        for spec in self.specs:
-            if spec.kind != KIND_TOOL or not spec.enabled:
-                continue
-            if self.allowed_tool_keys is not None and spec.key not in self.allowed_tool_keys:
-                continue
-            if spec.permission == PermissionLevel.CONFIRM:
-                names.add(spec.key)
-            elif spec.permission == PermissionLevel.ADMIN:
-                names.add(spec.key)
-        return names
+        return approval_required_tools(self.specs, self.trust_mode, self.allowed_tool_keys)
 
     def _exposed_count(self) -> int:
         """本次暴露给模型的工具数量。

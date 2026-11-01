@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
@@ -18,6 +17,7 @@ from app.api.deps import get_agent_service
 from app.schemas.agent import (
     AgentChatOut,
     AgentChatRequest,
+    AgentStreamChunk,
     PendingApprovalOut,
     ToolCallOut,
 )
@@ -131,7 +131,7 @@ async def stream(payload: AgentChatRequest, service: ServiceDep) -> StreamingRes
         async for text in service.stream(
             payload.message, payload.thread_id, payload.provider_id, payload.skill_ids
         ):
-            frame = json.dumps({"text": text}, ensure_ascii=False)
+            frame = AgentStreamChunk(text=text).model_dump_json()
             yield f"data: {frame}\n\n"
         yield "data: [DONE]\n\n"
 
