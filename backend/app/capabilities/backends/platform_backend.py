@@ -137,16 +137,16 @@ class PlatformBackend(SandboxBackendProtocol):
         return await self._inner.adelete(file_path)
 
     def grep(self, pattern: str, path: str | None = None, **kwargs: Any) -> GrepResult:
-        return self._inner.grep(pattern, path, **kwargs)
+        return _dedupe_grep(self._inner.grep(pattern, path, **kwargs))
 
     async def agrep(self, pattern: str, path: str | None = None, **kwargs: Any) -> GrepResult:
-        return await self._inner.agrep(pattern, path, **kwargs)
+        return _dedupe_grep(await self._inner.agrep(pattern, path, **kwargs))
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-        return self._inner.glob(pattern, path)
+        return _dedupe_glob(self._inner.glob(pattern, path))
 
     async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
-        return await self._inner.aglob(pattern, path)
+        return _dedupe_glob(await self._inner.aglob(pattern, path))
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[Any]:
         return self._inner.upload_files(files)
@@ -189,6 +189,62 @@ class PlatformBackend(SandboxBackendProtocol):
     def id(self) -> str:
         """沙箱标识（转发给默认后端）。"""
         return self._inner.default.id
+
+
+def _dedupe_glob(result: GlobResult) -> GlobResult:
+    """去掉 glob 结果里的重复项。
+
+    **为什么会有重复**：``CompositeBackend.glob`` 在 path 为 ``"/"`` 或 None 时
+    搜**默认后端 + 所有路由**。而我们的默认后端（沙箱）与 route ``"/"``
+    （宿主 FilesystemBackend）**指向同一个工作区** —— 每个文件于是出现两次。
+
+    agent 用 glob 找产物时会看到一堆重复项。
+    """
+    matches = result.matches
+    if not matches:
+        return result
+    seen: set[tuple[str, int | None]] = set()
+    unique = []
+    for item in matches:
+        key = (str(item.get("path", "")), item.get("line_number"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    if len(unique) == len(matches):
+        return result
+    return GlobResult(
+        error=result.error,
+        matches=unique,
+        truncated=result.truncated,
+        truncation_reason=result.truncation_reason,
+    )
+
+
+def _dedupe_grep(result: GrepResult) -> GrepResult:
+    """去掉 grep 结果里的重复项（原因同 :func:`_dedupe_glob`）。"""
+    matches = result.matches
+    if not matches:
+        return result
+    seen: set[tuple[str, int | None, str]] = set()
+    unique = []
+    for item in matches:
+        key = (
+            str(item.get("path", "")),
+            item.get("line_number"),
+            str(item.get("line_text", "")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    if len(unique) == len(matches):
+        return result
+    return GrepResult(
+        error=result.error,
+        matches=unique,
+        truncated=result.truncated,
+    )
 
 
 def _is_root(path: str) -> bool:

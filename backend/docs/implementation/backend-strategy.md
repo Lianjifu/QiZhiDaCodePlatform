@@ -346,7 +346,21 @@ execute(command)
 
 所以每次复用前查一次容器的挂载源，与当前工作区对不上就重建。
 
-### 5.3 `PlatformBackend` 必须继承 `SandboxBackendProtocol`
+### 5.3 glob / grep 的结果会重复（实施 F1 时发现）
+
+`CompositeBackend.glob` / `grep` 在 path 为 `"/"` 或 None 时搜**默认后端 +
+所有路由**。而我们的默认后端（沙箱）与 route `"/"`（宿主 `FilesystemBackend`）
+**指向同一个工作区** —— 每个文件出现两次：
+
+```text
+glob('**/*') -> ['/a.py', '/a.py', '/b.md', '/b.md']
+grep('x')   -> ['/a.py', '/a.py']
+```
+
+agent 用 glob 找产物时会看到一堆重复项。已在 `PlatformBackend` 里去重
+（按 path + 行号 / path + 行号 + 行文本），并加了回归测试。
+
+### 5.4 `PlatformBackend` 必须继承 `SandboxBackendProtocol`
 
 deepAgents 的 `supports_execution()` 用 `isinstance` 判断后端能不能执行命令：
 

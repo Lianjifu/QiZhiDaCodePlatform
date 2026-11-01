@@ -99,6 +99,40 @@ def test_platform_backend_forwards_default_properties(tmp_path):
     assert backend.default is not None
 
 
+def test_glob_does_not_duplicate_files(tmp_path):
+    """glob 不该把同一个文件列两次。
+
+    CompositeBackend.glob 在 path 为 "/" 时搜**默认后端 + 所有路由**。我们的
+    默认后端（沙箱）与 route "/"（宿主 FilesystemBackend）指向同一个工作区 ——
+    不去重的话每个文件都出现两次。agent 用 glob 找产物时会看到一堆重复项。
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "a.py").write_text("x", encoding="utf-8")
+    (workspace / "b.md").write_text("y", encoding="utf-8")
+
+    context = ExecutionContext.build(workspace)
+    context.thread_id = "t-glob"
+    backend = build_backend(context, None)
+
+    paths = [m["path"] for m in backend.glob("**/*").matches or []]
+    assert paths == ["/a.py", "/b.md"], f"glob 结果重复了：{paths}"
+
+
+def test_grep_does_not_duplicate_matches(tmp_path):
+    """grep 同样要去重。"""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "a.py").write_text("needle here\n", encoding="utf-8")
+
+    context = ExecutionContext.build(workspace)
+    context.thread_id = "t-grep"
+    backend = build_backend(context, None)
+
+    paths = [m["path"] for m in backend.grep("needle").matches or []]
+    assert paths == ["/a.py"], f"grep 结果重复了：{paths}"
+
+
 # ---------------------------------------------------------------- 路径隔离
 
 

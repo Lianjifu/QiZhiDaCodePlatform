@@ -28,6 +28,7 @@
 | --- | --- | --- |
 | [agent-migration-deepagents.md](plans/agent-migration-deepagents.md) | Agent 层迁移到 deepAgents：能力层 → Backend、审批改 HITL、规划/子代理/skills/记忆/摘要 | ✅ 已实施（2026-11-01，含实施记录与偏差说明） |
 | [capability-followups.md](plans/capability-followups.md) | 能力层的已知限制与待办（并发配额、审批过期、MCP 注解链路、鉴权…） | ⬜ 未开始（A 已解决） |
+| [file-storage.md](plans/file-storage.md) | 文件存储：用户上传件 / 工作产物 / 平台产物的三分类与接口 | ⬜ 未开始 |
 | [rag-followups.md](plans/rag-followups.md) | RAG 层待办（重排、跨集合、增量更新、本地向量模型、规模化） | ⬜ 未开始 |
 
 ---
