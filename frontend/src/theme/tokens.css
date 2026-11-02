@@ -1,0 +1,73 @@
+/*
+ * 语义色 token —— 浅色 / 深色两套。
+ *
+ * **组件里不许写具体色值**（别写 `bg-slate-50`、别写 `#30302e`）。一律用
+ * `bg-base` / `text-ink` / `border-subtle` 这类语义类，具体值只在这里改。
+ *
+ * 为什么是「语义」而不是「色板」：`slate-500` 这种名字只说了颜色，没说用途；
+ * 深色下要用浅一档的灰，`slate-500` 就得整体重映射一遍。语义 token 直接
+ * 表达了「这是次要文字」，深浅两套各给一个值，组件不用动。
+ *
+ * 深色不是把浅色反过来 —— Claude 桌面端那套深色里，**侧栏比主区更暗**
+ * （ sunken < base ），卡片和输入框又是更亮的一层（ raised > base ）。
+ */
+
+:root {
+  /* 背景三层：页面底 / 侧栏与凹陷区 / 卡片与输入框 */
+  --surface-base: oklch(0.985 0.002 90);
+  --surface-sunken: oklch(0.955 0.003 90);
+  --surface-raised: oklch(1 0 0);
+  --surface-overlay: oklch(1 0 0);
+  --surface-hover: oklch(0.96 0.003 90);
+
+  /* 描边 */
+  --border-subtle: oklch(0.905 0.004 90);
+  --border-strong: oklch(0.82 0.006 90);
+
+  /* 文字三级 */
+  --text-primary: oklch(0.22 0.01 90);
+  --text-secondary: oklch(0.5 0.01 90);
+  --text-tertiary: oklch(0.65 0.01 90);
+
+  /* 主色 */
+  --accent: oklch(0.52 0.17 255);
+  --accent-hover: oklch(0.46 0.16 255);
+  --accent-soft: oklch(0.95 0.02 255);
+  --accent-text: oklch(1 0 0);
+
+  /* 语义色 */
+  --danger: oklch(0.53 0.2 25);
+  --danger-soft: oklch(0.96 0.02 25);
+  --success: oklch(0.5 0.13 155);
+  --success-soft: oklch(0.95 0.03 155);
+  --warning: oklch(0.58 0.13 70);
+  --warning-soft: oklch(0.96 0.03 75);
+}
+
+.dark {
+  --surface-base: oklch(0.32 0.004 90);
+  --surface-sunken: oklch(0.275 0.004 90);
+  --surface-raised: oklch(0.375 0.004 90);
+  --surface-overlay: oklch(0.42 0.005 90);
+  --surface-hover: oklch(0.4 0.005 90);
+
+  --border-subtle: oklch(0.42 0.005 90);
+  --border-strong: oklch(0.54 0.006 90);
+
+  --text-primary: oklch(0.93 0.005 90);
+  --text-secondary: oklch(0.72 0.006 90);
+  --text-tertiary: oklch(0.58 0.006 90);
+
+  /* 深色下主色要提亮一档 —— 原色在深底上偏暗，看不清 */
+  --accent: oklch(0.68 0.15 255);
+  --accent-hover: oklch(0.74 0.14 255);
+  --accent-soft: oklch(0.32 0.06 255);
+  --accent-text: oklch(0.16 0.02 255);
+
+  --danger: oklch(0.68 0.17 25);
+  --danger-soft: oklch(0.3 0.06 25);
+  --success: oklch(0.7 0.13 155);
+  --success-soft: oklch(0.3 0.05 155);
+  --warning: oklch(0.78 0.13 75);
+  --warning-soft: oklch(0.32 0.05 75);
+}

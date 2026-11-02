@@ -39,7 +39,7 @@ VITE_API_PROXY_TARGET=http://127.0.0.1:8080 npm run dev
 > 目录找它的 —— 在仓库根目录启动会读不到配置（API Key 空、数据库连到另一个空库）。
 >
 > ```bash
-> cd backend && ../.venv/bin/uvicorn app.main:app --reload --port 8080
+> cd backend && ../.venv/bin/uvicorn app.main:app --reload
 > ```
 
 ## 目录结构
@@ -50,24 +50,64 @@ src/
     client.ts   fetch 封装：统一解包 ResponseModel、归一错误、留鉴权注入口
     sse.ts      SSE 帧解析（攒够一帧再处理）
     resources.ts 各资源的接口，按后端 router 分
+  theme/
+    tokens.css  语义色 token（浅色 / 深色两套）
+    ThemeProvider.tsx  三档主题：跟随系统 / 浅色 / 深色
   types/api.ts  与后端 schema 一一对应的 TS 类型
-  components/   通用组件（layout/ 是外壳）
-  pages/        路由页面
+  components/
+    layout/AppShell.tsx    左侧栏 + 主区
+    layout/ThemeToggle.tsx
+  features/
+    agent/         编码助手（唯一支持多轮对话的页面）
+      ChatPage.tsx  MessageList.tsx  ToolCallBlock.tsx
+      ApprovalCard.tsx  Composer.tsx  useChat.ts
+    sessions/
+      store.tsx     会话元数据（localStorage）
+  pages/
+    StatusPage.tsx  FilesPage.tsx  ProvidersPage.tsx  CapabilitiesPage.tsx
   lib/          工具函数
 ```
 
-## 已实现 / 待做
+## 主题：跟随系统 / 浅色 / 深色
 
-| 阶段 | 内容 | 状态 |
-| --- | --- | --- |
-| 0 | 骨架、外壳、路由、API 层、联通验证页 | ✅ |
-| 1 | 编码助手对话：会话、消息流、工具调用、审批、附件 | ⬜ |
-| 2 | 文件工作区：上传 / 列表 / 下载 / 删除 | ⬜ |
-| 3 | 配置页：供应商 / 技能 / 工具 / MCP / 能力清单 | ⬜ |
-| 4 | 运维页：记忆 / RAG / 调用记录 | ⬜ |
+三档，不只是开关 —— 只做「浅/深」两档的话，用户手动设了深色之后，系统切到浅色
+他不会跟着变，而「跟随系统」那档能解决。
 
-「系统状态」页（`/`）会**真实调用**后端接口并把响应体原样显示出来 —— 前后端
-联通、路径写错、响应结构变了，这一页立刻能看出来。
+深浅的切换靠给 `<html>` 挂 `.dark` 类（Tailwind v4 的 `dark:` 变体已从
+`prefers-color-scheme` 改成 class 策略）。
+
+**组件里不许写具体色值** —— 一律用语义类（`bg-base` / `text-ink` /
+`border-subtle`），具体值只在 `theme/tokens.css` 里改。语义 token 而不是色板：
+`slate-500` 只说了颜色，深色下得整体重映射一遍；语义 token 直接表达「这是次要
+文字」，深浅两套各给一个值，组件不用动。
+
+## 页面
+
+| 路由 | 内容 |
+| --- | --- |
+| `/chat` `/chat/:threadId` | **编码助手** —— 唯一支持多轮对话的页面 |
+| `/files` | 工作区文件（上传件与产物） |
+| `/providers` | 模型接入配置 |
+| `/capabilities` | 统一能力清单 |
+| `/status` | 前后端联通检查（真实调接口并显示响应体） |
+
+## 聊天页的事件流
+
+后端 `/agent/stream` 推的**一帧一种事件**（`type` 字段决定）：
+
+| 事件 | 前端动作 |
+| --- | --- |
+| `text` | 追加到最后一条助手消息（打字机） |
+| `tool_call` | 加一个工具折叠块（进行中） |
+| `tool_result` | 按 tool_call_id 找到那个块，补上结果 |
+| `pending_approval` | 弹审批卡片 |
+| `done` | 收尾 |
+
+多轮靠 `thread_id` 串 —— 后端用 checkpoint 存历史，前端一直带着同一个 id。
+刷新页面后从 `GET /agent/{thread_id}/history` 拉回来。
+
+**会话列表在 localStorage**（标题、置顶）—— 后端没有会话表，这是已知缺口。
+消息在 checkpoint 里，清了浏览器数据只是列表没了，消息还在。
 
 ## 约定
 
@@ -79,7 +119,7 @@ src/
 **鉴权留了口子**：`client.ts` 的 `setHeaderProvider` 现在返回空对象。平台目前
 没有鉴权（后端所有接口都是裸的），将来加登录/令牌只改这一处。
 
-**`/api/v1/health` 返回的是裸对象**，没有 `ResponseModel` 那层 `data` —— 所以
+**`/api/v1/health` 返回的是裸对象**，没有 `ResponseModel` 那层 —— 所以
 它走 `api.getRaw`，不是 `api.get`。
 
 ## 命令

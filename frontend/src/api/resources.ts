@@ -9,6 +9,7 @@ import { api, API_BASE } from './client'
 import type {
   AgentChatRequest,
   AgentChatResult,
+  AgentHistory,
   CapabilityList,
   FileList,
   LLMProvider,
@@ -54,6 +55,11 @@ export function streamChat(payload: AgentChatRequest, signal?: AbortSignal): Pro
     body: JSON.stringify(payload),
     signal,
   })
+}
+
+/** 读会话历史消息（刷新页面后靠它还原对话）。 */
+export function history(threadId: string): Promise<AgentHistory> {
+  return api.get<AgentHistory>(`/agent/${threadId}/history`)
 }
 
 /** 取某个会话当前挂着的待审批调用。 */

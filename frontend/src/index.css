@@ -1,31 +1,66 @@
 @import 'tailwindcss';
+@import './theme/tokens.css';
 
 /*
- * 主题变量。
+ * 把 dark: 从「系统偏好」改成「html 上有 .dark 类」。
  *
- * Tailwind v4 用 CSS 变量定义设计令牌，`@theme` 里的名字会变成工具类
- * （`--color-brand-500` → `bg-brand-500`）。
+ * Tailwind v4 默认的 dark: 走 prefers-color-scheme，没法手动切换。三档
+ * （跟随系统 / 浅色 / 深色）要能切，就必须改成 class 策略。
  */
-@theme {
-  --color-brand-50: oklch(0.97 0.01 250);
-  --color-brand-100: oklch(0.93 0.03 250);
-  --color-brand-500: oklch(0.55 0.16 255);
-  --color-brand-600: oklch(0.48 0.16 255);
-  --color-brand-700: oklch(0.42 0.14 255);
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * 语义 token → 工具类。
+ *
+ * `inline` 的意思：工具类里**直接引用变量**（`var(--surface-base)`），
+ * 而不是把值抄进去。所以 `.dark` 一挂，所有用了这些类的地方一起变。
+ */
+@theme inline {
+  --color-base: var(--surface-base);
+  --color-sunken: var(--surface-sunken);
+  --color-raised: var(--surface-raised);
+  --color-overlay: var(--surface-overlay);
+  --color-hover: var(--surface-hover);
+
+  --color-line: var(--border-subtle);
+  --color-line-strong: var(--border-strong);
+
+  --color-ink: var(--text-primary);
+  --color-ink-muted: var(--text-secondary);
+  --color-ink-faint: var(--text-tertiary);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-text: var(--accent-text);
+
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
 }
 
-/* 滚动条别那么扎眼 */
 @layer base {
   html {
     color-scheme: light;
   }
+  /* .dark 挂在 <html> 上 */
+  html.dark {
+    color-scheme: dark;
+  }
   body {
-    @apply bg-slate-50 text-slate-900 antialiased;
+    @apply bg-base text-ink antialiased;
     font-family:
       system-ui,
       -apple-system,
       'PingFang SC',
       'Microsoft YaHei',
       sans-serif;
+  }
+  /* 深色下滚动条别那么扎眼 */
+  .dark ::-webkit-scrollbar-thumb {
+    background-color: var(--border-strong);
   }
 }

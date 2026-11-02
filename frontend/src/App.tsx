@@ -1,23 +1,28 @@
 /**
  * 路由表。
  *
- * 现在只有「系统状态」是实的，其余是占位 —— 后端接口都在，但页面按功能逐个加。
+ * **只有「编码助手」支持多轮对话** —— 其余页面是配置与查看。
  */
 import { Route, Routes } from 'react-router'
 
 import AppShell from './components/layout/AppShell'
+import CapabilitiesPage from './pages/CapabilitiesPage'
+import ChatPage from './features/agent/ChatPage'
+import FilesPage from './pages/FilesPage'
 import PlaceholderPage from './pages/PlaceholderPage'
+import ProvidersPage from './pages/ProvidersPage'
 import StatusPage from './pages/StatusPage'
 
 export default function App() {
   return (
     <Routes>
       <Route element={<AppShell />}>
-        <Route index element={<StatusPage />} />
-        <Route path="chat" element={<PlaceholderPage module="编码助手" stage="阶段 1" />} />
-        <Route path="files" element={<PlaceholderPage module="文件" stage="阶段 2" />} />
-        <Route path="providers" element={<PlaceholderPage module="模型接入配置" stage="阶段 3" />} />
-        <Route path="capabilities" element={<PlaceholderPage module="能力清单" stage="阶段 3" />} />
+        <Route path="chat" element={<ChatPage />} />
+        <Route path="chat/:threadId" element={<ChatPage />} />
+        <Route path="files" element={<FilesPage />} />
+        <Route path="providers" element={<ProvidersPage />} />
+        <Route path="capabilities" element={<CapabilitiesPage />} />
+        <Route path="status" element={<StatusPage />} />
         <Route path="*" element={<PlaceholderPage module="页面" stage="未规划" />} />
       </Route>
     </Routes>

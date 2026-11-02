@@ -7,11 +7,11 @@
 export default function PlaceholderPage({ module, stage }: { module: string; stage: string }) {
   return (
     <div className="mx-auto max-w-4xl px-8 py-8">
-      <h1 className="text-xl font-semibold tracking-tight">{module}</h1>
-      <p className="mt-2 text-sm text-slate-500">
+      <h1 className="text-lg font-semibold tracking-tight text-ink">{module}</h1>
+      <p className="mt-2 text-sm text-ink-muted">
         这个模块的接口后端已经就绪，页面还在排队 —— 计划在 <strong>{stage}</strong>。
       </p>
-      <div className="mt-6 rounded-lg border border-dashed border-slate-300 bg-white px-4 py-8 text-center text-sm text-slate-400">
+      <div className="mt-6 rounded-lg border border-dashed border-line bg-raised px-4 py-8 text-center text-sm text-ink-faint">
         尚未实现
       </div>
     </div>

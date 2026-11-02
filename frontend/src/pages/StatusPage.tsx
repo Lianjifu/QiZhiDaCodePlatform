@@ -121,8 +121,8 @@ export default function StatusPage() {
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">系统状态</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            每一项都是<strong className="font-medium text-slate-700">真实调用</strong>
+          <p className="mt-1 text-sm text-ink-muted">
+            每一项都是<strong className="font-medium text-ink">真实调用</strong>
             后端接口，下面显示的是接口实际返回的响应体。
           </p>
         </div>
@@ -133,18 +133,18 @@ export default function StatusPage() {
             setNonce((value) => value + 1)
           }}
           disabled={running}
-          className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-700 disabled:opacity-50"
+          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-text transition-colors hover:bg-accent-hover disabled:opacity-50"
         >
           {running ? '检测中…' : '重新检测'}
         </button>
       </header>
 
-      <div className="mt-6 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm">
-        <span className="text-slate-500">接口前缀</span>
-        <code className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-xs">{API_BASE}</code>
-        <span className="ml-4 text-slate-500">联通</span>
+      <div className="mt-6 rounded-lg border border-line bg-raised px-4 py-3 text-sm">
+        <span className="text-ink-muted">接口前缀</span>
+        <code className="ml-2 rounded bg-sunken px-1.5 py-0.5 text-xs">{API_BASE}</code>
+        <span className="ml-4 text-ink-muted">联通</span>
         <span
-          className={`ml-2 font-medium ${okCount === results.length ? 'text-emerald-600' : 'text-amber-600'}`}
+          className={`ml-2 font-medium ${okCount === results.length ? 'text-success' : 'text-warning'}`}
         >
           {okCount} / {results.length} 项通过
         </span>
@@ -152,26 +152,26 @@ export default function StatusPage() {
 
       <div className="mt-4 space-y-3">
         {results.map((result) => (
-          <section key={result.id} className="rounded-lg border border-slate-200 bg-white">
-            <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3">
+          <section key={result.id} className="rounded-lg border border-line bg-raised">
+            <div className="flex items-center gap-3 border-b border-line px-4 py-3">
               <StatusDot state={result.state} />
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium">{result.name}</div>
-                <code className="text-xs text-slate-400">{result.endpoint}</code>
+                <div className="text-sm font-medium text-ink">{result.name}</div>
+                <code className="text-xs text-ink-faint">{result.endpoint}</code>
               </div>
             </div>
             <div className="px-4 py-3">
               {result.state === 'pending' ? (
-                <p className="text-sm text-slate-400">等待中…</p>
+                <p className="text-sm text-ink-faint">等待中…</p>
               ) : result.state === 'error' ? (
                 <div className="text-sm">
                   <div className="text-red-600">{result.error?.message}</div>
-                  <div className="mt-1 text-xs text-slate-500">
+                  <div className="mt-1 text-xs text-ink-muted">
                     HTTP {result.error?.status} · {result.error?.errorCode}
                   </div>
                 </div>
               ) : (
-                <pre className="max-h-72 overflow-auto rounded bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
+                <pre className="max-h-72 overflow-auto rounded bg-sunken p-3 text-xs leading-relaxed text-ink-muted">
                   {formatJson(result.payload)}
                 </pre>
               )}
@@ -185,10 +185,10 @@ export default function StatusPage() {
 
 function StatusDot({ state }: { state: CheckState }) {
   if (state === 'ok') {
-    return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500" />
+    return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-success" />
   }
   if (state === 'error') {
-    return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-500" />
+    return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-danger" />
   }
-  return <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-slate-300" />
+  return <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-line-strong" />
 }

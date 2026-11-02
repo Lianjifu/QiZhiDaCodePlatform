@@ -15,8 +15,8 @@ QiZhiDaCodePlatform/
 ```bash
 # 1. 后端（**必须在 backend/ 目录启动** —— .env 在那儿）
 cd backend
-../.venv/bin/uvicorn app.main:app --reload --port 8080
-# Swagger: http://localhost:8080/docs
+../.venv/bin/uvicorn app.main:app --reload
+# Swagger: http://localhost:8000/docs
 
 # 2. 前端
 cd frontend
@@ -26,7 +26,17 @@ npm run dev
 ```
 
 前端通过 Vite 代理把 `/api` 转发到后端，所以**不用配 CORS**，生产同域部署时
-前端代码一行都不用改。
+前端代码一行都不用改。代理目标自动取后端 `.env` 里的 `PORT`。
+
+## 前端
+
+React + TypeScript + Vite + Tailwind，深浅两套主题（跟随系统 / 浅色 / 深色）。
+
+核心是**编码助手**页面 —— 唯一支持多轮对话的页面：消息流式渲染、工具调用折叠成
+`Ran npm install…` 那种块、审批卡片直接弹在对话里。旁边的文件、能力清单、模型
+接入配置是查看与配置页。
+
+细节见 [frontend/README.md](frontend/README.md)。
 
 ## 文档
 

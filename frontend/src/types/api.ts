@@ -29,6 +29,7 @@ export interface PagedList<T> {
 export interface ToolCall {
   name: string
   args: Record<string, unknown>
+  tool_call_id?: string | null
   invocation_id?: number | null
   ok?: boolean | null
   status?: string | null
@@ -66,9 +67,41 @@ export interface AgentChatRequest {
   attachments?: string[]
 }
 
+/** 工具执行结果的摘要（后端 `ToolResultOut`）。 */
+export interface ToolResult {
+  tool_call_id: string
+  name: string
+  ok: boolean
+  status: string
+  error_code?: string | null
+  duration_ms: number
+  summary: string
+}
+
 /** 流式接口的一帧（后端 `AgentStreamChunk`）。 */
 export interface AgentStreamChunk {
+  type: 'text' | 'tool_call' | 'tool_result' | 'pending_approval' | 'done'
   text: string
+  tool_call: ToolCall | null
+  tool_result: ToolResult | null
+  pending: PendingApproval[]
+  status: string
+  steps: number
+}
+
+/** 历史消息里的一条（后端 `AgentHistoryMessage`）。 */
+export interface AgentHistoryMessage {
+  role: 'user' | 'assistant' | 'tool'
+  content: string
+  name?: string | null
+  tool_call_id?: string | null
+  tool_calls: ToolCall[]
+}
+
+/** 一个会话的历史（后端 `AgentHistoryOut`）。 */
+export interface AgentHistory {
+  thread_id: string
+  messages: AgentHistoryMessage[]
 }
 
 // ---------- 文件 ----------
