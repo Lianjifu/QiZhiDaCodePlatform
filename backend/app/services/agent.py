@@ -23,6 +23,7 @@ from app.core.exceptions import AgentError, AppError, NotFoundError, ValidationE
 from app.core.workspace import resolve_workspace
 from app.repositories.llm_provider import LLMProviderRepository
 from app.repositories.mcp_server import MCPServerRepository
+from app.schemas.agent import AgentHistoryOut, AgentStreamChunk
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,31 @@ class AgentService:
                 logger.exception("恢复挂起的调用失败 thread_id=%s", thread_id)
                 raise AgentError(_readable_error(exc)) from exc
 
+    async def history(self, thread_id: str) -> AgentHistoryOut:
+        """读会话历史消息。
+
+        前端刷新页面后靠它把对话还原出来 —— 消息在 checkpoint 里，
+        不在前端的 localStorage 里。
+        """
+        workspace = self.resolve_workspace(thread_id)
+        async with open_checkpointer() as checkpointer:
+            try:
+                specs = await self.load_capabilities()
+                context = await self._build_context(workspace, specs, thread_id)
+                runner = self._make_runner(checkpointer, None)
+                messages = await runner.history(
+                    thread_id,
+                    workspace,
+                    specs=specs,
+                    context=context,
+                )
+                return AgentHistoryOut(thread_id=thread_id, messages=messages)
+            except AppError:
+                raise
+            except Exception as exc:
+                logger.exception("读取会话历史失败 thread_id=%s", thread_id)
+                raise AgentError(_readable_error(exc)) from exc
+
     async def stream(
         self,
         message: str,
@@ -239,8 +265,11 @@ class AgentService:
         provider_id: int | None = None,
         skill_ids: list[int] | None = None,
         attachments: list[str] | None = None,
-    ) -> AsyncIterator[str]:
-        """流式跑一轮对话，逐段产出文本增量。"""
+    ) -> AsyncIterator[AgentStreamChunk]:
+        """流式跑一轮对话，逐段产出**事件**。
+
+        事件有五种：文本增量 / 工具调用 / 工具结果 / 待审批 / 收尾。
+        """
         workspace = self.resolve_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
             try:
@@ -248,7 +277,7 @@ class AgentService:
                 specs = await self.load_capabilities()
                 context = await self._build_context(workspace, specs, thread_id)
                 runner = self._make_runner(checkpointer, model)
-                async for text in runner.stream(
+                async for event in runner.stream(
                     message,
                     thread_id,
                     workspace,
@@ -257,7 +286,7 @@ class AgentService:
                     skill_ids=skill_ids,
                     attachments=attachments,
                 ):
-                    yield text
+                    yield event
                 # 执行层写的调用记录要落库
                 if self.session is not None:
                     await self.session.commit()

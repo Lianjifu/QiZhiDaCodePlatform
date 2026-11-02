@@ -44,6 +44,7 @@ from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
     HumanMessage,
+    ToolMessage,
 )
 
 from app.agents.builder import build_agent
@@ -56,6 +57,13 @@ from app.capabilities.skills_export import export_skills
 from app.context.service import ContextRequest, build_context_service
 from app.core.config import settings
 from app.files.attachments import Attachment, build_attachments, build_uploads_note
+from app.schemas.agent import (
+    AgentHistoryMessage,
+    AgentStreamChunk,
+    PendingApprovalOut,
+    ToolCallOut,
+    ToolResultOut,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +73,12 @@ STATUS_PENDING_APPROVAL = "pending_approval"
 
 # 记忆文件名：deepAgents 的记忆中间件按这个约定读工作区里的长期记忆
 MEMORY_FILE = "AGENTS.md"
+
+# 工具结果摘要的长度上限。
+#
+# 工具输出可能有几万 token（读了整个仓库），原样塞进 SSE 会把前端撑爆。
+# 要全文去查调用记录（/api/v1/invocations/{id}）。
+TOOL_RESULT_SUMMARY_MAX = 400
 
 
 @dataclass
@@ -152,6 +166,45 @@ class AgentRunner:
             config={"configurable": {"thread_id": thread_id}},
         )
         return await self._result_from(result, skills, thread_id, context)
+
+    async def history(
+        self,
+        thread_id: str,
+        workspace: Path,
+        *,
+        specs: list[CapabilitySpec] | None = None,
+        context: ExecutionContext | None = None,
+        skill_ids: list[int] | None = None,
+    ) -> list[AgentHistoryMessage]:
+        """读这个会话的历史消息。
+
+        数据源同样是 checkpoint 的 state —— 与 ``_last_user_message`` 同一个
+        来源。前端刷新页面后靠它把对话还原出来。
+
+        没有这个会话的 checkpoint 时返回空列表（不是错误 —— 用户还没聊过）。
+        """
+        agent, _skills = await self._build(
+            "",
+            thread_id,
+            workspace,
+            specs=specs,
+            context=context,
+            skill_ids=skill_ids,
+            # 只是读状态，不跑模型 —— 不必为此付一次召回
+            with_memory=False,
+        )
+        try:
+            state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
+        except Exception as exc:  # pragma: no cover - 没这个会话时不该报错
+            logger.debug("读会话历史失败 thread_id=%s: %s", thread_id, exc)
+            return []
+        values = getattr(state, "values", None) or {}
+        entries: list[AgentHistoryMessage] = []
+        for msg in values.get("messages") or []:
+            entry = _history_entry(msg)
+            if entry is not None:
+                entries.append(entry)
+        return entries
 
     async def pending_approvals(
         self,
@@ -284,8 +337,17 @@ class AgentRunner:
         context: ExecutionContext | None = None,
         skill_ids: list[int] | None = None,
         attachments: list[str] | None = None,
-    ) -> AsyncIterator[str]:
-        """流式产出模型文本增量，供 SSE 推送。"""
+    ) -> AsyncIterator[AgentStreamChunk]:
+        """流式产出**事件**，供 SSE 推送。
+
+        一帧一种事件：``text``（文本增量）、``tool_call``（模型决定调工具）、
+        ``tool_result``（工具跑完）、``pending_approval``（这一轮停在审批上）、
+        ``done``（收尾）。
+
+        **为什么要多模式**：LangGraph 的 ``stream_mode="messages"`` 只给文本，
+        工具调用在节点的 state 更新里（``updates`` 模式）。两个模式一起开才能
+        既看到打字机、又看到工具块。
+        """
         model = self._resolve_model()
         blocks, parsed = build_attachments(
             workspace,
@@ -303,15 +365,44 @@ class AgentRunner:
             skill_ids=skill_ids,
             attachments=parsed,
         )
-        async for chunk, _meta in agent.astream(
+        seen_calls: set[str] = set()
+        seen_results: set[str] = set()
+
+        async for mode, data in agent.astream(
             {"messages": _input_messages(message, blocks)},
             config={"configurable": {"thread_id": thread_id}},
-            stream_mode="messages",
+            stream_mode=["messages", "updates"],
         ):
-            if isinstance(chunk, AIMessageChunk):
-                text = chunk.content
-                if isinstance(text, str) and text:
-                    yield text
+            if mode == "messages":
+                chunk, _meta = data
+                # 文本增量。流式模型给的是 AIMessageChunk，非流式给完整 AIMessage
+                if isinstance(chunk, AIMessageChunk | AIMessage):
+                    text = chunk.content
+                    if isinstance(text, str) and text:
+                        yield AgentStreamChunk(type="text", text=text)
+            elif mode == "updates":
+                for event in _stream_events(data, seen_calls, seen_results):
+                    yield event
+
+        # 收尾：这一轮是跑完了还是停在审批上？
+        # 中断的信息在 checkpoint 的 state 里（与 pending_approvals 同一个来源）——
+        # 流里不一定带得全，所以这里直接读状态。
+        pending = await self._pending_from_state(agent, thread_id)
+        if pending:
+            yield AgentStreamChunk(type="pending_approval", pending=pending)
+            yield AgentStreamChunk(type="done", status=STATUS_PENDING_APPROVAL)
+        else:
+            yield AgentStreamChunk(type="done", status=STATUS_COMPLETED)
+
+    async def _pending_from_state(self, agent: Any, thread_id: str) -> list[PendingApprovalOut]:
+        """从 checkpoint 读这一轮挂起的待批条目。"""
+        try:
+            state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
+        except Exception:  # pragma: no cover - 读状态失败不该让流崩掉
+            logger.debug("读会话状态失败，无法判断是否挂起审批")
+            return []
+        interrupts = getattr(state, "interrupts", ()) or ()
+        return [_pending_entry(item) for item in interrupts]
 
     async def _memory_block(
         self,
@@ -459,6 +550,114 @@ class AgentRunner:
         return agent, skill_specs
 
 
+def _history_entry(msg: Any) -> AgentHistoryMessage | None:
+    """checkpoint 里的一条消息 → 历史消息。
+
+    只留 user / assistant / tool 三种 —— 其余的（系统提示、摘要占位）对前端
+    没有意义，还会让列表变长。
+    """
+    if isinstance(msg, HumanMessage):
+        return AgentHistoryMessage(role="user", content=_message_text(msg.content))
+    if isinstance(msg, AIMessage):
+        return AgentHistoryMessage(
+            role="assistant",
+            content=_message_text(msg.content),
+            tool_calls=[
+                ToolCallOut(
+                    name=str(call.get("name") or ""),
+                    args=dict(call.get("args") or {}),
+                    tool_call_id=str(call.get("id") or "") or None,
+                )
+                for call in (getattr(msg, "tool_calls", None) or [])
+            ],
+        )
+    if isinstance(msg, ToolMessage):
+        return AgentHistoryMessage(
+            role="tool",
+            content=_message_text(msg.content),
+            name=str(getattr(msg, "name", "") or "") or None,
+            tool_call_id=str(getattr(msg, "tool_call_id", "") or "") or None,
+        )
+    return None
+
+
+def _stream_events(
+    data: Any,
+    seen_calls: set[str],
+    seen_results: set[str],
+) -> list[AgentStreamChunk]:
+    """把 updates 模式的节点更新转成事件。
+
+    updates 模式给的是「每个节点跑完后 state 变了什么」：
+
+    - **agent 节点** → AIMessage，里面带 ``tool_calls`` —— 模型决定调工具了；
+    - **tools 节点** → ToolMessage —— 工具跑完了。
+
+    两个集合用来去重：同一个节点更新可能重复送达（比如图重试），同一个工具
+    调用也只该亮一次。
+    """
+    events: list[AgentStreamChunk] = []
+    if not isinstance(data, dict):
+        return events
+    for node_update in data.values():
+        if not isinstance(node_update, dict):
+            continue
+        for msg in node_update.get("messages") or []:
+            if isinstance(msg, AIMessage):
+                for call in getattr(msg, "tool_calls", None) or []:
+                    call_id = str(call.get("id") or "")
+                    if call_id and call_id in seen_calls:
+                        continue
+                    seen_calls.add(call_id)
+                    events.append(
+                        AgentStreamChunk(
+                            type="tool_call",
+                            tool_call=ToolCallOut(
+                                name=str(call.get("name") or ""),
+                                args=dict(call.get("args") or {}),
+                                tool_call_id=call_id or None,
+                            ),
+                        )
+                    )
+            elif isinstance(msg, ToolMessage):
+                call_id = str(getattr(msg, "tool_call_id", "") or "")
+                if call_id and call_id in seen_results:
+                    continue
+                seen_results.add(call_id)
+                status = str(getattr(msg, "status", "") or "succeeded")
+                events.append(
+                    AgentStreamChunk(
+                        type="tool_result",
+                        tool_result=ToolResultOut(
+                            tool_call_id=call_id,
+                            name=str(getattr(msg, "name", "") or ""),
+                            ok=status != "error",
+                            status=status,
+                            summary=_summarize_tool_output(msg.content),
+                        ),
+                    )
+                )
+    return events
+
+
+def _summarize_tool_output(content: Any) -> str:
+    """工具输出压成一行摘要。"""
+    if isinstance(content, list):
+        # 多模态内容块：只留文本
+        parts = [
+            str(block.get("text", ""))
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        text = "\n".join(parts)
+    else:
+        text = str(content or "")
+    text = text.strip()
+    if len(text) <= TOOL_RESULT_SUMMARY_MAX:
+        return text
+    return text[:TOOL_RESULT_SUMMARY_MAX] + "…"
+
+
 def _model_window(model: Any) -> int:
     """取模型的上下文窗口（token）；取不到就是 0（未知）。
 
@@ -571,6 +770,8 @@ def _collect_tool_calls(messages: list[Any]) -> list[dict[str, Any]]:
                 {
                     "name": str(call.get("name") or ""),
                     "args": dict(call.get("args") or {}),
+                    # 前端拿它对上工具块 —— 审批恢复后要把结果填回同一个块
+                    "tool_call_id": str(call.get("id") or "") or None,
                 }
             )
     return tool_calls

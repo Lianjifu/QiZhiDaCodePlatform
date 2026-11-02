@@ -17,7 +17,7 @@ from app.api.deps import get_agent_service
 from app.schemas.agent import (
     AgentChatOut,
     AgentChatRequest,
-    AgentStreamChunk,
+    AgentHistoryOut,
     PendingApprovalOut,
     ToolCallOut,
 )
@@ -72,6 +72,7 @@ def _tool_call_fields(call: dict[str, Any]) -> dict[str, Any]:
     allowed = (
         "name",
         "args",
+        "tool_call_id",
         "invocation_id",
         "ok",
         "status",
@@ -131,16 +132,30 @@ async def reject(
 
 @router.post("/stream", summary="与编码助手对话（SSE 流式）")
 async def stream(payload: AgentChatRequest, service: ServiceDep) -> StreamingResponse:
+    """流式对话。
+
+    **一帧一种事件** —— 帧里的 ``type`` 决定它是什么：
+
+    | type | 载荷 | 前端拿它做什么 |
+    | --- | --- | --- |
+    | ``text`` | ``text`` | 打字机渲染 |
+    | ``tool_call`` | ``tool_call`` | 工具折叠块亮起 |
+    | ``tool_result`` | ``tool_result`` | 工具折叠块补成完成态 |
+    | ``pending_approval`` | ``pending`` | 弹审批卡片 |
+    | ``done`` | ``status`` | 收尾 |
+
+    帧尾是 ``data: [DONE]``，表示流结束。
+    """
+
     async def event_stream():
-        async for text in service.stream(
+        async for event in service.stream(
             payload.message,
             payload.thread_id,
             payload.provider_id,
             payload.skill_ids,
             payload.attachments,
         ):
-            frame = AgentStreamChunk(text=text).model_dump_json()
-            yield f"data: {frame}\n\n"
+            yield f"data: {event.model_dump_json()}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -148,3 +163,20 @@ async def stream(payload: AgentChatRequest, service: ServiceDep) -> StreamingRes
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.get(
+    "/{thread_id}/history",
+    response_model=ResponseModel[AgentHistoryOut],
+    summary="读会话历史",
+)
+async def history(
+    thread_id: str,
+    service: ServiceDep,
+) -> ResponseModel[AgentHistoryOut]:
+    """这个会话的历史消息。
+
+    从 checkpoint 的状态里读回来 —— 前端刷新页面后靠它把对话还原出来。
+    """
+    result = await service.history(thread_id)
+    return ResponseModel[AgentHistoryOut](data=result)

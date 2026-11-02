@@ -46,6 +46,9 @@ class ToolCallOut(BaseModel):
 
     name: str = Field(description="工具名")
     args: dict[str, Any] = Field(default_factory=dict, description="调用参数")
+    tool_call_id: str | None = Field(
+        default=None, description="模型给这次调用分配的 id（前端拿它对上工具结果）"
+    )
     invocation_id: int | None = Field(default=None, description="对应的调用记录 ID")
     ok: bool | None = Field(default=None, description="这次调用是否成功")
     status: str | None = Field(default=None, description="succeeded / failed / pending（等待审批）")
@@ -82,7 +85,74 @@ class AgentChatOut(BaseModel):
     )
 
 
-class AgentStreamChunk(BaseModel):
-    """流式接口的单帧内容。"""
+class ToolResultOut(BaseModel):
+    """工具执行结果的摘要。
 
-    text: str = Field(default="", description="文本增量")
+    **只给摘要，不给全文** —— 工具输出可能有几万 token（读了整个仓库），
+    原样塞进 SSE 会把前端撑爆。要全文的话去查调用记录
+    （``GET /api/v1/invocations/{id}``，那里有 ``result`` 与 ``stages``）。
+    """
+
+    tool_call_id: str = Field(default="", description="对应的 tool_call id")
+    name: str = Field(default="", description="工具名")
+    ok: bool = Field(default=True, description="执行成功与否")
+    status: str = Field(default="", description="succeeded / failed / pending")
+    error_code: str | None = Field(default=None, description="失败时的错误码")
+    duration_ms: int = Field(default=0, description="执行耗时（毫秒）")
+    summary: str = Field(default="", description="结果摘要（截断后的正文）")
+
+
+class AgentStreamChunk(BaseModel):
+    """流式接口的单帧内容。
+
+    **一帧一种事件**（``type`` 决定这帧是什么）：
+
+    | type | 载荷 | 前端拿它做什么 |
+    | --- | --- | --- |
+    | ``text`` | ``text`` | 打字机渲染 |
+    | ``tool_call`` | ``tool_call`` | 工具折叠块亮起 |
+    | ``tool_result`` | ``tool_result`` | 工具折叠块补成完成态 |
+    | ``pending_approval`` | ``pending`` | 弹审批卡片 |
+    | ``done`` | ``status`` / ``steps`` | 收尾 |
+
+    ``type`` 默认 ``"text"`` —— 老的消费方按 ``{"text": ...}`` 解析仍然能用。
+    """
+
+    type: str = Field(
+        default="text",
+        description="事件类型：text / tool_call / tool_result / pending_approval / done",
+    )
+    text: str = Field(default="", description="文本增量（type=text 时有值）")
+    tool_call: ToolCallOut | None = Field(
+        default=None, description="工具调用（type=tool_call 时有值）"
+    )
+    tool_result: ToolResultOut | None = Field(
+        default=None, description="工具结果摘要（type=tool_result 时有值）"
+    )
+    pending: list[PendingApprovalOut] = Field(
+        default_factory=list, description="待批清单（type=pending_approval 时有值）"
+    )
+    status: str = Field(default="", description="本轮状态（type=done 时有值）")
+    steps: int = Field(default=0, description="本轮工具调用次数（type=done 时有值）")
+
+
+class AgentHistoryMessage(BaseModel):
+    """历史消息里的一条。"""
+
+    role: str = Field(description="user / assistant / tool")
+    content: str = Field(default="", description="消息正文")
+    name: str | None = Field(default=None, description="工具消息的工具名")
+    tool_call_id: str | None = Field(
+        default=None, description="工具消息对应的 tool_call id（前端拿它对上工具块）"
+    )
+    tool_calls: list[ToolCallOut] = Field(default_factory=list, description="助手消息里的工具调用")
+
+
+class AgentHistoryOut(BaseModel):
+    """一个会话的历史消息。
+
+    从 checkpoint 的状态里读回来的 —— 消息是**只读的**，前端拿它渲染列表。
+    """
+
+    thread_id: str = Field(description="会话 ID")
+    messages: list[AgentHistoryMessage] = Field(default_factory=list, description="历史消息")

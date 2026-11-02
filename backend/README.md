@@ -162,9 +162,14 @@ deepAgents 额外带来规划（`write_todos`）、子代理（`task`）、技�
 记忆（`AGENTS.md`）、上下文摘要与 prompt caching。
 
 ```text
-POST /api/v1/agent/chat     跑完一轮再整体返回
-POST /api/v1/agent/stream   SSE 流式推送
+POST /api/v1/agent/chat             跑完一轮再整体返回
+POST /api/v1/agent/stream           SSE 流式推送（一帧一种事件）
+GET  /api/v1/agent/{thread_id}/history   读会话历史
 ```
+
+流式接口的帧有五种类型（`type` 字段决定）：`text`（文本增量）、
+`tool_call`（模型决定调工具）、`tool_result`（工具跑完）、
+`pending_approval`（这一轮停在审批上）、`done`（收尾）。帧尾是 `data: [DONE]`。
 
 配置（`.env`）：
 
