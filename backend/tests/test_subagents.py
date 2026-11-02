@@ -8,7 +8,6 @@ deepAgents 自带的通用子代理**不继承**我们自定义的中间件 —�
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -17,7 +16,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from app.capabilities.execution.context import ExecutionContext
-from app.core.config import settings
+from app.core.workspace import resolve_workspace
 
 
 class SequencedModel(BaseChatModel):
@@ -70,7 +69,7 @@ async def test_subagent_tool_calls_are_recorded(session) -> None:
     from app.models.invocation import Invocation
 
     thread_id = "t-sub"
-    workspace = Path(settings.workspace_root).resolve() / thread_id
+    workspace = resolve_workspace(thread_id)
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "a.txt").write_text("hello", encoding="utf-8")
 

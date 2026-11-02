@@ -48,6 +48,12 @@ class ProviderPreset:
       模型对象**没有 profile** —— 不显式告诉它，框架只能退回到固定的
       "170000 token 触发、保留 6 条消息"，对大窗口的模型来说是提前太多、
       保留得太少。
+    - ``vision_enabled`` —— 该厂商的模型**能不能看图**。
+
+      这不是可有可无的字段：对话里内联的图片是直接发给模型的，模型不认
+      ``image_url`` 就会直接报错。默认值按厂商给，用户可以在配置里改 ——
+      同一个厂商不同模型的视觉能力并不一样（Kimi 的 VL 系列能看，
+      主力文本模型不能）。
     """
 
     key: str  # 我们的枚举值，存库用
@@ -60,6 +66,8 @@ class ProviderPreset:
     docs_url: str = ""
     # 上下文窗口（token）。0 = 未知 —— 此时不挂 profile，让框架用保守默认值
     context_window: int = 0
+    # 能不能看图
+    vision_enabled: bool = False
 
 
 PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
@@ -71,6 +79,8 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         api_key_env="OPENAI_API_KEY",
         docs_url="https://platform.openai.com/docs",
         context_window=128000,
+        # 这家的模型能看图
+        vision_enabled=True,
     ),
     ProviderPreset(
         key="anthropic",
@@ -81,6 +91,8 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         openai_compatible=False,
         docs_url="https://docs.anthropic.com",
         context_window=200000,
+        # 这家的模型能看图
+        vision_enabled=True,
     ),
     ProviderPreset(
         key="deepseek",
@@ -92,6 +104,8 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         docs_url="https://api-docs.deepseek.com",
         # 实测官方 /models 接口返回 context_window=1048576
         context_window=1048576,
+        # 这家的模型能看图
+        vision_enabled=True,
     ),
     ProviderPreset(
         key="moonshot",
@@ -184,6 +198,8 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         api_key_env="GEMINI_API_KEY",
         docs_url="https://ai.google.dev/docs",
         context_window=1048576,
+        # 这家的模型能看图
+        vision_enabled=True,
     ),
     ProviderPreset(
         key="azure_openai",
@@ -193,6 +209,8 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         api_key_env="AZURE_OPENAI_API_KEY",
         openai_compatible=False,
         docs_url="https://learn.microsoft.com/azure/ai-services/openai/",
+        # 这家的模型能看图
+        vision_enabled=True,
     ),
     ProviderPreset(
         key="ollama",

@@ -1,0 +1,157 @@
+"""文件接口：上传 / 列表 / 下载 / 删除。
+
+用户要给 agent 材料（需求文档、报错截图、代码片段），也要把 agent 做出来的
+东西拿走 —— 这组接口是两头。
+
+## 安全提醒
+
+**平台目前没有鉴权**（见记忆里的 `no-auth-for-now`）。这意味着：
+
+- 知道 ``thread_id`` 就能下载这个会话里的**所有文件**（含用户的需求文档）；
+- 也能往别人的会话里塞文件；
+- ``thread_id`` 由客户端生成，泄露即等于交出整个工作区。
+
+这是"记忆接口无鉴权"那条风险的更严重版本 —— 那里泄露的是用户偏好，这里是
+用户的文件。上线前必须补鉴权。
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Annotated
+from urllib.parse import quote
+
+from fastapi import APIRouter, File, Query, UploadFile
+from fastapi.responses import Response
+
+from app.core.config import settings
+from app.core.workspace import resolve_workspace
+from app.files.service import FileService
+from app.files.storage import sanitize_filename
+from app.schemas.common import ResponseModel
+from app.schemas.files import FileListOut, FileOut, UploadOut
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/files", tags=["文件"])
+
+
+def _service(thread_id: str) -> FileService:
+    """按会话取文件服务。"""
+    workspace = resolve_workspace(thread_id)
+    return FileService(
+        workspace,
+        max_upload_bytes=settings.max_upload_bytes,
+        max_download_bytes=settings.max_download_bytes,
+    )
+
+
+@router.post(
+    "",
+    response_model=ResponseModel[UploadOut],
+    summary="上传文件到会话工作区",
+)
+async def upload_file(
+    thread_id: Annotated[str, Query(description="会话 ID")],
+    file: Annotated[UploadFile, File(description="文件本体")],
+) -> ResponseModel[UploadOut]:
+    """上传一个文件。
+
+    文件落进会话工作区的 ``uploads/`` —— agent 用现成的文件工具就能读，
+    不需要新增任何 agent 能力。
+
+    返回的 ``path`` 是**虚拟路径**（``/uploads/xxx.png``）。把它带进对话
+    （``attachments``）就能让 agent 处理这个文件。
+    """
+    content = await file.read()
+    service = _service(thread_id)
+    result = service.upload(file.filename or "", content, mime_type=file.content_type)
+    return ResponseModel[UploadOut](
+        data=UploadOut(
+            path=result.path,
+            filename=result.filename,
+            original_name=sanitize_filename(file.filename or ""),
+            size=result.size,
+            sha256=result.sha256,
+            mime_type=result.mime_type,
+            is_image=result.is_image,
+            uploaded_at=result.uploaded_at,
+        )
+    )
+
+
+@router.get("", response_model=ResponseModel[FileListOut], summary="列出工作区文件")
+async def list_files(
+    thread_id: Annotated[str, Query(description="会话 ID")],
+    include_uploads: Annotated[bool, Query(description="是否列出上传件")] = True,
+) -> ResponseModel[FileListOut]:
+    """列出工作区里的文件（上传件 + agent 的产物）。
+
+    **不含平台产物** —— 那是工作区外面的 ``.artifacts/``，里面有被压缩掉的
+    对话历史，不给用户看也不给下载。
+    """
+    service = _service(thread_id)
+    entries = service.list_files(include_uploads=include_uploads)
+    return ResponseModel[FileListOut](
+        data=FileListOut(
+            files=[
+                FileOut(
+                    path=entry.path,
+                    filename=entry.filename,
+                    size=entry.size,
+                    mime_type=entry.mime_type,
+                    is_dir=entry.is_dir,
+                    modified_at=entry.modified_at,
+                    uploaded=entry.uploaded,
+                )
+                for entry in entries
+            ],
+            total=len(entries),
+        )
+    )
+
+
+@router.get("/download", summary="下载工作区文件")
+async def download_file(
+    thread_id: Annotated[str, Query(description="会话 ID")],
+    path: Annotated[str, Query(description="虚拟路径，如 /uploads/a.png")],
+) -> Response:
+    """按虚拟路径下载文件。
+
+    路径解析走 ``FilesystemBackend`` 的虚拟模式 —— ``..`` 穿越、软链接逃逸
+    都会被挡掉，挡不住时返回 400 而不是 500。
+
+    响应头带 ``Content-Disposition: attachment`` —— 免得浏览器把用户上传的
+    HTML/SVG 当页面渲染（存储型 XSS）。
+    """
+    service = _service(thread_id)
+    content, filename, mime_type = service.download(path)
+    return Response(
+        content=content,
+        media_type=mime_type,
+        headers={"Content-Disposition": _disposition(filename)},
+    )
+
+
+@router.delete("", summary="删除工作区文件")
+async def delete_file(
+    thread_id: Annotated[str, Query(description="会话 ID")],
+    path: Annotated[str, Query(description="虚拟路径")],
+) -> ResponseModel[dict[str, str]]:
+    """删一个文件。"""
+    service = _service(thread_id)
+    service.delete(path)
+    return ResponseModel[dict[str, str]](data={"path": path, "status": "deleted"})
+
+
+def _disposition(filename: str) -> str:
+    """拼 Content-Disposition。
+
+    非 ASCII 文件名要按 RFC 5987 编码 —— 直接塞进 header 会被某些客户端解析坏。
+    """
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii") or "download"
+    quoted = quote(filename, safe="")
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
+
+
+__all__ = ["router"]

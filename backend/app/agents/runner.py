@@ -47,6 +47,7 @@ from langchain_core.messages import (
 )
 
 from app.agents.builder import build_agent
+from app.agents.llm import get_chat_model, supports_vision
 from app.agents.prompts import CODE_AGENT_PROMPT
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.intent.middleware import build_policy_note
@@ -54,6 +55,7 @@ from app.capabilities.registration.spec import KIND_SKILL, CapabilitySpec
 from app.capabilities.skills_export import export_skills
 from app.context.service import ContextRequest, build_context_service
 from app.core.config import settings
+from app.files.attachments import Attachment, build_attachments, build_uploads_note
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,23 @@ class AgentRunner:
         self.checkpointer = checkpointer
         self.model = model
 
+    def _resolve_model(self) -> Any:
+        """取这次要用的模型对象。
+
+        没注入模型时按环境变量配置建一个 —— **建在这里，不留给
+        ``build_agent``**。
+
+        原因：上下文的**窗口**与**视觉能力**都要问模型本人（都在
+        ``model.profile`` 上）。模型是 ``None`` 的话这两个值都拿不到 ——
+        压缩阈值会退回到保守默认值，图片也不会内联。而 ``build_agent``
+        内部才做 ``model or _default_model()``,那时候外头已经问完了。
+
+        解析结果缓存在 ``self.model`` 上，一个 runner 只建一次。
+        """
+        if self.model is None:
+            self.model = get_chat_model()
+        return self.model
+
     async def run(
         self,
         message: str,
@@ -103,11 +122,23 @@ class AgentRunner:
         specs: list[CapabilitySpec] | None = None,
         context: ExecutionContext | None = None,
         skill_ids: list[int] | None = None,
+        attachments: list[str] | None = None,
     ) -> AgentRunResult:
         """跑完一轮，返回最终回复与过程中的工具调用。
 
         撞上要审批的调用时不会抛异常 —— 图挂起，返回 ``pending_approval``。
+
+        ``attachments`` 是本轮带的附件（虚拟路径）。图片会被内联进用户消息，
+        模型这一轮就能看见；能不能内联取决于模型本身支不支持看图。
         """
+        model = self._resolve_model()
+        blocks, parsed = build_attachments(
+            workspace,
+            attachments or [],
+            vision_enabled=supports_vision(model),
+            max_inline_bytes=settings.max_inline_image_bytes,
+            max_attachments=settings.max_attachments_per_turn,
+        )
         agent, skills = await self._build(
             message,
             thread_id,
@@ -115,9 +146,10 @@ class AgentRunner:
             specs=specs,
             context=context,
             skill_ids=skill_ids,
+            attachments=parsed,
         )
         result = await agent.ainvoke(
-            {"messages": _input_messages(message)},
+            {"messages": _input_messages(message, blocks)},
             config={"configurable": {"thread_id": thread_id}},
         )
         return await self._result_from(result, skills, thread_id, context)
@@ -252,8 +284,17 @@ class AgentRunner:
         specs: list[CapabilitySpec] | None = None,
         context: ExecutionContext | None = None,
         skill_ids: list[int] | None = None,
+        attachments: list[str] | None = None,
     ) -> AsyncIterator[str]:
         """流式产出模型文本增量，供 SSE 推送。"""
+        model = self._resolve_model()
+        blocks, parsed = build_attachments(
+            workspace,
+            attachments or [],
+            vision_enabled=supports_vision(model),
+            max_inline_bytes=settings.max_inline_image_bytes,
+            max_attachments=settings.max_attachments_per_turn,
+        )
         agent, _skills = await self._build(
             message,
             thread_id,
@@ -261,9 +302,10 @@ class AgentRunner:
             specs=specs,
             context=context,
             skill_ids=skill_ids,
+            attachments=parsed,
         )
         async for chunk, _meta in agent.astream(
-            {"messages": _input_messages(message)},
+            {"messages": _input_messages(message, blocks)},
             config={"configurable": {"thread_id": thread_id}},
             stream_mode="messages",
         ):
@@ -331,8 +373,9 @@ class AgentRunner:
                 content = msg.get("content")
             else:
                 continue
-            if isinstance(content, str) and content.strip():
-                return content
+            text = _message_text(content)
+            if text.strip():
+                return text
         return ""
 
     async def _build(
@@ -346,6 +389,7 @@ class AgentRunner:
         skill_ids: list[int] | None,
         with_memory: bool = True,
         memory_query: str = "",
+        attachments: list[Attachment] | None = None,
     ):
         """组装 agent。
 
@@ -354,7 +398,8 @@ class AgentRunner:
         - **技能**：数据库里的技能导出成 ``SKILL.md``，交给 deepAgents 的技能
           中间件 —— 由模型按描述自己挑，不再由我们做关键词检索；
         - **记忆**：工作区里的 ``AGENTS.md``，每次会话前确保它存在；
-        - **记忆目录**：每轮召回一次，注入系统提示词（``with_memory=False`` 时跳过）。
+        - **记忆目录**：每轮召回一次，注入系统提示词（``with_memory=False`` 时跳过）；
+        - **上传件**：工作区里用户传过的材料，列进上下文。
 
         提示词的**装配**交给上下文模块（``app/context/``）—— 它管预算与
         配额。这里只负责把各来源的内容收集齐了交过去。
@@ -365,6 +410,7 @@ class AgentRunner:
         specs = specs or []
         context = context or ExecutionContext.build(workspace)
         context.thread_id = context.thread_id or thread_id
+        model = self._resolve_model()
 
         skills_dir = _skills_dir(workspace)
         skill_sources = export_skills(specs, skills_dir, skill_ids)
@@ -381,20 +427,29 @@ class AgentRunner:
         # 技能知识**不进系统提示词** —— deepAgents 的技能中间件按渐进披露来：
         # 提示词里只有技能的名字和描述，模型觉得相关了才去读正文。
         # 提前全塞进去就把"按需加载"退化成"每次都全量加载"了。
+        #
+        # 上传件清单反过来：用户传了文件，agent 得知道在哪。图片本身已经
+        # 内联进用户消息了，这里只是告诉 agent 还有哪些**只能读文件**的材料。
+        uploads_note = build_uploads_note(
+            workspace,
+            attachments=attachments,
+            max_entries=settings.uploads_block_max_entries,
+        )
         assembled = build_context_service().assemble(
             ContextRequest(
                 base_prompt=CODE_AGENT_PROMPT,
                 workspace=workspace,
                 memory_catalog=memory_block,
                 policy_note=policy_note,
-                context_window=_model_window(self.model),
+                uploads_note=uploads_note,
+                context_window=_model_window(model),
             )
         )
         agent = await build_agent(
             specs=specs,
             context=context,
             checkpointer=self.checkpointer,
-            model=self.model,
+            model=model,
             system_prompt=assembled.text,
             thread_id=thread_id,
             trust_mode=settings.capability_trust_mode,
@@ -418,9 +473,38 @@ def _model_window(model: Any) -> int:
     return int(value) if isinstance(value, int) and value > 0 else 0
 
 
-def _input_messages(message: str) -> list[Any]:
-    """本轮输入的消息列表。"""
-    return [HumanMessage(content=message)]
+def _input_messages(message: str, image_blocks: list[dict] | None = None) -> list[Any]:
+    """本轮输入的消息列表。
+
+    **有图片时用列表内容**（text 块 + image 块）—— LangChain 会把 image 块
+    转成供应商侧的 ``image_url``，模型这一轮就能看见图。没有图片时保持纯
+    字符串，行为与从前完全一致。
+    """
+    if not image_blocks:
+        return [HumanMessage(content=message)]
+    content: list[Any] = []
+    if message.strip():
+        content.append({"type": "text", "text": message})
+    content.extend(image_blocks)
+    return [HumanMessage(content=content)]
+
+
+def _message_text(content: Any) -> str:
+    """取一条消息里的文本。
+
+    带图片的消息内容是**列表**（text 块 + image 块）—— 只取 text 块，
+    图片块不是文字，拿去当检索词只会得到一堆乱码。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return "\n".join(part for part in parts if isinstance(part, str))
+    return ""
 
 
 def _skills_dir(workspace: Path) -> Path:

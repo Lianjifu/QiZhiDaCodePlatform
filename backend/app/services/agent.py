@@ -20,6 +20,7 @@ from app.capabilities.registration.registry import CapabilityRegistry
 from app.capabilities.registration.spec import KIND_TOOL, SOURCE_MCP, CapabilitySpec
 from app.core.config import settings
 from app.core.exceptions import AgentError, AppError, NotFoundError, ValidationError
+from app.core.workspace import resolve_workspace
 from app.repositories.llm_provider import LLMProviderRepository
 from app.repositories.mcp_server import MCPServerRepository
 
@@ -57,13 +58,12 @@ class AgentService:
         return Path(settings.workspace_root).resolve()
 
     def resolve_workspace(self, thread_id: str) -> Path:
-        """每个会话一个独立工作区，目录名做安全过滤。"""
-        safe = "".join(ch for ch in thread_id if ch.isalnum() or ch in "-_")[:64]
-        if not safe:
-            raise ValidationError("thread_id 不能为空")
-        workspace = self.workspace_base / safe
-        workspace.mkdir(parents=True, exist_ok=True)
-        return workspace
+        """每个会话一个独立工作区。
+
+        目录名的映射规则（安全过滤 + 哈希后缀，保证一一对应）集中在
+        ``app/core/workspace.py`` —— 文件接口也要用同一套，不能各写一份。
+        """
+        return resolve_workspace(thread_id)
 
     async def _resolve_model(self, provider_id: int | None):
         """按供应商配置构造模型；没有可用配置时返回 None（退回环境变量配置）。"""
@@ -126,12 +126,17 @@ class AgentService:
         thread_id: str,
         provider_id: int | None = None,
         skill_ids: list[int] | None = None,
+        attachments: list[str] | None = None,
     ) -> AgentRunResult:
         """跑一轮对话，返回最终回复。
 
         这一轮可能撞上人工审批 —— 那样返回的结果 ``status`` 是
         ``pending_approval``，``pending`` 里是待审批的条目，
         用 :meth:`approve` / :meth:`reject` 恢复。
+
+        ``attachments`` 是本轮带的附件（虚拟路径，如 ``/uploads/a.png``）。
+        图片会内联进用户消息 —— 模型能不能看图取决于模型本身（供应商配置上
+        的 ``vision_enabled``），不能看就只把路径告诉 agent。
         """
         workspace = self.resolve_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
@@ -147,6 +152,7 @@ class AgentService:
                     specs=specs,
                     context=context,
                     skill_ids=skill_ids,
+                    attachments=attachments,
                 )
                 # 执行层写的调用记录要落库
                 if self.session is not None:
@@ -232,6 +238,7 @@ class AgentService:
         thread_id: str,
         provider_id: int | None = None,
         skill_ids: list[int] | None = None,
+        attachments: list[str] | None = None,
     ) -> AsyncIterator[str]:
         """流式跑一轮对话，逐段产出文本增量。"""
         workspace = self.resolve_workspace(thread_id)
@@ -248,6 +255,7 @@ class AgentService:
                     specs=specs,
                     context=context,
                     skill_ids=skill_ids,
+                    attachments=attachments,
                 ):
                     yield text
                 # 执行层写的调用记录要落库

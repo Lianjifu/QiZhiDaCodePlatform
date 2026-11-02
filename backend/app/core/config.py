@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     # 模型对象没有 profile。不设的话框架只能用固定的"170000 token 触发、
     # 保留 6 条消息"，对大窗口的模型来说太激进。
     llm_context_window: int = 0
+    # 这个模型能不能看图。
+    #
+    # 走 .env 配置（没建数据库供应商配置）时，视觉能力只能在这里声明 ——
+    # 对话里上传的图片是直接内联进消息发给模型的，模型不认就会报错。
+    # 走数据库供应商配置时，用那条配置上的 vision_enabled 列。
+    llm_vision_enabled: bool = False
     agent_max_steps: int = 20
     # 代码沙箱模式：docker（默认，有隔离）| local（开发用，无隔离）
     #
@@ -85,6 +91,19 @@ class Settings(BaseSettings):
     agent_max_file_bytes: int = 200000
     agent_docker_mount: str = "/workspace"
     agent_checkpointer_db: str = "./agent_checkpoints.db"
+
+    # ---- 文件 ----
+    # 单个上传文件的上限（字节）
+    max_upload_bytes: int = 50 * 1024 * 1024
+    # 单个文件下载的上限（字节）。agent 生成的产物可能很大，别让一次下载把内存吃光。
+    max_download_bytes: int = 50 * 1024 * 1024
+    # 能内联进对话、让模型直接"看见"的图片大小上限（字节）。
+    # 超过这个尺寸就只给路径 —— base64 内联进消息会让 checkpoint 明显膨胀。
+    max_inline_image_bytes: int = 5 * 1024 * 1024
+    # 一轮对话最多带几个附件
+    max_attachments_per_turn: int = 10
+    # 上下文里「上传件」块最多列几个文件（按修改时间倒序取最近的）
+    uploads_block_max_entries: int = 20
 
     # 联网搜索（web_search 能力用）：tavily | serper | bing
     web_search_provider: str = ""

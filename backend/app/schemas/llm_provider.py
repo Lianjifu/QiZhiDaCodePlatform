@@ -36,6 +36,10 @@ class LLMProviderBase(BaseModel):
         le=10_000_000,
         description="上下文窗口（token），0=未知。决定对话历史何时被压缩",
     )
+    vision_enabled: bool | None = Field(
+        default=None,
+        description="模型能不能看图。不填按厂商预设；置 False 则对话里的图片只给路径、不内联",
+    )
     timeout: int = Field(default=60, ge=1, le=3600)
     is_default: bool = Field(default=False, description="是否默认供应商（全局唯一）")
     is_active: bool = Field(default=True)
@@ -70,6 +74,9 @@ class LLMProviderUpdate(BaseModel):
     context_window: int | None = Field(
         default=None, ge=0, le=10_000_000, description="上下文窗口（token），0=未知"
     )
+    vision_enabled: bool | None = Field(
+        default=None, description="模型能不能看图。换了供应商但没显式给就跟着新预设走"
+    )
     timeout: int | None = Field(default=None, ge=1, le=3600)
     is_default: bool | None = None
     is_active: bool | None = None
@@ -99,6 +106,7 @@ class LLMProviderOut(BaseModel):
     temperature: float
     max_tokens: int
     context_window: int = Field(default=0, description="上下文窗口（token），0=未知")
+    vision_enabled: bool = Field(default=False, description="模型能不能看图")
     timeout: int
     is_default: bool
     is_active: bool
@@ -130,6 +138,7 @@ class ProviderPresetOut(BaseModel):
     openai_compatible: bool
     docs_url: str
     context_window: int = Field(default=0, description="该厂商的上下文窗口（token），0=未知")
+    vision_enabled: bool = Field(default=False, description="该厂商的模型默认能不能看图")
 
 
 class ProviderTestOut(BaseModel):

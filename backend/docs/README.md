@@ -21,6 +21,7 @@
 | [memory-module.md](implementation/memory-module.md) | 记忆模块：短期落表 / 长期落 RAG，三层渐进式召回，写入判据与硬校验 | ✅ 已实现（2026-11-01） |
 | [context-module.md](implementation/context-module.md) | 上下文模块：块抽象 / 配额装配 / 压缩接管（deepAgents 摘要中间件） | ✅ 已实现（2026-11-02） |
 | [backend-strategy.md](implementation/backend-strategy.md) | 后端存储：deepAgents 六种 backend 的选型 + 容器按会话复用 | ✅ 已实现（2026-11-02） |
+| [file-module.md](implementation/file-module.md) | 文件模块：上传 / 列表 / 下载 / 删除 + 对话里的图片内联与上传件上下文 | ✅ 已实现（2026-11-02） |
 
 ## 计划文档
 
@@ -28,7 +29,7 @@
 | --- | --- | --- |
 | [agent-migration-deepagents.md](plans/agent-migration-deepagents.md) | Agent 层迁移到 deepAgents：能力层 → Backend、审批改 HITL、规划/子代理/skills/记忆/摘要 | ✅ 已实施（2026-11-01，含实施记录与偏差说明） |
 | [capability-followups.md](plans/capability-followups.md) | 能力层的已知限制与待办（并发配额、审批过期、MCP 注解链路、鉴权…） | ⬜ 未开始（A 已解决） |
-| [file-storage.md](plans/file-storage.md) | 文件存储：用户上传件 / 工作产物 / 平台产物的三分类与接口 | ⬜ 未开始 |
+| [file-storage.md](plans/file-storage.md) | 文件存储的待办：打包下载 / 容量上限 / 会话删除联动 | ⬜ 未开始（上传等已做） |
 | [rag-followups.md](plans/rag-followups.md) | RAG 层待办（重排、跨集合、增量更新、本地向量模型、规模化） | ⬜ 未开始 |
 
 ---

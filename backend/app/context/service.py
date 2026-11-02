@@ -17,6 +17,7 @@
 | 基准提示词 | `app/agents/prompts.py` | 0（必装） | 截断 |
 | 运行环境 | 工作区路径说明 | 10 | 丢 |
 | 策略说明 | 能力层（审批策略） | 20 | 丢（**会警告**） |
+| 上传件 | 文件模块（`uploads/` 清单） | 25 | 丢 |
 | 工作区说明 | AGENTS.md | 30 | 截断 |
 | 记忆目录 | 记忆模块 | 40 | 丢 |
 
@@ -49,11 +50,15 @@ KEY_RUNTIME = "runtime"
 KEY_POLICY = "policy"
 KEY_WORKSPACE = "workspace"
 KEY_MEMORY = "memory"
+KEY_UPLOADS = "uploads"
 
 # 优先级
 PRIORITY_BASE = 0
 PRIORITY_RUNTIME = 10
 PRIORITY_POLICY = 20
+# 上传件比工作区说明更该保住 —— 它是**本轮的工作材料**，而 AGENTS.md
+# 里的项目规矩晚一轮再读也来得及。
+PRIORITY_UPLOADS = 25
 PRIORITY_WORKSPACE = 30
 PRIORITY_MEMORY = 40
 
@@ -76,6 +81,7 @@ class ContextRequest:
     workspace: Path | None = None
     memory_catalog: str = ""
     policy_note: str = ""
+    uploads_note: str = ""
     context_window: int = 0
     # 额外块（调用方自己加的）
     extra_blocks: list[ContextBlock] = field(default_factory=list)
@@ -172,6 +178,18 @@ class ContextService:
                 )
             )
 
+        if request.uploads_note.strip():
+            blocks.append(
+                ContextBlock(
+                    key=KEY_UPLOADS,
+                    content=request.uploads_note,
+                    priority=PRIORITY_UPLOADS,
+                    # 同样自带 XML 标签
+                    title="",
+                    overflow=OVERFLOW_DROP,
+                )
+            )
+
         blocks.extend(request.extra_blocks)
         return blocks
 
@@ -231,11 +249,13 @@ __all__ = [
     "KEY_MEMORY",
     "KEY_POLICY",
     "KEY_RUNTIME",
+    "KEY_UPLOADS",
     "KEY_WORKSPACE",
     "PRIORITY_BASE",
     "PRIORITY_MEMORY",
     "PRIORITY_POLICY",
     "PRIORITY_RUNTIME",
+    "PRIORITY_UPLOADS",
     "PRIORITY_WORKSPACE",
     "ContextRequest",
     "ContextResult",

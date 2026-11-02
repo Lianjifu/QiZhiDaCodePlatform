@@ -39,6 +39,46 @@ from app.core.config import settings
 from app.core.crypto import decrypt_secret
 from app.models.llm_provider import LLMProvider
 
+# profile 里标记"这个模型能看图"的键。
+#
+# 用的是 langchain 的**标准** profile 字段（``image_inputs``），不是自己造的 ——
+# langchain 与各家集成包的 profile 数据都用这个键，混用两套标记迟早对不上。
+VISION_PROFILE_KEY = "image_inputs"
+
+
+def supports_vision(model: Any) -> bool:
+    """模型能不能看图。
+
+    对话里上传的图片是**直接内联进消息**发给模型的 —— 模型不认 ``image_url``
+    就会直接报错。所以内联之前必须先问一句。
+
+    标记挂在模型对象的 ``profile`` 上，跟上下文窗口一样：模型有哪些能力，
+    就跟模型走，不另开一条参数通道。
+    """
+    profile = getattr(model, "profile", None)
+    if not isinstance(profile, dict):
+        return False
+    return bool(profile.get(VISION_PROFILE_KEY))
+
+
+def _apply_vision(model: BaseChatModel, vision_enabled: bool) -> BaseChatModel:
+    """把"能不能看图"挂到模型对象上。
+
+    Args:
+        model: 构造好的模型对象。
+        vision_enabled: 能不能看图。
+
+    Returns:
+        原样返回（就地改了 profile）。
+    """
+    if not vision_enabled:
+        return model
+    try:
+        model.profile = {**(model.profile or {}), VISION_PROFILE_KEY: True}
+    except Exception:  # pragma: no cover - 个别模型对象的 profile 是只读的
+        pass
+    return model
+
 
 def _apply_context_window(model: BaseChatModel, context_window: int) -> BaseChatModel:
     """把上下文窗口告诉模型对象。
@@ -84,10 +124,9 @@ def get_chat_model() -> BaseChatModel:
 
     # 厂商名来自环境变量。国产模型要写 `openai`（配 base_url 指到厂商），
     # 写 `deepseek` 会去找没装的 langchain-deepseek 包。
-    return _apply_context_window(
-        init_chat_model(f"{settings.llm_provider}:{settings.llm_model}", **kwargs),
-        settings.llm_context_window,
-    )
+    model = init_chat_model(f"{settings.llm_provider}:{settings.llm_model}", **kwargs)
+    model = _apply_context_window(model, settings.llm_context_window)
+    return _apply_vision(model, settings.llm_vision_enabled)
 
 
 def build_model_for_provider(provider: LLMProvider) -> BaseChatModel:
@@ -125,10 +164,9 @@ def build_model_for_provider(provider: LLMProvider) -> BaseChatModel:
     if not provider.default_model:
         raise ValueError(f"供应商配置 {provider.name} 没有设置默认模型")
 
-    return _apply_context_window(
-        init_chat_model(f"{preset.langchain_provider}:{provider.default_model}", **kwargs),
-        provider.context_window or preset.context_window,
-    )
+    model = init_chat_model(f"{preset.langchain_provider}:{provider.default_model}", **kwargs)
+    model = _apply_context_window(model, provider.context_window or preset.context_window)
+    return _apply_vision(model, provider.vision_enabled)
 
 
-__all__ = ["build_model_for_provider", "get_chat_model"]
+__all__ = ["VISION_PROFILE_KEY", "build_model_for_provider", "get_chat_model", "supports_vision"]

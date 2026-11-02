@@ -39,6 +39,7 @@ async def preview_context(
     """
     memory_catalog = await _memory_catalog(session, thread_id, query)
     policy_note = await _policy_note(session)
+    uploads_note = _uploads_note(thread_id)
     service = build_context_service()
     result = service.assemble(
         ContextRequest(
@@ -46,6 +47,7 @@ async def preview_context(
             workspace=Path(workspace) if workspace else None,
             memory_catalog=memory_catalog,
             policy_note=policy_note,
+            uploads_note=uploads_note,
             context_window=settings.llm_context_window,
         )
     )
@@ -79,6 +81,23 @@ async def _memory_catalog(session: AsyncSession, thread_id: str, query: str) -> 
         return (await service.recall_catalog(query)).render()
     except Exception:  # pragma: no cover - 预览不该因为召回失败而报错
         return ""
+
+
+def _uploads_note(thread_id: str) -> str:
+    """上传件清单（预览用）。
+
+    会话工作区里用户传过的材料 —— agent 靠它知道有哪些文件可读。
+    """
+    if not thread_id:
+        return ""
+    from app.core.workspace import resolve_workspace
+    from app.files.attachments import build_uploads_note
+
+    try:
+        workspace = resolve_workspace(thread_id)
+    except Exception:  # pragma: no cover - thread_id 不合法时预览不该失败
+        return ""
+    return build_uploads_note(workspace, max_entries=settings.uploads_block_max_entries)
 
 
 async def _policy_note(session: AsyncSession) -> str:

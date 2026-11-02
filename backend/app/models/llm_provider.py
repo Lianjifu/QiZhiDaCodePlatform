@@ -44,6 +44,11 @@ class LLMProvider(Base):
     # deepAgents 只能按固定的"170000 token 触发、保留 6 条消息"来，
     # 对大窗口的模型来说提前太多、保留得太少。
     context_window: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # 这条配置的模型能不能看图。
+    #
+    # 对话里上传的图片是**直接内联进消息**发给模型的 —— 模型不认 image_url
+    # 就会报错。所以内联之前要先看这个标记；不支持就只把文件路径告诉 agent。
+    vision_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     timeout: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

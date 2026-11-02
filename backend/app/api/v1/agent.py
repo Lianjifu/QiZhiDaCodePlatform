@@ -39,7 +39,11 @@ async def chat(
     service: ServiceDep,
 ) -> ResponseModel[AgentChatOut]:
     result = await service.chat(
-        payload.message, payload.thread_id, payload.provider_id, payload.skill_ids
+        payload.message,
+        payload.thread_id,
+        payload.provider_id,
+        payload.skill_ids,
+        payload.attachments,
     )
     return ResponseModel[AgentChatOut](data=_to_out(result))
 
@@ -129,7 +133,11 @@ async def reject(
 async def stream(payload: AgentChatRequest, service: ServiceDep) -> StreamingResponse:
     async def event_stream():
         async for text in service.stream(
-            payload.message, payload.thread_id, payload.provider_id, payload.skill_ids
+            payload.message,
+            payload.thread_id,
+            payload.provider_id,
+            payload.skill_ids,
+            payload.attachments,
         ):
             frame = AgentStreamChunk(text=text).model_dump_json()
             yield f"data: {frame}\n\n"

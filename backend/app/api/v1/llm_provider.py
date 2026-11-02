@@ -43,6 +43,7 @@ def _to_out(provider: LLMProvider) -> LLMProviderOut:
         temperature=provider.temperature,
         max_tokens=provider.max_tokens,
         context_window=provider.context_window,
+        vision_enabled=provider.vision_enabled,
         timeout=provider.timeout,
         is_default=provider.is_default,
         is_active=provider.is_active,
@@ -72,6 +73,7 @@ async def presets() -> ResponseModel[list[ProviderPresetOut]]:
             openai_compatible=preset.openai_compatible,
             docs_url=preset.docs_url,
             context_window=preset.context_window,
+            vision_enabled=preset.vision_enabled,
         )
         for preset in list_presets()
     ]

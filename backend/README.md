@@ -56,7 +56,7 @@ db/session.py        引擎与会话
 backend/
 ├── app/
 │   ├── main.py              # 应用工厂 + 全局异常处理 + lifespan
-│   ├── core/                # config / exceptions / logging / crypto（API Key 加密）
+│   ├── core/                # config / exceptions / logging / crypto / workspace（工作区路径）
 │   ├── api/
 │   │   ├── deps.py          # 依赖注入
 │   │   ├── router.py        # 路由聚合
@@ -64,6 +64,7 @@ backend/
 │   │       ├── health.py
 │   │       ├── example.py
 │   │       ├── agent.py        # 编码助手（deepAgents + 审批）
+│   │       ├── files.py        # 文件（上传 / 列表 / 下载 / 删除）
 │   │       └── llm_provider.py # 模型接入配置（供应商 CRUD）
 │   ├── agents/              # Agent 层：模型 + 工具 + 循环
 │   │   ├── llm.py           # 模型工厂（环境变量 / 数据库供应商配置两种来源）
@@ -110,6 +111,10 @@ backend/
 │   │       ├── result.py      # 执行结果
 │   │       └── context.py     # 执行上下文（工作区、沙箱、MCP 通道）
 │   ├── schemas/             # 请求 / 响应模型
+│   ├── files/               # 文件模块：上传 / 列表 / 下载 / 删除 + 图片内联
+│   │   ├── storage.py       # 存储布局：uploads 目录、文件名清洗
+│   │   ├── service.py       # 文件服务（路径安全交给 FilesystemBackend）
+│   │   └── attachments.py   # 附件处理：图片内联 + 上传件清单
 │   ├── context/             # 上下文模块（装配 / 配额 / 压缩）
 │   │   ├── blocks.py        # ContextBlock 抽象（标题、优先级、溢出策略）
 │   │   ├── budget.py        # 预算计算（按模型窗口的比例）
@@ -797,6 +802,42 @@ curl 'http://127.0.0.1:8000/api/v1/context/preview?query=pnpm&workspace=/tmp/ws'
 ```
 
 实现细节见 [`docs/implementation/context-module.md`](docs/implementation/context-module.md)。
+
+## 文件与多模态输入
+
+用户在对话里上传文件、给图片提问；agent 做出来的东西用户下载得走。
+
+```text
+POST   /api/v1/files              上传（multipart），落进会话工作区的 uploads/
+GET    /api/v1/files              列出工作区文件
+GET    /api/v1/files/download     按虚拟路径下载
+DELETE /api/v1/files              删除
+```
+
+上传件落**工作区里** —— agent 用现成的 `read_file` / `grep` / `glob` 就能处理，
+不需要新增任何 agent 能力。
+
+图片另外**内联进用户消息**（`image_url`），模型这一轮就能"看见"：
+
+```bash
+# 1. 先传，拿回虚拟路径
+curl -F 'file=@screenshot.png' 'http://127.0.0.1:8000/api/v1/files?thread_id=t_1'
+# → {"data": {"path": "/uploads/20261102_143000_screenshot.png", ...}}
+
+# 2. 再带附件提问
+curl -X POST 'http://127.0.0.1:8000/api/v1/agent/chat' \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "这张图里有什么问题？", "thread_id": "t_1",
+       "attachments": ["/uploads/20261102_143000_screenshot.png"]}'
+```
+
+**能不能看图取决于模型**：供应商配置上的 `vision_enabled`（默认按厂商预设）。
+不支持就只把路径告诉 agent，不会让整轮对话报错。
+
+> ⚠️ **文件接口目前没有鉴权** —— 知道 `thread_id` 就能下载别人会话里的所有
+> 文件。这是"记忆接口无鉴权"那条风险的更严重版本，上线前必须补。
+
+实现细节见 [`docs/implementation/file-module.md`](docs/implementation/file-module.md)。
 
 ## 数据库迁移（Alembic）
 

@@ -9,6 +9,7 @@ from app.api.v1 import (
     capability,
     context,
     example,
+    files,
     health,
     invocation,
     llm_provider,
@@ -32,3 +33,4 @@ api_router.include_router(invocation.router)
 api_router.include_router(rag.router)
 api_router.include_router(memory.router)
 api_router.include_router(context.router)
+api_router.include_router(files.router)

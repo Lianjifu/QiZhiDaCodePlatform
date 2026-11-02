@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -18,6 +17,7 @@ from app.capabilities.registration.policy import approval_decision
 from app.capabilities.registration.spec import CapabilitySpec
 from app.capabilities.registration.tool_policy import FS_TOOL_NAMES
 from app.core.config import settings
+from app.core.workspace import resolve_workspace
 from app.services.agent import AgentService
 
 API = "/api/v1/agent"
@@ -126,7 +126,7 @@ async def test_approval_round_trip_pushes_result_back(app, client, session, monk
     # 工具真的执行了：文件落盘
     assert approved["tool_calls"], "恢复后应该有工具调用"
     assert approved["tool_calls"][0]["name"] == "write_file"
-    workspace = Path(settings.workspace_root).resolve() / thread_id
+    workspace = resolve_workspace(thread_id)
     assert (workspace / "out.txt").read_text(encoding="utf-8") == "写点东西"
 
 
@@ -155,7 +155,7 @@ async def test_tool_call_carries_execution_summary(app, client, session) -> None
     """调用方要知道这次调用成功了还是失败了，不能只知道模型动了手。"""
     thread_id = "t-tool"
     # 与 AgentService.resolve_workspace 同一套路径规则（含 resolve）
-    workspace = Path(settings.workspace_root).resolve() / thread_id
+    workspace = resolve_workspace(thread_id)
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "a.txt").write_text("hello", encoding="utf-8")
 

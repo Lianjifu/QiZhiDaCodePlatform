@@ -5,6 +5,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from app.core.config import settings
+
 
 class AgentChatRequest(BaseModel):
     """一次对话请求。"""
@@ -24,6 +26,14 @@ class AgentChatRequest(BaseModel):
     skill_ids: list[int] = Field(
         default_factory=list,
         description="要启用的技能 id；技能带来的工具与提示词会被挂载到 agent 上",
+    )
+    attachments: list[str] = Field(
+        default_factory=list,
+        max_length=settings.max_attachments_per_turn,
+        description=(
+            "本轮要带的附件（虚拟路径，如 /uploads/xxx.png）。"
+            "图片会内联进消息，模型这一轮就能看见；其它文件只给路径，agent 自己读"
+        ),
     )
 
 

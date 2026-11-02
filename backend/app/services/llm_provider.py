@@ -101,6 +101,12 @@ class LLMProviderService(BaseService[LLMProviderRepository]):
                 # 没显式填就取厂商预设的窗口 —— 填 0 表示"我也不知道"，
                 # 但预设知道的话没理由不用
                 context_window=payload.context_window or preset.context_window,
+                # 视觉能力同理：不显式给就按厂商预设
+                vision_enabled=(
+                    preset.vision_enabled
+                    if payload.vision_enabled is None
+                    else payload.vision_enabled
+                ),
                 timeout=payload.timeout,
                 is_default=payload.is_default,
                 is_active=payload.is_active,
@@ -130,6 +136,11 @@ class LLMProviderService(BaseService[LLMProviderRepository]):
         # 旧供应商的窗口对不上新模型，留着会让压缩阈值算错。
         if "provider" in data and data["provider"] and "context_window" not in data:
             data["context_window"] = resolve_preset(data["provider"]).context_window
+
+        # 换了供应商但没显式给视觉能力 → 跟着新供应商的预设走。
+        # 旧供应商的判断对不上新模型：有的厂商同一家的文本模型看不了图。
+        if "provider" in data and data["provider"] and "vision_enabled" not in data:
+            data["vision_enabled"] = resolve_preset(data["provider"]).vision_enabled
 
         plain_api_key: str | None = None
         if "api_key" in data:
