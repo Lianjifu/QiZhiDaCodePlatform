@@ -1,7 +1,7 @@
 [project]
 name = "qizhidacodeplatform"
 version = "0.1.0"
-description = "启智达代码平台后端服务"
+description = "企智搭·代码平台后端服务"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.162.0,<0.170.0",

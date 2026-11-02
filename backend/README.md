@@ -2,6 +2,9 @@
 
 FastAPI 后端脚手架，采用**简化分层架构（Service Layer）**。
 
+前端控制台在同级的 [`../frontend/`](../frontend)，后端起法见下面的「启动」——
+**必须在 `backend/` 目录起**，`.env` 在这儿。
+
 ## 分层结构
 
 ```text

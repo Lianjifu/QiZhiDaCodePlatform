@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # 应用
     app_name: str = "QiZhiDa Code Platform API"
     app_version: str = "0.1.0"
-    app_description: str = "启智达代码平台后端服务"
+    app_description: str = "企智搭·代码平台后端服务"
     debug: bool = True
     api_v1_prefix: str = "/api/v1"
 

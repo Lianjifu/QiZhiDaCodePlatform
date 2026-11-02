@@ -99,13 +99,12 @@ class AgentRunner:
     def _resolve_model(self) -> Any:
         """取这次要用的模型对象。
 
-        没注入模型时按环境变量配置建一个 —— **建在这里，不留给
-        ``build_agent``**。
+        没注入模型时按环境变量配置建一个 —— 建在这里，不留给 ``build_agent``。
 
-        原因：上下文的**窗口**与**视觉能力**都要问模型本人（都在
-        ``model.profile`` 上）。模型是 ``None`` 的话这两个值都拿不到 ——
-        压缩阈值会退回到保守默认值，图片也不会内联。而 ``build_agent``
-        内部才做 ``model or _default_model()``,那时候外头已经问完了。
+        原因：上下文的窗口与视觉能力都要问模型本人（都在 ``model.profile`` 上）。
+        模型是 ``None`` 的话这两个值都拿不到 —— 压缩阈值会退回到保守默认值，
+        图片也不会内联。而 ``build_agent`` 内部才做 ``model or _default_model()``，
+        那时候外头已经问完了。
 
         解析结果缓存在 ``self.model`` 上，一个 runner 只建一次。
         """

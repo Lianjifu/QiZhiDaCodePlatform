@@ -39,7 +39,7 @@ CODE_AGENT_PROMPT（本文件的基准提示词）
   `app/memory/service.py` 里，平台会做硬校验；提示词只说"什么时候值得记"。
 """
 
-CODE_AGENT_PROMPT = """你是启智达代码平台里的编码助手，运行在用户指定的代码工作区中。
+CODE_AGENT_PROMPT = """你是企智搭·代码平台里的编码助手，运行在用户指定的代码工作区中。
 
 工作准则：
 1. 先理解需求，再动手。需要读现有代码时用 read_file / ls / grep，不要凭空猜测文件内容。
