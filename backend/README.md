@@ -165,11 +165,17 @@ deepAgents 额外带来规划（`write_todos`）、子代理（`task`）、技�
 POST /api/v1/agent/chat             跑完一轮再整体返回
 POST /api/v1/agent/stream           SSE 流式推送（一帧一种事件）
 GET  /api/v1/agent/{thread_id}/history   读会话历史
+GET  /api/v1/agent/commands         斜杠命令清单（输入框敲 `/` 弹的那份）
+DELETE /api/v1/agent/{thread_id}    清空会话的对话记录（工作区文件不删）
 ```
 
-流式接口的帧有五种类型（`type` 字段决定）：`text`（文本增量）、
+流式接口的帧有六种类型（`type` 字段决定）：`text`（文本增量）、
 `tool_call`（模型决定调工具）、`tool_result`（工具跑完）、
-`pending_approval`（这一轮停在审批上）、`done`（收尾）。帧尾是 `data: [DONE]`。
+`pending_approval`（这一轮停在审批上）、`error`（这一轮炸了，附原因）、
+`done`（收尾）。帧尾是 `data: [DONE]`。
+
+**`error` 帧是必须的**：SSE 一旦开始推数据就改不了 HTTP 状态码了，错误只能
+走帧。少推这一帧，前端就永远停在「思考中…」—— 它只认得 `done` 收尾。
 
 配置（`.env`）：
 
@@ -818,6 +824,7 @@ curl 'http://127.0.0.1:8000/api/v1/context/preview?query=pnpm&workspace=/tmp/ws'
 ```text
 POST   /api/v1/files              上传（multipart），落进会话工作区的 uploads/
 GET    /api/v1/files              列出工作区文件
+GET    /api/v1/files/tree         列出工作区的文件**与目录**（@ 提及面板用）
 GET    /api/v1/files/download     按虚拟路径下载
 DELETE /api/v1/files              删除
 ```

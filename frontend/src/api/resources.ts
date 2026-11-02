@@ -14,6 +14,7 @@ import type {
   FileList,
   LLMProvider,
   PagedList,
+  SlashCommand,
   UploadedFile,
 } from '../types/api'
 
@@ -77,11 +78,26 @@ export function reject(threadId: string): Promise<AgentChatResult> {
   return api.post<AgentChatResult>(`/agent/${threadId}/reject`)
 }
 
+/** 斜杠命令清单（输入框敲 `/` 时弹的那份）。 */
+export function listCommands(): Promise<SlashCommand[]> {
+  return api.get<SlashCommand[]>('/agent/commands')
+}
+
+/** 清空会话的对话记录（删掉 checkpoint 里的历史）。 */
+export function clearConversation(threadId: string): Promise<{ thread_id: string; status: string }> {
+  return api.delete<{ thread_id: string; status: string }>(`/agent/${threadId}`)
+}
+
 // ---------- 文件 ----------
 
 /** 列出工作区文件。 */
 export function listFiles(threadId: string): Promise<FileList> {
   return api.get<FileList>(`/files?thread_id=${encodeURIComponent(threadId)}`)
+}
+
+/** 列出工作区的文件**与目录**（@ 提及面板用）。 */
+export function listWorkspaceTree(threadId: string): Promise<FileList> {
+  return api.get<FileList>(`/files/tree?thread_id=${encodeURIComponent(threadId)}`)
 }
 
 /**

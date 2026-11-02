@@ -70,6 +70,7 @@ logger = logging.getLogger(__name__)
 # 一轮对话的结束状态
 STATUS_COMPLETED = "completed"
 STATUS_PENDING_APPROVAL = "pending_approval"
+STATUS_FAILED = "failed"
 
 # 记忆文件名：deepAgents 的记忆中间件按这个约定读工作区里的长期记忆
 MEMORY_FILE = "AGENTS.md"
@@ -810,6 +811,7 @@ async def _attach_summaries(
 __all__ = [
     "STATUS_COMPLETED",
     "STATUS_PENDING_APPROVAL",
+    "STATUS_FAILED",
     "AgentRunResult",
     "AgentRunner",
 ]

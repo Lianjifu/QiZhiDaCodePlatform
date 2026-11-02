@@ -61,6 +61,8 @@ src/
     agent/         编码助手（唯一支持多轮对话的页面）
       ChatPage.tsx  MessageList.tsx  ToolCallBlock.tsx
       ApprovalCard.tsx  Composer.tsx  useChat.ts
+      SlashCommandMenu.tsx  斜杠命令面板
+      MentionPicker.tsx     @ 提及面板
     sessions/
       store.tsx     会话元数据（localStorage）
   pages/
@@ -80,6 +82,25 @@ src/
 `border-subtle`），具体值只在 `theme/tokens.css` 里改。语义 token 而不是色板：
 `slate-500` 只说了颜色，深色下得整体重映射一遍；语义 token 直接表达「这是次要
 文字」，深浅两套各给一个值，组件不用动。
+
+## 输入框的三项能力
+
+输入框（`features/agent/Composer.tsx`）里能用的三样东西：
+
+| 能力 | 怎么用 | 落到哪 |
+| --- | --- | --- |
+| **添加文件或图片** | `+` 菜单 → 添加文件或图片 | 上传到会话工作区的 `uploads/`；图片**内联**进这一轮的消息，模型当场看得见 |
+| **斜杠命令** | 敲 `/`，或 `+` 菜单 → 斜杠命令 | `prompt` 类填一段提示词（改完再发）；`action` 类触发本地动作（换模型、开新会话…） |
+| **@ 提及** | 敲 `@`，或 `+` 菜单 → 提及文件或目录 | 路径写进正文（`@/uploads/a.png`）；**被提及的图片自动带成附件**，模型这一轮看得见 |
+
+**命令清单在后端**（`GET /api/v1/agent/commands`）—— 前端只渲染，不硬编码；
+后端加了命令前端自动就有。
+
+**触发符的识别规则**在 `Composer.tsx` 的 `detectTrigger`：触发符前面必须是空白
+或行首，所以 `/uploads/x.png` 这种路径不会被当成斜杠命令，`@` 后面可以直接跟路径。
+
+`@` 面板列的是**工作区的文件与目录**（`GET /api/v1/files/tree`）—— agent 建的
+文件也能提到。每次打开面板会重新读一次，因为 agent 可能刚建了新东西。
 
 ## 页面
 
@@ -101,6 +122,7 @@ src/
 | `tool_call` | 加一个工具折叠块（进行中） |
 | `tool_result` | 按 tool_call_id 找到那个块，补上结果 |
 | `pending_approval` | 弹审批卡片 |
+| `error` | 这一轮炸了 —— 显示原因（**不能少**，少了一帧界面就停在「思考中…」） |
 | `done` | 收尾 |
 
 多轮靠 `thread_id` 串 —— 后端用 checkpoint 存历史，前端一直带着同一个 id。

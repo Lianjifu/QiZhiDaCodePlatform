@@ -70,6 +70,8 @@ interface SessionsValue {
   others: SessionMeta[]
   /** 记一笔（会话不存在就建，存在就更新标题与时间） */
   touch: (threadId: string, title?: string) => void
+  /** 改标题 */
+  rename: (threadId: string, title: string) => void
   togglePin: (threadId: string) => void
   remove: (threadId: string) => void
 }
@@ -96,6 +98,14 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  const rename = useCallback((threadId: string, title: string) => {
+    setSessions((prev) =>
+      prev.map((item) =>
+        item.threadId === threadId ? { ...item, title, updatedAt: Date.now() } : item,
+      ),
+    )
+  }, [])
+
   const togglePin = useCallback((threadId: string) => {
     setSessions((prev) =>
       prev.map((item) =>
@@ -114,10 +124,11 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       pinned: sessions.filter((item) => item.pinned),
       others: sessions.filter((item) => !item.pinned),
       touch,
+      rename,
       togglePin,
       remove,
     }),
-    [sessions, touch, togglePin, remove],
+    [sessions, touch, rename, togglePin, remove],
   )
 
   return <SessionsContext.Provider value={value}>{children}</SessionsContext.Provider>

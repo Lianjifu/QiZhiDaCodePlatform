@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.checkpointer import open_checkpointer
 from app.agents.llm import build_model_for_provider
-from app.agents.runner import AgentRunner, AgentRunResult
+from app.agents.runner import STATUS_FAILED, AgentRunner, AgentRunResult
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.registration.registry import CapabilityRegistry
 from app.capabilities.registration.spec import KIND_TOOL, SOURCE_MCP, CapabilitySpec
@@ -258,6 +258,19 @@ class AgentService:
                 logger.exception("读取会话历史失败 thread_id=%s", thread_id)
                 raise AgentError(_readable_error(exc)) from exc
 
+    async def clear(self, thread_id: str) -> None:
+        """清空这个会话的对话记录。
+
+        删的是 **checkpoint 里的历史**，不是工作区里的文件 —— 上传件和产物
+        都留着，下一轮 agent 还能用。
+        """
+        async with open_checkpointer() as checkpointer:
+            try:
+                await checkpointer.adelete_thread(thread_id)
+            except Exception as exc:
+                logger.exception("清空会话失败 thread_id=%s", thread_id)
+                raise AgentError(_readable_error(exc)) from exc
+
     async def stream(
         self,
         message: str,
@@ -293,6 +306,10 @@ class AgentService:
             except AppError:
                 raise
             except Exception as exc:
-                # SSE 一旦开始推数据就改不了 HTTP 状态码了，只能把错误作为一帧推出去
+                # SSE 一旦开始推数据就改不了 HTTP 状态码了，只能把错误作为一帧推出去。
+                # 必须是 AgentStreamChunk —— 端点会调 model_dump_json()，塞裸字符串会炸，
+                # 流直接断在半路，前端就永远停在「思考中…」。
                 logger.exception("agent 流式执行失败 thread_id=%s", thread_id)
-                yield f"[ERROR] {_readable_error(exc)}"
+                message = _readable_error(exc)
+                yield AgentStreamChunk(type="error", error=message, text=message)
+                yield AgentStreamChunk(type="done", status=STATUS_FAILED)

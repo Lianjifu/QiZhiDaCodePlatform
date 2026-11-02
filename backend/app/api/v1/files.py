@@ -111,6 +111,35 @@ async def list_files(
     )
 
 
+@router.get("/tree", response_model=ResponseModel[FileListOut], summary="列出工作区文件与目录")
+async def list_tree(
+    thread_id: Annotated[str, Query(description="会话 ID")],
+) -> ResponseModel[FileListOut]:
+    """工作区的**目录树**（文件 + 目录）。
+
+    @ 提及面板要用 —— 那边得能选目录，光有文件不够。
+    """
+    service = _service(thread_id)
+    entries = service.list_files(include_uploads=True, include_dirs=True)
+    return ResponseModel[FileListOut](
+        data=FileListOut(
+            files=[
+                FileOut(
+                    path=entry.path,
+                    filename=entry.filename,
+                    size=entry.size,
+                    mime_type=entry.mime_type,
+                    is_dir=entry.is_dir,
+                    modified_at=entry.modified_at,
+                    uploaded=entry.uploaded,
+                )
+                for entry in entries
+            ],
+            total=len(entries),
+        )
+    )
+
+
 @router.get("/download", summary="下载工作区文件")
 async def download_file(
     thread_id: Annotated[str, Query(description="会话 ID")],

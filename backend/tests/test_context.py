@@ -241,7 +241,13 @@ async def test_compaction_replaces_default_not_duplicates(tmp_path):
     model = init_chat_model("openai:deepseek-flash", api_key="x")
     _apply_context_window(model, 1048576)
 
-    await build_agent(
+    # 先记下**建之前**已经存在的实例 —— 只数这次建出来的。
+    # 直接数全局存活实例会被别的测试残留的 agent 干扰（谁先跑谁倒霉）。
+    before = {
+        id(obj) for obj in gc.get_objects() if isinstance(obj, PlatformSummarizationMiddleware)
+    }
+
+    agent = await build_agent(
         specs=[],
         context=ExecutionContext.build(workspace),
         model=model,
@@ -249,10 +255,13 @@ async def test_compaction_replaces_default_not_duplicates(tmp_path):
     )
 
     instances = [
-        obj for obj in gc.get_objects() if isinstance(obj, PlatformSummarizationMiddleware)
+        obj
+        for obj in gc.get_objects()
+        if isinstance(obj, PlatformSummarizationMiddleware) and id(obj) not in before
     ]
     assert len(instances) == 1, "应该只有一份压缩中间件"
     assert instances[0].trigger == ("fraction", 0.85)
+    assert agent is not None
 
 
 @pytest.mark.asyncio

@@ -42,6 +42,24 @@
   --color-warning-soft: var(--warning-soft);
 }
 
+@layer components {
+  /*
+   * 空状态页的背景：点阵 + 中心光晕。
+   *
+   * 点阵用 radial-gradient 画（一个像素点重复平铺），再用 mask 做径向淡出 ——
+   * 边缘不能有硬边，看着像噪点。深浅两套只差 --grid-dot / --glow 两个值。
+   */
+  .hero-grid {
+    background-image: radial-gradient(circle, var(--grid-dot) 1px, transparent 1px);
+    background-size: 22px 22px;
+    mask-image: radial-gradient(ellipse 55% 45% at 50% 45%, #000 0%, transparent 78%);
+  }
+
+  .hero-glow {
+    background: radial-gradient(ellipse 45% 38% at 50% 46%, var(--glow), transparent 70%);
+  }
+}
+
 @layer base {
   html {
     color-scheme: light;

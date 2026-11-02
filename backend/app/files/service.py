@@ -159,7 +159,7 @@ class FileService:
 
     # ---------- 读取 ----------
 
-    def list_files(self, *, include_uploads: bool = True) -> list[FileEntry]:
+    def list_files(self, *, include_uploads: bool = True, include_dirs: bool = False) -> list[FileEntry]:
         """列出工作区里的文件（上传件 + agent 的产物）。
 
         只列工作区里的东西 —— 平台产物（``.artifacts/``）在工作区**外面**，
@@ -167,6 +167,7 @@ class FileService:
 
         Args:
             include_uploads: 是否列出上传件目录。
+            include_dirs: 是否把目录也列进来。@ 提及要能选目录，所以那边要 True。
 
         Returns:
             文件列表，按路径排序。
@@ -177,6 +178,27 @@ class FileService:
             return entries
         uploads = uploads_dir(root)
         for path in sorted(root.rglob("*")):
+            # 软链接可能指向工作区外面 —— 列表里不给它，免得泄露工作区外的存在
+            if path.is_symlink():
+                continue
+            if path.is_dir():
+                if not include_dirs:
+                    continue
+                if not include_uploads and uploads in path.parents:
+                    continue
+                relative = path.relative_to(root)
+                entries.append(
+                    FileEntry(
+                        path=f"/{relative.as_posix()}",
+                        filename=path.name,
+                        size=0,
+                        mime_type="inode/directory",
+                        is_dir=True,
+                        modified_at=datetime.fromtimestamp(path.stat().st_mtime, UTC),
+                        uploaded=uploads in path.parents,
+                    )
+                )
+                continue
             if not path.is_file():
                 continue
             if not include_uploads and uploads in path.parents:

@@ -80,13 +80,23 @@ export interface ToolResult {
 
 /** 流式接口的一帧（后端 `AgentStreamChunk`）。 */
 export interface AgentStreamChunk {
-  type: 'text' | 'tool_call' | 'tool_result' | 'pending_approval' | 'done'
+  type: 'text' | 'tool_call' | 'tool_result' | 'pending_approval' | 'done' | 'error'
   text: string
   tool_call: ToolCall | null
   tool_result: ToolResult | null
   pending: PendingApproval[]
   status: string
   steps: number
+  error?: string | null
+}
+
+/** 一条斜杠命令（后端 `SlashCommandOut`）。 */
+export interface SlashCommand {
+  name: string
+  description: string
+  kind: 'prompt' | 'action'
+  template: string
+  action: string
 }
 
 /** 历史消息里的一条（后端 `AgentHistoryMessage`）。 */

@@ -9,6 +9,7 @@
  * | `tool_call` | 在最后一条助手消息里加一个工具块（状态：进行中） |
  * | `tool_result` | 按 tool_call_id 找到那个块，补上结果 |
  * | `pending_approval` | 记下待批清单 |
+ * | `error` | 这一轮炸了 —— 显示原因，别让界面停在「思考中…」 |
  * | `done` | 收尾（这一轮跑完了还是停在审批上） |
  */
 import { useCallback, useRef, useState } from 'react'
@@ -209,6 +210,10 @@ export function useChat() {
         case 'pending_approval':
           patchLastAssistant((message) => ({ ...message, pending: event.pending }))
           break
+        case 'error':
+          // 后端把失败也当成一帧推出来（流已经开始，HTTP 状态码改不了了）
+          if (event.error) setError(event.error)
+          break
         case 'done':
           patchLastAssistant((message) => ({
             ...message,
@@ -219,7 +224,7 @@ export function useChat() {
           break
       }
     },
-    [patchLastAssistant],
+    [patchLastAssistant, setError],
   )
 
   /** 发一条消息（流式）。 */

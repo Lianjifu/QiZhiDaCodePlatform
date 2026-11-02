@@ -114,13 +114,16 @@ class AgentStreamChunk(BaseModel):
     | ``tool_result`` | ``tool_result`` | 工具折叠块补成完成态 |
     | ``pending_approval`` | ``pending`` | 弹审批卡片 |
     | ``done`` | ``status`` / ``steps`` | 收尾 |
+    | ``error`` | ``error`` | 这一轮炸了，把原因显示出来 |
 
     ``type`` 默认 ``"text"`` —— 老的消费方按 ``{"text": ...}`` 解析仍然能用。
     """
 
     type: str = Field(
         default="text",
-        description="事件类型：text / tool_call / tool_result / pending_approval / done",
+        description=(
+            "事件类型：text / tool_call / tool_result / pending_approval / done / error"
+        ),
     )
     text: str = Field(default="", description="文本增量（type=text 时有值）")
     tool_call: ToolCallOut | None = Field(
@@ -134,6 +137,25 @@ class AgentStreamChunk(BaseModel):
     )
     status: str = Field(default="", description="本轮状态（type=done 时有值）")
     steps: int = Field(default=0, description="本轮工具调用次数（type=done 时有值）")
+    error: str | None = Field(
+        default=None,
+        description="失败原因（type=error 时有值）",
+    )
+
+
+class SlashCommandOut(BaseModel):
+    """一条斜杠命令。
+
+    两类：
+    - ``prompt`` —— 把 ``template`` 填进输入框，用户改完再发；
+    - ``action`` —— 前端自己执行 ``action`` 里的动作（换模型、开新会话）。
+    """
+
+    name: str = Field(description="命令名（不含斜杠）")
+    description: str = Field(default="", description="一句话说明")
+    kind: str = Field(default="prompt", description="prompt / action")
+    template: str = Field(default="", description="prompt 类的提示词正文")
+    action: str = Field(default="", description="action 类的动作名")
 
 
 class AgentHistoryMessage(BaseModel):

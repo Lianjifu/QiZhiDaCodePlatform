@@ -12,6 +12,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
+from app.agents.commands import COMMANDS
 from app.agents.runner import AgentRunResult
 from app.api.deps import get_agent_service
 from app.schemas.agent import (
@@ -19,6 +20,7 @@ from app.schemas.agent import (
     AgentChatRequest,
     AgentHistoryOut,
     PendingApprovalOut,
+    SlashCommandOut,
     ToolCallOut,
 )
 from app.schemas.common import ResponseModel
@@ -84,6 +86,30 @@ def _tool_call_fields(call: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get(
+    "/commands",
+    response_model=ResponseModel[list[SlashCommandOut]],
+    summary="斜杠命令清单",
+)
+async def slash_commands() -> ResponseModel[list[SlashCommandOut]]:
+    """输入框里敲 ``/`` 弹出的那份清单。
+
+    清单在后端定 —— 前端只负责渲染，不硬编码。后端加了命令，前端自动就有。
+    """
+    return ResponseModel[list[SlashCommandOut]](
+        data=[
+            SlashCommandOut(
+                name=command.name,
+                description=command.description,
+                kind=command.kind,
+                template=command.template,
+                action=command.action,
+            )
+            for command in COMMANDS
+        ]
+    )
+
+
+@router.get(
     "/{thread_id}/pending",
     response_model=ResponseModel[list[PendingApprovalOut]],
     summary="待审批的调用",
@@ -128,6 +154,17 @@ async def reject(
     """拒绝挂起的调用：工具不执行，agent 收到拒绝消息后继续。"""
     result = await service.reject(thread_id)
     return ResponseModel[AgentChatOut](data=_to_out(result))
+
+
+@router.delete("/{thread_id}", summary="清空会话的对话记录")
+async def clear(thread_id: str, service: ServiceDep) -> ResponseModel[dict[str, str]]:
+    """清空这个会话的对话记录（``/clear`` 斜杠命令用）。
+
+    删的是 checkpoint 里的历史消息 —— **工作区里的文件不删**，上传件和产物
+    都还在，下一轮 agent 照样能用。
+    """
+    await service.clear(thread_id)
+    return ResponseModel[dict[str, str]](data={"thread_id": thread_id, "status": "cleared"})
 
 
 @router.post("/stream", summary="与编码助手对话（SSE 流式）")
