@@ -20,3 +20,6 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# 本机 Claude Code 配置（权限白名单里带的是本机路径，不该共享）
+.claude/
