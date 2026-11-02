@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from app.api.router import api_router
 from app.capabilities.backends.container_pool import cleanup_stale_containers, get_pool
 from app.core.config import settings
+from app.services.invocation import expire_stale_approvals
 from app.core.exceptions import AppError
 from app.core.logging import setup_logging
 from app.db.session import close_db, init_db
@@ -37,14 +38,35 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("未配置 LLM_API_KEY，调用编码助手接口会失败（请在 .env 中设置）")
     try:
         reaper = asyncio.create_task(_reap_idle_sandboxes())
+        expirer = asyncio.create_task(_expire_stale_approvals())
         yield
     finally:
-        reaper.cancel()
-        with suppress(asyncio.CancelledError):
-            await reaper
+        for task in (reaper, expirer):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
         await close_db()
         _shutdown_sandboxes()
         logger.info("%s 已关闭", settings.app_name)
+
+
+async def _expire_stale_approvals() -> None:
+    """周期性把没人处理的审批记录置为「已过期」。
+
+    平台里没有"人一定会回来看"这回事 —— 一条 pending 记录挂在那里，
+    `invocation` 表就一直在长，调用方也等不到一个明确的答复。
+
+    周期取超时时间的一半：最多让一条记录多挂一半超时。
+    """
+    interval = max(30, int(settings.capability_approval_timeout / 2))
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            expired = await expire_stale_approvals()
+            if expired:
+                logger.info("把 %d 条没人处理的审批记录置为已过期", expired)
+        except Exception as exc:  # pragma: no cover - 扫描失败不该拖垮后台任务
+            logger.warning("扫描过期的审批记录失败: %s", exc)
 
 
 async def _reap_idle_sandboxes() -> None:

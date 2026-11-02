@@ -212,6 +212,17 @@ sqlalchemy.exc.InvalidRequestError: Session is already flushing
 每条调用记录**自己提交**，不等整轮结束 —— 用户点「停止」时这一轮会被取消，
 整轮末尾的提交不会执行。不当场提交的话，文件已经改了、记录却查不到。
 
+### 并发闸门与审批过期
+
+两个以前**只在配置里、代码里没人读**的项，现在都接上了：
+
+- `capability_max_concurrency`（默认 4）—— 会话级并发闸门
+  （`app/capabilities/execution/concurrency.py`）。模型一次回复里的多个工具
+  调用是并行跑的，没有闸门就是一次回复起 N 个沙箱。拿不到名额排队等，
+  等不到按"执行层繁忙"失败。**进程内计数** —— 多副本部署不是全局配额。
+- `capability_approval_timeout`（默认 300s）—— 后台任务把没人处理的 pending
+  审批记录置为 `expired`。以前 `STATUS_EXPIRED` 定义了但没人用，记录就一直挂着。
+
 配置（`.env`）：
 
 ```bash
@@ -860,6 +871,7 @@ curl 'http://127.0.0.1:8000/api/v1/context/preview?query=pnpm&workspace=/tmp/ws'
 POST   /api/v1/files              上传（multipart），落进会话工作区的 uploads/
 GET    /api/v1/files              列出工作区文件
 GET    /api/v1/files/tree         列出工作区的文件**与目录**（@ 提及面板用）
+GET    /api/v1/files/archive      打包下载（整个工作区打成一个 zip）
 GET    /api/v1/files/download     按虚拟路径下载
 DELETE /api/v1/files              删除
 ```

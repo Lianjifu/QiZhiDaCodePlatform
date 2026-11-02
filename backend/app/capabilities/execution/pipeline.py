@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from app.capabilities.errors import CapabilityError, ErrorCode
 from app.capabilities.execution.adapters import get_adapter
 from app.capabilities.execution.breaker import get_breaker
+from app.capabilities.execution.concurrency import LIMITER
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.redaction import redact
 from app.capabilities.execution.result import ExecutionResult
@@ -150,6 +151,19 @@ async def execute(intent: CapabilityIntent, context: ExecutionContext) -> Execut
         return result
 
     # ---------- ⑤ 实际调用（含幂等、超时、重试） ----------
+    # **并发闸门**：模型一次回复里可以带多个工具调用，它们是并行跑的 ——
+    # 一次回复里来十个并行执行命令，就是十个沙箱同时跑。
+    # 拿不到名额就排队等，超时了按"执行层繁忙"失败（可重试）。
+    acquired = await LIMITER.acquire(intent.thread_id)
+    if not acquired:
+        error = CapabilityError(
+            f"执行层繁忙：并发已满（上限 {LIMITER.limit}），等不到名额，稍后重试",
+            code=ErrorCode.EXECUTION_ERROR,
+        )
+        stages.append(_stage("invoke", error))
+        return await _finish(
+            intent, context, stages, error, started, assessment=assessment, task=task
+        )
     try:
         result = await _invoke(intent, context)
     except CapabilityError as exc:
@@ -157,6 +171,8 @@ async def execute(intent: CapabilityIntent, context: ExecutionContext) -> Execut
         return await _finish(
             intent, context, stages, exc, started, assessment=assessment, task=task
         )
+    finally:
+        LIMITER.release(intent.thread_id)
     stages.append({"stage": "invoke", "ok": True, "duration_ms": result.duration_ms})
 
     # ---------- ⑥ 结果验证 ----------

@@ -449,3 +449,33 @@ async def test_list_endpoint_returns_files(app, client) -> None:
     data = resp.json()["data"]
     assert data["total"] >= 1
     assert data["files"][0]["uploaded"] is True
+
+
+@pytest.mark.asyncio
+async def test_archive_contains_workspace_files(app, client) -> None:
+    """打包下载：整个工作区打成一个 zip。
+
+    agent 改完一个项目有几十个文件，用户要的是"打包下载"，不是一个一个点。
+    """
+    import io
+    import zipfile
+
+    await client.post(
+        "/api/v1/files",
+        params={"thread_id": "t-archive"},
+        files={"file": ("a.txt", b"hello", "text/plain")},
+    )
+    resp = await client.get("/api/v1/files/archive", params={"thread_id": "t-archive"})
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "application/zip"
+
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        names = archive.namelist()
+    assert any(name.endswith("a.txt") for name in names), f"包里没有上传的文件：{names}"
+
+
+@pytest.mark.asyncio
+async def test_archive_of_empty_workspace_is_404(app, client) -> None:
+    """工作区是空的 —— 没有可打包的东西就明说，别给一个空包。"""
+    resp = await client.get("/api/v1/files/archive", params={"thread_id": "t-empty-archive"})
+    assert resp.status_code == 404, resp.text

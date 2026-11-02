@@ -24,6 +24,7 @@ import hashlib
 import logging
 import os
 import stat
+import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -156,6 +157,54 @@ class FileService:
             is_image=is_image(mime_type, stored),
             uploaded_at=datetime.now(UTC),
         )
+
+    # ---------- 打包下载 ----------
+
+    def build_archive(
+        self,
+        target: Path,
+        *,
+        max_file_bytes: int = 100 * 1024 * 1024,
+    ) -> tuple[int, list[str]]:
+        """把工作区打成 zip。
+
+        **只打工作区里的东西** —— 平台产物（``.artifacts/``）在工作区外面，
+        自然不会被打进去（里面有对话历史）。
+
+        单个文件超上限就跳过并记下来，**不让整个包失败** —— 用户要的是
+        "能拿走的那些"，不是"一个都别给我"。
+
+        Args:
+            target: zip 写到哪儿。
+            max_file_bytes: 单个文件的体积上限。
+
+        Returns:
+            (打进去的文件数, 被跳过的文件说明)。
+        """
+        root = self.workspace
+        skipped: list[str] = []
+        count = 0
+        with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+            if not root.exists():
+                return 0, skipped
+            for path in sorted(root.rglob("*")):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                relative = path.relative_to(root)
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                if size > max_file_bytes:
+                    skipped.append(f"{relative.as_posix()}（{human_size(size)}，超过上限）")
+                    continue
+                try:
+                    archive.write(path, arcname=relative.as_posix())
+                except OSError as exc:
+                    skipped.append(f"{relative.as_posix()}（{exc}）")
+                    continue
+                count += 1
+        return count, skipped
 
     # ---------- 读取 ----------
 

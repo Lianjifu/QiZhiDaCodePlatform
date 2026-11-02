@@ -122,6 +122,11 @@ export function downloadUrl(threadId: string, path: string): string {
   return `${API_BASE}/files/download?thread_id=${encodeURIComponent(threadId)}&path=${encodeURIComponent(path)}`
 }
 
+/** 打包下载的地址（整个工作区打成一个 zip）。 */
+export function archiveUrl(threadId: string): string {
+  return `${API_BASE}/files/archive?thread_id=${encodeURIComponent(threadId)}`
+}
+
 /** 删除文件。 */
 export function deleteFile(threadId: string, path: string): Promise<{ path: string; status: string }> {
   return api.delete<{ path: string; status: string }>(

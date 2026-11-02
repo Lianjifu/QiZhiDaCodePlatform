@@ -87,6 +87,27 @@ class InvocationRepository(BaseRepository[Invocation]):
         result = await self.session.execute(stmt)
         return result.scalars().first() is not None
 
+    async def list_stale_pending(self, deadline: datetime) -> list[Invocation]:
+        """超时没人处理的 pending 记录。
+
+        后台任务拿它把过期记录置为 ``expired`` —— 不然这些记录会一直挂着，
+        `invocation` 表一直在长。
+
+        Args:
+            deadline: 早于这个时间创建的才算超时。
+
+        Returns:
+            超时的 pending 记录。
+        """
+        stmt = (
+            select(Invocation)
+            .where(Invocation.status == "pending")
+            .where(Invocation.created_at < deadline)
+            .order_by(Invocation.id.desc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_recent(self, thread_id: str | None, *, limit: int = 20) -> list[Invocation]:
         """最近的调用记录，**按时间正序**返回。
 

@@ -18,13 +18,17 @@
 from __future__ import annotations
 
 import logging
+import tempfile
+from pathlib import Path
 from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import APIRouter, File, Query, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
+from starlette.background import BackgroundTask
 
 from app.core.config import settings
+from app.core.exceptions import AppError, NotFoundError
 from app.core.workspace import resolve_workspace
 from app.files.service import FileService
 from app.files.storage import sanitize_filename
@@ -138,6 +142,49 @@ async def list_tree(
             total=len(entries),
         )
     )
+
+
+@router.get("/archive", summary="打包下载工作区文件")
+async def download_archive(
+    thread_id: Annotated[str, Query(description="会话 ID")],
+) -> FileResponse:
+    """把工作区打成一个 zip 下载。
+
+    **为什么需要**：agent 改完一个项目有几十个文件，用户要的是"打包下载"，
+    不是一个一个点。
+
+    zip **先写到临时文件**再回传 —— 工作区可能有几百 MB，边生成边吐会让
+    整个包驻留内存。传完就删。
+
+    单个文件超上限会跳过（不影响整包），跳过了哪些会记日志。
+    """
+    service = _service(thread_id)
+    target = Path(tempfile.mkstemp(prefix="qzd-archive-", suffix=".zip")[1])
+    try:
+        count, skipped = service.build_archive(target)
+    except OSError as exc:
+        target.unlink(missing_ok=True)
+        raise AppError(f"打包失败：{exc}") from exc
+
+    for note in skipped:
+        logger.warning("打包时跳过 %s", note)
+    if count == 0:
+        target.unlink(missing_ok=True)
+        raise NotFoundError("工作区里没有可下载的文件")
+
+    return FileResponse(
+        target,
+        media_type="application/zip",
+        filename=f"{_safe_name(thread_id)}.zip",
+        # 传完删临时文件
+        background=BackgroundTask(target.unlink, missing_ok=True),
+    )
+
+
+def _safe_name(thread_id: str) -> str:
+    """给下载文件名用 —— 别把用户输入原样塞进 header。"""
+    cleaned = "".join(ch for ch in thread_id if ch.isalnum() or ch in "-_")[:40]
+    return cleaned or "workspace"
 
 
 @router.get("/download", summary="下载工作区文件")

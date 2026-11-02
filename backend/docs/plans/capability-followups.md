@@ -1,6 +1,6 @@
 # 能力层待办与已知限制
 
-> 状态：**未开始**（2026-11-01）
+> 状态：**部分已实施**（2026-11-03：B、C 已解决）
 >
 > 关联文档：[implementation/capability-module.md](../implementation/capability-module.md)（能力模块已实现部分）、
 > [memory-module.md](../implementation/memory-module.md)（记忆模块计划）、
@@ -39,40 +39,39 @@
 
 ---
 
-## B. 并发配额未生效
+## B. 并发配额未生效 —— ✅ 已解决
 
-**现状**：`capability_max_concurrency`（默认 4）**只在配置里**，`app/` 下没有任何地方读它。
+**原状**：`capability_max_concurrency`（默认 4）**只在配置里**，`app/` 下没有任何地方读它。
 执行层没有并发闸门。
 
-**影响**：一个 agent 循环理论上可以并发开很多沙箱进程。docker 模式有
-`--memory 512m --cpus 1 --pids-limit 256` 兜着，但那是**单容器限制**，不是会话级 ——
-并发开 N 个容器时，每个容器都有 512m，宿主机照样被拖垮。
+**怎么解决的**（2026-11-03）：加了一个**会话级**的并发闸门
+（`app/capabilities/execution/concurrency.py`），在执行层的调用点
+（`execution/pipeline.py` 的 ⑤ 实际调用）拿名额：
 
-**打算怎么做**：在执行层的调用点（`execution/pipeline.py` 的 `_invoke`）加一个
-**会话级信号量**，上限取 `capability_max_concurrency`；拿不到名额时排队等待，
-排队超时按"执行层繁忙"失败类型处理（可重试）。沙箱容器本身另加一个全局上限，
-避免会话数 × 单会话并发同时打满。
+- 上限取 `capability_max_concurrency`，**按会话限**（一个会话占满名额不挡别的会话）；
+- 拿不到名额就**排队等**，等 `capability_concurrency_wait_seconds`（默认 30s）；
+- 等不到就按"执行层繁忙"失败（可重试），不硬等。
 
-**前置**：无。
-**风险**：低。语义量是进程内的 —— 多副本部署时每个副本各自计数，**不是全局配额**。
-如果之后要跨副本限流，得换成 Redis 之类的共享计数。
+回归测试在 `tests/test_concurrency.py`。
+
+**遗留**：语义量是**进程内**的 —— 多副本部署时每个副本各自计数，**不是全局配额**。
+要跨副本限流得换成 Redis 之类的共享计数。沙箱容器本身也还没有全局上限
+（会话数 × 单会话并发仍可能打满宿主机）。
 
 ---
 
-## C. 审批无自动过期
+## C. 审批无自动过期 —— ✅ 已解决
 
-**现状**：`capability_approval_timeout`（默认 300s）**只在配置里**，没有后台任务去扫
+**原状**：`capability_approval_timeout`（默认 300s）**只在配置里**，没有后台任务去扫
 `pending` 记录。
 
-**影响**：无人处理的审批记录会一直挂着，占着 `invocation` 表；调用方也永远等不到
-一个明确的"过期"答复。
+**怎么解决的**（2026-11-03）：启动时起了个后台任务（`app/main.py` 的
+`_expire_stale_approvals`），周期性扫描超时的 pending 记录，置为 `expired`
+（`STATUS_EXPIRED` 以前定义了但没人用）。周期取超时时间的一半。
 
-**打算怎么做**：加一个轻量后台任务（启动时起的 asyncio 周期任务，或独立的
-APScheduler / cron）扫描超时的 pending 记录，置为 `expired` 并通知调用方。
-结果回流的通知逻辑要认这个新状态 —— 现在只有"已决定"才通知。
-
-**前置**：无。
-**风险**：低。
+**遗留**：只覆盖**调用记录表**里那条路。图中断（deepAgents 的 HITL）那条路
+的挂起状态在 checkpoint 里，不在调用记录表里 —— 那条路靠会话被删除或
+`/clear` 清理，不会自动过期。
 
 ---
 

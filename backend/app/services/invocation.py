@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -198,8 +198,53 @@ class InvocationService:
         return workspace
 
 
-def _to_out(record: Invocation) -> InvocationOut:
-    return InvocationOut(
+async def expire_stale_approvals(
+    *,
+    timeout_seconds: int | None = None,
+    session: AsyncSession | None = None,
+) -> int:
+    """把没人处理的审批记录置为「已过期」。
+
+    平台里没有"人一定会回来看"这回事 —— 一条 pending 记录挂在那里，
+    `invocation` 表就一直在长，调用方也等不到一个明确的答复。
+
+    Args:
+        timeout_seconds: 超过多久算过期；不给就用配置里的。
+        session: 用哪个数据库会话；不给就自己开一个（后台任务那样）。
+
+    Returns:
+        置为过期的记录数。
+    """
+    from app.db.session import SessionLocal
+    from app.models.invocation import STATUS_EXPIRED
+
+    limit = timeout_seconds if timeout_seconds is not None else settings.capability_approval_timeout
+    if limit <= 0:
+        return 0
+    deadline = datetime.now(UTC) - timedelta(seconds=limit)
+
+    if session is not None:
+        return await _expire(session, deadline, limit)
+    async with SessionLocal() as own:
+        return await _expire(own, deadline, limit)
+
+
+async def _expire(session: AsyncSession, deadline: datetime, limit: int) -> int:
+    """把过期的 pending 记录置为 expired。"""
+    from app.models.invocation import STATUS_EXPIRED
+
+    repo = InvocationRepository(session)
+    stale = await repo.list_stale_pending(deadline)
+    for record in stale:
+        record.status = STATUS_EXPIRED
+        record.decided_at = datetime.now(UTC)
+        record.error_message = f"超过 {limit} 秒没人处理，自动过期"
+    if stale:
+        await session.commit()
+    return len(stale)
+
+
+def _to_out(record: Invocation) -> InvocationOut:    return InvocationOut(
         id=record.id,
         thread_id=record.thread_id,
         capability_key=record.capability_key,
@@ -219,4 +264,4 @@ def _to_out(record: Invocation) -> InvocationOut:
     )
 
 
-__all__ = ["InvocationService"]
+__all__ = ["InvocationService", "expire_stale_approvals"]

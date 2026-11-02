@@ -119,6 +119,8 @@ class Settings(BaseSettings):
     capability_approval_timeout: int = 300
     # 单会话并发执行上限
     capability_max_concurrency: int = 4
+    # 等并发名额的最长时间（秒）—— 超了按"执行层繁忙"失败，可重试
+    capability_concurrency_wait_seconds: float = 30.0
     # 能力没声明重试策略时的兜底
     capability_retry_max_attempts: int = 1
     # 额外的脱敏正则（逗号分隔）

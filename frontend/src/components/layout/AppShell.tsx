@@ -99,7 +99,9 @@ export default function AppShell() {
           {MODULES.map((item) => (
             <NavLink
               key={item.to}
-              to={item.to}
+              // 文件是按会话隔离的 —— 从会话里点「文件」要把当前会话带过去，
+              // 不然看到的是另一个会话的工作区
+              to={item.to === '/files' && activeThread ? `/files?thread=${activeThread}` : item.to}
               end={item.to === '/chat'}
               className={({ isActive }) =>
                 [
