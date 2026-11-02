@@ -495,6 +495,9 @@ async def _finish(
     async with context.db():
         session.add(record)
         await session.flush()
+        # 每条记录自己提交 —— 用户中途「停止」时整轮的提交不会执行，
+        # 调用记录不该跟着消失（它是对"跑过什么"的留痕）。
+        await session.commit()
     result.invocation_id = record.id
     return result
 

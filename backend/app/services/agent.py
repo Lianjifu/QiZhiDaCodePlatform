@@ -24,17 +24,24 @@ from app.agents.status import (
     collect_outputs,
     sum_changes,
 )
+from app.agents.tasks import REGISTRY
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.registration.registry import CapabilityRegistry
 from app.capabilities.registration.spec import KIND_MCP, KIND_TOOL, SOURCE_MCP, CapabilitySpec
 from app.context.budget import FALLBACK_CONTEXT_WINDOW
+from app.context.compaction import TRIGGER_FRACTION
 from app.core.config import settings
 from app.core.exceptions import AgentError, AppError, NotFoundError, ValidationError
 from app.core.workspace import resolve_workspace
 from app.repositories.invocation import InvocationRepository
 from app.repositories.llm_provider import LLMProviderRepository
 from app.repositories.mcp_server import MCPServerRepository
-from app.schemas.agent import AgentHistoryOut, AgentStreamChunk, SessionStatusOut
+from app.schemas.agent import (
+    AgentHistoryOut,
+    AgentStreamChunk,
+    RunningTaskOut,
+    SessionStatusOut,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,16 +61,18 @@ def _readable_error(exc: Exception) -> str:
     return f"智能体执行失败：{text or exc.__class__.__name__}"
 
 
-def _specs_text(specs: list[CapabilitySpec]) -> tuple[str, str]:
-    """能力声明里的工具定义与 MCP 工具定义（两段文本）。
+def _specs_text(specs: list[CapabilitySpec]) -> tuple[str, str, list[str]]:
+    """能力声明里的工具定义、MCP 工具定义、以及 MCP 工具的名字。
 
     只量"模型看到的那部分"：名字、描述、参数 schema。
     **不构造真正的工具** —— 那要去连 MCP 服务器，面板不该等它。
     """
     tools: list[str] = []
     mcp: list[str] = []
+    mcp_items: list[str] = []
     for spec in specs:
         if spec.kind == KIND_MCP:
+            mcp_items.append(spec.key)
             mcp.append(
                 "\n".join(
                     [
@@ -85,7 +94,7 @@ def _specs_text(specs: list[CapabilitySpec]) -> tuple[str, str]:
                 ]
             )
         )
-    return "\n".join(tools), "\n".join(mcp)
+    return "\n".join(tools), "\n".join(mcp), mcp_items
 
 
 def _status_system_prompt(workspace: Path, specs: list[CapabilitySpec]) -> str:
@@ -126,15 +135,15 @@ def _skills_text(workspace: Path) -> str:
     return "\n".join(parts)
 
 
-def _memory_text(workspace: Path) -> str:
-    """记忆文件（工作区里的 ``AGENTS.md``）。"""
+def _memory_text(workspace: Path) -> tuple[str, list[str]]:
+    """记忆文件（工作区里的 ``AGENTS.md``）与它们的名字。"""
     path = Path(workspace) / MEMORY_FILE
     if not path.exists():
-        return ""
+        return "", []
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        return path.read_text(encoding="utf-8", errors="replace"), [MEMORY_FILE]
     except OSError:  # pragma: no cover
-        return ""
+        return "", []
 
 
 class AgentService:
@@ -272,7 +281,10 @@ class AgentService:
             try:
                 specs = await self.load_capabilities()
                 context = await self._build_context(workspace, specs, thread_id)
-                runner = self._make_runner(checkpointer, None)
+                # **把数据库里配的模型传进去** —— 只读接口也要建图才能读 checkpoint，
+                # 而建图必须有模型。不传的话它退回环境变量，`.env` 里没配
+                # LLM_API_KEY 时这两个接口就整片 500。
+                runner = self._make_runner(checkpointer, await self._resolve_model(None))
                 return await runner.pending_approvals(
                     thread_id,
                     workspace,
@@ -338,7 +350,8 @@ class AgentService:
             try:
                 specs = await self.load_capabilities()
                 context = await self._build_context(workspace, specs, thread_id)
-                runner = self._make_runner(checkpointer, None)
+                # 同 pending_approvals：把数据库里配的模型传进去，别退回环境变量
+                runner = self._make_runner(checkpointer, await self._resolve_model(None))
                 messages = await runner.history(
                     thread_id,
                     workspace,
@@ -377,7 +390,8 @@ class AgentService:
             try:
                 specs = await self.load_capabilities()
                 context = await self._build_context(workspace, specs, thread_id)
-                runner = self._make_runner(checkpointer, None)
+                # 同 history：把数据库里配的模型传进去
+                runner = self._make_runner(checkpointer, await self._resolve_model(None))
 
                 provider = await self._default_provider()
                 model_name = provider.default_model if provider else settings.llm_model
@@ -386,20 +400,24 @@ class AgentService:
                 model = await self._resolve_model(None)
                 limit = model_window(model) or int(getattr(provider, "context_window", 0) or 0)
 
-                history = await runner.history(
-                    thread_id, workspace, specs=specs, context=context
-                )
+                history = await self._history_for_status(runner, thread_id, workspace, specs, context)
                 messages_text = "\n".join(item.content for item in history)
 
-                tools_text, mcp_text = _specs_text(specs)
+                tools_text, mcp_text, mcp_items = _specs_text(specs)
+                memory_text, memory_items = _memory_text(workspace)
+                window = limit or FALLBACK_CONTEXT_WINDOW
                 usage = build_context_usage(
-                    limit=limit or FALLBACK_CONTEXT_WINDOW,
+                    limit=window,
                     messages_text=messages_text,
                     system_prompt=_status_system_prompt(workspace, specs),
                     tools_text=tools_text,
                     mcp_text=mcp_text,
                     skills_text=_skills_text(workspace),
-                    memory_text=_memory_text(workspace),
+                    memory_text=memory_text,
+                    mcp_items=mcp_items,
+                    memory_items=memory_items,
+                    # 压缩缓冲：窗口用到 85% 就触发压缩，那 15% 得一直空着
+                    buffer_tokens=int(window * (1 - TRIGGER_FRACTION)),
                 )
 
                 providers: list[Any] = []
@@ -412,6 +430,7 @@ class AgentService:
                         thread_id, limit=500
                     )
 
+                running, finished = REGISTRY.snapshot(thread_id)
                 return build_status(
                     thread_id=thread_id,
                     environment=build_environment(
@@ -425,6 +444,15 @@ class AgentService:
                     outputs=collect_outputs(workspace),
                     changes=sum_changes(records),
                     connectors=build_connectors(providers=providers, mcp_servers=servers),
+                    tasks=[
+                        RunningTaskOut(
+                            tool=item.tool,
+                            detail=item.detail,
+                            elapsed_ms=item.elapsed_ms,
+                        )
+                        for item in running
+                    ],
+                    finished_tasks=finished,
                 )
             except AppError:
                 raise
@@ -437,6 +465,27 @@ class AgentService:
         if self.session is None:
             return None
         return await LLMProviderRepository(self.session).get_default()
+
+    async def _history_for_status(
+        self,
+        runner,
+        thread_id: str,
+        workspace: Path,
+        specs,
+        context,
+    ) -> list:
+        """读历史给状态面板用。
+
+        **读不到就当没有** —— 面板上的「对话消息」这一项偏小，
+        总比整个接口 500 强（没配模型时就是这样：建图要模型）。
+        """
+        try:
+            return await runner.history(
+                thread_id, workspace, specs=specs, context=context
+            )
+        except Exception as exc:
+            logger.warning("读会话历史失败（状态面板的消息数会偏小）: %s", exc)
+            return []
 
     async def stream(
         self,
@@ -470,12 +519,14 @@ class AgentService:
                 # 执行层写的调用记录要落库
                 if self.session is not None:
                     await self.session.commit()
-            except AppError:
-                raise
             except Exception as exc:
                 # SSE 一旦开始推数据就改不了 HTTP 状态码了，只能把错误作为一帧推出去。
                 # 必须是 AgentStreamChunk —— 端点会调 model_dump_json()，塞裸字符串会炸，
                 # 流直接断在半路，前端就永远停在「思考中…」。
+                #
+                # **AppError 也走这里**：供应商配置不存在、已停用这些是"用户请求
+                # 不对"，但它们照样发生在流已经开始之后 —— 直接抛出去的话连接断掉，
+                # 前端既收不到 error 帧也收不到 done 帧，界面上只剩一个空气泡。
                 logger.exception("agent 流式执行失败 thread_id=%s", thread_id)
                 message = _readable_error(exc)
                 yield AgentStreamChunk(type="error", error=message, text=message)

@@ -428,7 +428,7 @@ class AgentRunner:
             # 抛一次"未配置长期记忆集合"，日志全是它。
             long_term = None
             if settings.memory_collection_name:
-                long_term = LongTermMemoryStore(context.session)
+                long_term = LongTermMemoryStore(context.session, lock=context.db_lock)
 
             service = MemoryService(
                 session=context.session,
@@ -811,7 +811,9 @@ async def _attach_summaries(
     摘要**从调用记录来**，不从工具消息来 —— deepAgents 的工具消息没有我们那套
     artifact 结构，而调用记录是唯一事实来源（执行层与治理中间件都往里写）。
 
-    记录与调用按顺序对上：这一轮的最后 N 条记录就是这一轮的 N 次调用。
+    **按"工具名 + 参数"配对，不按顺序** —— 工具是并行跑的，记录按**完成**
+    顺序写，调用按**模型给的**顺序；两者对不上时按顺序配就会张冠李戴
+    （A 工具的成功被贴到 B 工具上）。
     """
     if not tool_calls or context is None or context.session is None:
         return
@@ -819,16 +821,40 @@ async def _attach_summaries(
     from app.repositories.invocation import InvocationRepository
 
     repo = InvocationRepository(context.session)
-    records = await repo.list_recent(thread_id, limit=len(tool_calls))
-    if len(records) < len(tool_calls):
+    # 多取一些：这一轮的实际调用数可能跟模型给的不一样（重试、失败在记录之前）
+    records = await repo.list_recent(thread_id, limit=max(len(tool_calls) * 3, 10))
+    if not records:
         return
-    for call, record in zip(tool_calls, records[-len(tool_calls) :], strict=False):
+
+    unused = list(records)
+    for call in tool_calls:
+        record = _match_record(call, unused)
+        if record is None:
+            continue
+        unused.remove(record)
         call["invocation_id"] = record.id
         call["ok"] = record.status == "succeeded"
         call["status"] = record.status
         call["error_code"] = record.error_code
         call["duration_ms"] = record.duration_ms
         call["blocked"] = record.status == "blocked"
+
+
+def _match_record(call: dict[str, Any], candidates: list[Any]) -> Any | None:
+    """给一次工具调用找对应的调用记录。
+
+    优先级：工具名与参数都对上 > 只工具名对得上 > 兜底按顺序拿一条。
+    """
+    name = str(call.get("name") or "")
+    args = call.get("args") or {}
+    same_name = [item for item in candidates if item.capability_key == name]
+    if not same_name:
+        return candidates[0] if candidates else None
+    for item in same_name:
+        payload = item.payload if isinstance(item.payload, dict) else {}
+        if payload == args:
+            return item
+    return same_name[0]
 
 
 __all__ = [

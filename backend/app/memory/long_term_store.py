@@ -36,7 +36,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.locking import TaskLock
 from app.memory.models import SCOPE_LONG_TERM, SOURCE_USER, MemoryEntry, ensure_utc
+from app.memory.session_store import serialized
 from app.rag.models import RagDocument
 
 
@@ -45,19 +47,27 @@ class LongTermMemoryStore:
 
     scope = SCOPE_LONG_TERM
 
-    def __init__(self, session: AsyncSession, collection_name: str | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        collection_name: str | None = None,
+        lock: TaskLock | None = None,
+    ) -> None:
         """构造存储。
 
         Args:
             session: 数据库会话。
             collection_name: 记忆集合名；不给就用配置里的。
+            lock: 数据库锁 —— 工具并行跑时，长期记忆的读写要跟别的工具串行。
         """
         self.session = session
         self.collection_name = (collection_name or settings.memory_collection_name or "").strip()
+        self._lock = lock
         self._collection_id: int | None = None
 
     # ---------- 集合 ----------
 
+    @serialized
     async def collection_id(self) -> int:
         """取记忆集合的 id。
 
@@ -82,6 +92,7 @@ class LongTermMemoryStore:
 
     # ---------- 写 ----------
 
+    @serialized
     async def add(self, entry: MemoryEntry) -> str:
         """写入一条记忆（入库成一篇文档）。"""
         collection_id = await self.collection_id()
@@ -118,6 +129,7 @@ class LongTermMemoryStore:
 
     # ---------- 读 ----------
 
+    @serialized
     async def get(self, item_id: str) -> MemoryEntry | None:
         """取一条记忆的全文。"""
         document_id = _parse_id(item_id)
@@ -130,6 +142,7 @@ class LongTermMemoryStore:
             return None
         return _to_entry(document)
 
+    @serialized
     async def search(self, query: str, top_k: int, **_: object) -> list[MemoryEntry]:
         """混合检索（向量 + 关键词）。
 
@@ -175,6 +188,7 @@ class LongTermMemoryStore:
             entries.append(entry)
         return entries[:top_k]
 
+    @serialized
     async def list_all(self, limit: int = 100) -> list[MemoryEntry]:
         """列出集合里的全部记忆。"""
         collection_id = await self.collection_id()
@@ -188,6 +202,7 @@ class LongTermMemoryStore:
 
     # ---------- 更新 / 删除 ----------
 
+    @serialized
     async def touch(self, item_id: str) -> None:
         """命中即重新激活：使用次数 +1，刷新最后召回时间。"""
         document_id = _parse_id(item_id)
@@ -202,6 +217,7 @@ class LongTermMemoryStore:
         document.meta = meta
         await self.session.flush()
 
+    @serialized
     async def supersede(self, item_id: str) -> bool:
         """标记一条记忆已被取代（不删除，只是不再参与召回）。"""
         document_id = _parse_id(item_id)
@@ -217,6 +233,7 @@ class LongTermMemoryStore:
         await self.session.flush()
         return True
 
+    @serialized
     async def forget(self, item_id: str) -> bool:
         """删除一条记忆。"""
         document_id = _parse_id(item_id)

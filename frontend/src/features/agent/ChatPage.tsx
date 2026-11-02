@@ -35,8 +35,13 @@ export default function ChatPage() {
   const threadId = routeThreadId ?? draftThreadId
 
   const loadedRef = useRef<string>('')
-  /** 本次挂载期间已经流式聊过的会话 —— 别用历史覆盖它们的现场状态 */
-  const streamedRef = useRef<Set<string>>(new Set())
+  /**
+   * **正在流式的那个会话**（只有这一个）。
+   *
+   * 以前是个"流过的会话"的集合，永远不清 —— 结果切回一个流过的会话时，
+   * 历史加载被跳过，屏幕上留着**别的会话**的对话。
+   */
+  const streamingThreadRef = useRef<string | null>(null)
   /** 上一次的路由会话 —— 用来发现「从某个会话退回 /chat」 */
   const prevRouteRef = useRef<string | undefined>(routeThreadId)
 
@@ -52,10 +57,14 @@ export default function ChatPage() {
       if (prev) setDraftThreadId(newThreadId())
       return
     }
+    // 切走了就别让旧会话的流继续写 —— 它会把文本贴到**现在这个**会话上
+    if (streamingThreadRef.current && streamingThreadRef.current !== routeThreadId) {
+      chat.abort()
+    }
     if (loadedRef.current === routeThreadId) return
     // 这个会话的消息正在屏幕上流着呢 —— 拉历史会把它冲掉
     // （待批卡片、进行中的工具块都在流里，历史里没有）。
-    if (streamedRef.current.has(routeThreadId)) return
+    if (streamingThreadRef.current === routeThreadId) return
     loadedRef.current = routeThreadId
     void chat.loadHistory(routeThreadId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -107,13 +116,16 @@ export default function ChatPage() {
 
   const send = async (text: string, attachments: string[], providerId: number | null) => {
     const isNew = !routeThreadId
-    streamedRef.current.add(threadId)
-    await chat.send(text, threadId, { attachments, providerId })
+    streamingThreadRef.current = threadId
+    // **先建会话、先跳路由，别等流跑完** —— 流式期间侧栏看不到这个会话，
+    // 用户这时刷新页面，draft id 会重新随机生成，后端的 checkpoint 就成了孤儿，
+    // 再也进不来了。
     touch(threadId, titleFromMessage(text))
     if (isNew) {
-      // 第一条消息发完，把会话固定到路由上（刷新还能回到这儿）
       navigate(`/chat/${threadId}`, { replace: true })
     }
+    await chat.send(text, threadId, { attachments, providerId })
+    streamingThreadRef.current = null
   }
 
   const scrollRef = useRef<HTMLDivElement>(null)

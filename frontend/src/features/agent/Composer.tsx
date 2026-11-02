@@ -61,7 +61,18 @@ export default forwardRef<ComposerHandle, {
   ref,
 ) {
   const [text, setText] = useState('')
-  const [attachments, setAttachments] = useState<Attachment[]>([])
+  /**
+   * 附件**记着它是在哪个会话上传的**。
+   *
+   * 附件落在会话工作区里 —— 带着上一个会话的附件去另一个会话发，后端
+   * stat 不到那个路径，会静默跳过，图片就这么没了（用户还以为发出去了）。
+   * 记着会话号，换会话时自然就看不见它们了。
+   */
+  const [attachments, setAttachments] = useState<{ threadId: string; items: Attachment[] }>({
+    threadId,
+    items: [],
+  })
+  const visibleAttachments = attachments.threadId === threadId ? attachments.items : []
   const [uploading, setUploading] = useState(false)
   const [providers, setProviders] = useState<LLMProvider[]>([])
   const [providerId, setProviderId] = useState<number | null>(null)
@@ -202,11 +213,16 @@ export default forwardRef<ComposerHandle, {
     const element = textareaRef.current
     const caret = element?.selectionStart ?? text.length
     const char = kind === 'slash' ? '/' : '@'
-    setText(text.slice(0, caret) + char + text.slice(caret))
-    setTrigger({ kind, query: '', start: caret, end: caret + 1 })
+    // **触发符前面得是词的开头** —— 识别规则看的是"光标所在的词"，
+    // 在词中间插一个 @ 的话，下一次输入算出来的词不以 @ 开头，面板秒关。
+    const before = caret > 0 ? text[caret - 1] : ''
+    const needsSpace = before !== '' && !/\s/.test(before)
+    const insert = needsSpace ? ` ${char}` : char
+    setText(text.slice(0, caret) + insert + text.slice(caret))
+    setTrigger({ kind, query: '', start: caret + (needsSpace ? 1 : 0), end: caret + insert.length })
     setActiveIndex(0)
     if (kind === 'mention') openMention()
-    focusCaret(caret + 1)
+    focusCaret(caret + insert.length)
   }
 
   const runAction = (action: string) => {
@@ -250,7 +266,7 @@ export default forwardRef<ComposerHandle, {
 
   const submit = async () => {
     if (!canSend) return
-    const merged = [...attachments]
+    const merged = [...visibleAttachments]
     const paths = merged.map((item) => item.path)
     // 正文里 @ 到的图片，自动带成附件 —— 模型这一轮才看得见
     const mentioned = mentionedPaths(text)
@@ -271,31 +287,40 @@ export default forwardRef<ComposerHandle, {
     }
     onSend(text, paths, providerId)
     setText('')
-    setAttachments([])
+    setAttachments({ threadId, items: [] })
     setTrigger(null)
   }
 
   const pickFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return
     setUploading(true)
+    const failed: string[] = []
     try {
       for (const file of Array.from(files)) {
-        const uploaded = await uploadFile(threadId, file)
-        setAttachments((prev) => [
-          ...prev,
-          {
+        try {
+          const uploaded = await uploadFile(threadId, file)
+          const item: Attachment = {
             path: uploaded.path,
             filename: uploaded.original_name || uploaded.filename,
             size: uploaded.size,
             isImage: uploaded.is_image,
-          },
-        ])
+          }
+          setAttachments((prev) => ({
+            threadId,
+            items: prev.threadId === threadId ? [...prev.items, item] : [item],
+          }))
+        } catch (cause) {
+          // **一个失败不挡后面的** —— 之前直接 break 出循环，剩下的文件
+          // 悄悄就没了，用户还以为都传上去了。
+          failed.push(`${file.name}：${cause instanceof Error ? cause.message : String(cause)}`)
+        }
       }
-    } catch (cause) {
-      window.alert(`上传失败：${cause instanceof Error ? cause.message : String(cause)}`)
     } finally {
       setUploading(false)
       if (fileRef.current) fileRef.current.value = ''
+    }
+    if (failed.length > 0) {
+      window.alert(`有 ${failed.length} 个文件没传上去：\n${failed.join('\n')}`)
     }
   }
 
@@ -319,14 +344,19 @@ export default forwardRef<ComposerHandle, {
         return
       }
       if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
-        event.preventDefault()
-        if (trigger.kind === 'slash') {
-          const command = filteredCommands[activeIndex]
-          if (command) selectCommand(command)
-        } else {
-          const entry = filteredEntries[activeIndex]
-          if (entry) selectEntry(entry)
+        // **没有匹配项时照常发送** —— 否则输入「/不存在」之后回车永远发不出去，
+        // 用户得先把触发符删掉才能发这条消息。
+        const picked =
+          trigger.kind === 'slash' ? filteredCommands[activeIndex] : filteredEntries[activeIndex]
+        if (!picked) {
+          setTrigger(null)
+          event.preventDefault()
+          void submit()
+          return
         }
+        event.preventDefault()
+        if (trigger.kind === 'slash') selectCommand(picked as SlashCommand)
+        else selectEntry(picked as WorkspaceFile)
         return
       }
     }
@@ -370,9 +400,9 @@ export default forwardRef<ComposerHandle, {
               : 'shadow-[0_6px_24px_-16px_oklch(0_0_0/0.24)]',
           ].join(' ')}
         >
-          {attachments.length > 0 && (
+          {visibleAttachments.length > 0 && (
             <div className="flex flex-wrap gap-2 px-3 pt-3">
-              {attachments.map((item) => (
+              {visibleAttachments.map((item) => (
                 <span
                   key={item.path}
                   className="flex items-center gap-1.5 rounded-lg bg-sunken px-2 py-1 text-xs text-ink-muted"
@@ -382,7 +412,10 @@ export default forwardRef<ComposerHandle, {
                   <button
                     type="button"
                     onClick={() =>
-                      setAttachments((prev) => prev.filter((entry) => entry.path !== item.path))
+                      setAttachments((prev) => ({
+                        threadId,
+                        items: prev.items.filter((entry) => entry.path !== item.path),
+                      }))
                     }
                     className="text-ink-faint hover:text-ink"
                   >

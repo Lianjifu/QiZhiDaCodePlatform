@@ -24,6 +24,9 @@ import {
 
 const STORAGE_KEY = 'qzd.sessions'
 
+/** 默认标题。消息标题只覆盖它，不覆盖用户自己起的名字。 */
+const DEFAULT_TITLE = '新会话'
+
 export interface SessionMeta {
   threadId: string
   /** 标题（取第一条用户消息的前若干字） */
@@ -61,7 +64,7 @@ export function newThreadId(): string {
 /** 从用户输入里取标题。 */
 export function titleFromMessage(message: string): string {
   const firstLine = message.trim().split('\n')[0] ?? ''
-  return firstLine.slice(0, 30) || '新会话'
+  return firstLine.slice(0, 30) || DEFAULT_TITLE
 }
 
 interface SessionsValue {
@@ -87,7 +90,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     writeAll(sessions)
   }, [sessions])
 
-  const create = useCallback((title = '新会话'): string => {
+  const create = useCallback((title = DEFAULT_TITLE): string => {
     const threadId = newThreadId()
     setSessions((prev) => [
       { threadId, title, pinned: false, updatedAt: Date.now() },
@@ -101,7 +104,12 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       const existing = prev.find((item) => item.threadId === threadId)
       const next: SessionMeta = {
         threadId,
-        title: title ?? existing?.title ?? '新会话',
+        // **用户改过的标题不覆盖** —— 只有默认的「新会话」才让消息标题顶掉它。
+        // 否则每发一条消息，用户起的名字就被冲回第一条消息的内容。
+        title:
+          existing && existing.title !== DEFAULT_TITLE
+            ? existing.title
+            : (title ?? existing?.title ?? DEFAULT_TITLE),
         pinned: existing?.pinned ?? false,
         updatedAt: Date.now(),
       }

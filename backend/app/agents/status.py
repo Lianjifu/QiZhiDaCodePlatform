@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ from app.schemas.agent import (
     ContextUsageOut,
     EnvironmentOut,
     OutputFileOut,
+    RunningTaskOut,
     SessionStatusOut,
 )
 
@@ -90,6 +92,9 @@ def build_context_usage(
     mcp_text: str,
     skills_text: str,
     memory_text: str,
+    mcp_items: list[str] | None = None,
+    memory_items: list[str] | None = None,
+    buffer_tokens: int = 0,
 ) -> ContextUsageOut:
     """把各部分的体量拼成上下文占用。
 
@@ -101,17 +106,22 @@ def build_context_usage(
         mcp_text: MCP 工具定义。
         skills_text: 技能正文。
         memory_text: 记忆文件正文。
+        mcp_items: 每个 MCP 工具的名字（面板上可展开）。
+        memory_items: 每个记忆文件的名字（面板上可展开）。
+        buffer_tokens: 压缩缓冲（窗口用到这个比例就触发压缩，那段空间一直空着）。
 
     Returns:
         上下文占用（含明细与剩余空间）。
     """
     raw = [
-        ("messages", "对话消息", estimate_tokens(messages_text)),
-        ("system_prompt", "系统提示词", estimate_tokens(system_prompt)),
-        ("tools", "工具定义", estimate_tokens(tools_text)),
-        ("mcp_tools", "MCP 工具", estimate_tokens(mcp_text)),
-        ("skills", "技能", estimate_tokens(skills_text)),
-        ("memory", "记忆文件", estimate_tokens(memory_text)),
+        ("messages", "对话消息", estimate_tokens(messages_text), []),
+        ("system_prompt", "系统提示词", estimate_tokens(system_prompt), []),
+        ("tools", "工具定义", estimate_tokens(tools_text), []),
+        ("mcp_tools", "MCP 工具", estimate_tokens(mcp_text), list(mcp_items or [])),
+        ("skills", "技能", estimate_tokens(skills_text), []),
+        ("memory", "记忆文件", estimate_tokens(memory_text), list(memory_items or [])),
+        # 压缩缓冲：窗口用到 85% 就触发压缩 —— 那 15% 得一直空着
+        ("autocompact", "压缩缓冲", buffer_tokens, []),
     ]
     used = sum(item[2] for item in raw)
     parts = [
@@ -120,8 +130,9 @@ def build_context_usage(
             label=label,
             tokens=tokens,
             percent=_percent(tokens, limit),
+            items=items,
         )
-        for key, label, tokens in raw
+        for key, label, tokens, items in raw
         if tokens > 0
     ]
     return ContextUsageOut(
@@ -235,6 +246,8 @@ def build_status(
     outputs: list[OutputFileOut],
     changes: ChangesOut,
     connectors: list[ConnectorOut],
+    tasks: list[RunningTaskOut] | None = None,
+    finished_tasks: int = 0,
 ) -> SessionStatusOut:
     """把各部分拼成会话状态。"""
     return SessionStatusOut(
@@ -244,6 +257,9 @@ def build_status(
         outputs=outputs,
         changes=changes,
         connectors=connectors,
+        tasks=list(tasks or []),
+        finished_tasks=finished_tasks,
+        updated_at=datetime.now(UTC).isoformat(),
     )
 
 

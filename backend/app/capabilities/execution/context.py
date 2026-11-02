@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.core.config import settings
+from app.core.locking import TaskLock
 from app.models.mcp_server import MCPServer
 
 if TYPE_CHECKING:  # pragma: no cover - 只用于类型标注
@@ -64,7 +65,10 @@ class ExecutionContext:
     #
     # 锁只护住**数据库操作**（查、写、flush），不护工具本身的执行 ——
     # 沙箱里跑命令那几十秒不能被锁住，不然并行就白并行了。
-    db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    #
+    # 用可重入的锁：记忆的写入会层层调用（写 → 取集合 id → 写），
+    # 不可重入的锁在那里会死锁。
+    db_lock: TaskLock = field(default_factory=TaskLock)
 
     @asynccontextmanager
     async def db(self) -> AsyncIterator[None]:

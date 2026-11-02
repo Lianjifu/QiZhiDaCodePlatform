@@ -198,6 +198,10 @@ class ContextPartOut(BaseModel):
     label: str = Field(description="显示名")
     tokens: int = Field(default=0, description="占用多少 token（估算）")
     percent: float = Field(default=0, description="占整个窗口的百分比")
+    items: list[str] = Field(
+        default_factory=list,
+        description="这一块具体是什么（可展开的明细，如每个 MCP 工具、每个记忆文件）",
+    )
 
 
 class ContextUsageOut(BaseModel):
@@ -245,6 +249,14 @@ class ConnectorOut(BaseModel):
     detail: str = Field(default="", description="补充说明")
 
 
+class RunningTaskOut(BaseModel):
+    """一个正在跑的工具调用。"""
+
+    tool: str = Field(default="", description="工具名")
+    detail: str = Field(default="", description="在干什么（命令、路径…）")
+    elapsed_ms: int = Field(default=0, description="已经跑了多久（毫秒）")
+
+
 class SessionStatusOut(BaseModel):
     """一个会话的当前状态。
 
@@ -257,3 +269,6 @@ class SessionStatusOut(BaseModel):
     outputs: list[OutputFileOut] = Field(default_factory=list, description="产出与上传件")
     changes: ChangesOut = Field(default_factory=ChangesOut)
     connectors: list[ConnectorOut] = Field(default_factory=list, description="接进来的东西")
+    tasks: list[RunningTaskOut] = Field(default_factory=list, description="正在跑的工具调用")
+    finished_tasks: int = Field(default=0, description="这个会话跑完过多少个工具调用")
+    updated_at: str = Field(default="", description="这份状态是什么时候读的")

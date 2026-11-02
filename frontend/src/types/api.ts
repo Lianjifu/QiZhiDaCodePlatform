@@ -159,6 +159,8 @@ export interface ContextPart {
   label: string
   tokens: number
   percent: number
+  /** 可展开的明细（每个 MCP 工具、每个记忆文件） */
+  items?: string[]
 }
 
 /** 上下文窗口用了多少（后端 `ContextUsageOut`）。**估算值，不是精确 token 数。 */
@@ -201,6 +203,13 @@ export interface Connector {
   detail: string
 }
 
+/** 一个正在跑的工具调用（后端 `RunningTaskOut`）。 */
+export interface RunningTask {
+  tool: string
+  detail: string
+  elapsed_ms: number
+}
+
 /** 会话状态（后端 `SessionStatusOut`）。 */
 export interface SessionStatus {
   thread_id: string
@@ -209,6 +218,12 @@ export interface SessionStatus {
   outputs: OutputFile[]
   changes: SessionChanges
   connectors: Connector[]
+  /** 正在跑的工具调用 */
+  tasks: RunningTask[]
+  /** 这个会话跑完过多少个工具调用 */
+  finished_tasks: number
+  /** 这份状态是什么时候读的 */
+  updated_at: string
 }
 
 // ---------- 模型接入配置 ----------

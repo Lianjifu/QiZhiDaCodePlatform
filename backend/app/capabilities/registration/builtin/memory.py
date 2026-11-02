@@ -47,7 +47,7 @@ def _service(context: ExecutionContext) -> MemoryService:
     if context.session is not None and _long_term_configured():
         from app.memory.long_term_store import LongTermMemoryStore
 
-        long_term = LongTermMemoryStore(context.session)
+        long_term = LongTermMemoryStore(context.session, lock=context.db_lock)
     return MemoryService(
         session=context.session,
         thread_id=context.thread_id,

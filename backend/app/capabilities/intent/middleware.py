@@ -38,6 +38,7 @@ from langchain.agents.middleware.types import AgentMiddleware, ModelRequest
 from langchain_core.messages import SystemMessage, ToolMessage
 from langgraph.types import interrupt
 
+from app.agents.tasks import REGISTRY, describe_call
 from app.capabilities.errors import CapabilityError
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.redaction import redact
@@ -150,6 +151,8 @@ class CapabilityMiddleware(AgentMiddleware):
         watches_file = name in DIFF_TOOLS
         before = await self._read_target(args) if watches_file else None
 
+        # 登记"正在跑" —— 状态面板的「后台任务」段要它
+        token = REGISTRY.start(self.thread_id, name, describe_call(name, args))
         started = time.perf_counter()
         try:
             message = await handler(request)
@@ -159,6 +162,8 @@ class CapabilityMiddleware(AgentMiddleware):
                 tool_call_id=str(tool_call.get("id") or ""),
                 status="error",
             )
+        finally:
+            REGISTRY.finish(self.thread_id, token)
         duration_ms = int((time.perf_counter() - started) * 1000)
 
         if watches_file and before is not None:
@@ -326,6 +331,10 @@ class CapabilityMiddleware(AgentMiddleware):
             )
             self.context.session.add(record)
             await self.context.session.flush()
+            # **每条记录自己提交** —— 用户点「停止」时这一轮会被取消，
+            # 整轮末尾的提交不会执行。不在这里提交的话，这一轮的调用记录
+            # （含改动量）就跟着回滚了：文件已经改了，记录却查不到。
+            await self.context.session.commit()
         return blocked
 
     def _block_threshold(self) -> float:

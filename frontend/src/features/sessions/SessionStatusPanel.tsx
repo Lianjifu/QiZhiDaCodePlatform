@@ -21,6 +21,7 @@ const PART_COLORS: Record<string, string> = {
   mcp_tools: 'bg-success',
   skills: 'bg-ink-faint',
   memory: 'bg-ink-faint',
+  autocompact: 'bg-ink-faint',
 }
 
 function Section({
@@ -35,6 +36,31 @@ function Section({
       <div className="mb-1.5 text-xs font-medium text-ink-muted">{title}</div>
       {children}
     </section>
+  )
+}
+
+/** 可展开的明细（每个 MCP 工具、每个记忆文件）。 */
+function DetailToggle({ items }: { items: string[] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="ml-4 mt-0.5">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="text-[11px] text-ink-faint transition-colors hover:text-ink-muted"
+      >
+        {open ? '▾' : '▸'} {items.length} 项
+      </button>
+      {open ? (
+        <ul className="mt-0.5 space-y-0.5">
+          {items.map((item) => (
+            <li key={item} className="truncate text-[11px] text-ink-faint">
+              {item}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   )
 }
 
@@ -118,13 +144,19 @@ export default function SessionStatusPanel({ threadId }: { threadId: string }) {
         </div>
         <ul className="mt-2 space-y-1">
           {context.parts.map((part) => (
-            <li key={part.key} className="flex items-center gap-2 text-xs">
-              <span
-                className={`h-2 w-2 shrink-0 rounded-sm ${PART_COLORS[part.key] ?? 'bg-ink-faint'}`}
-              />
-              <span className="min-w-0 flex-1 truncate text-ink-muted">{part.label}</span>
-              <span className="shrink-0 text-ink-faint">{formatTokens(part.tokens)}</span>
-              <span className="w-10 shrink-0 text-right text-ink-faint">{part.percent}%</span>
+            <li key={part.key}>
+              <div className="flex items-center gap-2 text-xs">
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-sm ${PART_COLORS[part.key] ?? 'bg-ink-faint'}`}
+                />
+                <span className="min-w-0 flex-1 truncate text-ink-muted">{part.label}</span>
+                <span className="shrink-0 text-ink-faint">{formatTokens(part.tokens)}</span>
+                <span className="w-10 shrink-0 text-right text-ink-faint">{part.percent}%</span>
+              </div>
+              {/* 有明细的可以展开看看具体是什么 */}
+              {part.items && part.items.length > 0 ? (
+                <DetailToggle items={part.items} />
+              ) : null}
             </li>
           ))}
           <li className="flex items-center gap-2 text-xs">
@@ -200,6 +232,33 @@ export default function SessionStatusPanel({ threadId }: { threadId: string }) {
           <div className="text-xs text-ink-faint">这个会话还没改过文件</div>
         )}
       </Section>
+
+      <Section title="后台任务">
+        {status.tasks.length === 0 ? (
+          <div className="text-xs text-ink-faint">现在没有在跑的任务</div>
+        ) : (
+          <ul className="space-y-1">
+            {status.tasks.map((task, index) => (
+              <li key={`${task.tool}-${index}`} className="flex items-center gap-2 text-xs">
+                <span className="min-w-0 flex-1 truncate text-ink">
+                  <span className="text-ink-muted">{task.tool}</span>
+                  {task.detail ? ` ${task.detail}` : ''}
+                </span>
+                <span className="shrink-0 text-ink-faint">{formatDuration(task.elapsed_ms)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {status.finished_tasks > 0 ? (
+          <div className="mt-1 text-[11px] text-ink-faint">
+            {status.finished_tasks} 个已完成
+          </div>
+        ) : null}
+      </Section>
+
+      <div className="px-3 py-2 text-[10px] leading-relaxed text-ink-faint">
+        最后更新：{formatUpdatedAt(status.updated_at)}。每 30 秒刷新一次。
+      </div>
     </div>
   )
 }
@@ -226,4 +285,27 @@ function Row({ label, value, mono }: { label: string; value: string; mono?: bool
 function formatTokens(value: number): string {
   if (value >= 1000) return `${(value / 1000).toFixed(1)}k`
   return String(value)
+}
+
+/** 毫秒显示成「2h 53m」那样。 */
+function formatDuration(ms: number): string {
+  const seconds = Math.floor(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ${minutes % 60}m`
+}
+
+/** 最后更新 —— 相对时间。 */
+function formatUpdatedAt(value: string): string {
+  if (!value) return '刚刚'
+  const stamp = Date.parse(value)
+  if (Number.isNaN(stamp)) return '刚刚'
+  const seconds = Math.floor((Date.now() - stamp) / 1000)
+  if (seconds < 10) return '刚刚'
+  if (seconds < 60) return `${seconds} 秒前`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟前`
+  return `${Math.floor(minutes / 60)} 小时前`
 }

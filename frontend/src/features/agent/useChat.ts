@@ -131,6 +131,9 @@ function fromHistory(
  *
  * 审批期间只推了 tool_call（工具还没跑），批准后才有结果。靠 tool_call_id
  * 配对；配不上的（历史里没带 id）就按顺序兜底。
+ *
+ * **兜底只能用还没被领走的结果** —— 先按 id 领走一条，再按顺序兜底的话，
+ * 那条已经被领走的结果会被领第二次，真正没 id 的那条反而没人领。
  */
 function mergeToolResults(
   calls: ToolCallView[],
@@ -139,13 +142,22 @@ function mergeToolResults(
   if (results.length === 0) return calls.map((call) => ({ ...call, state: 'succeeded' }))
   const byId = new Map<string, (typeof results)[number]>()
   for (const result of results) {
-    if (result.tool_call_id) byId.set(result.tool_call_id, result)
+    const id = result.tool_call_id ?? ''
+    if (id) byId.set(id, result)
   }
+  const used = new Set<(typeof results)[number]>()
   let cursor = 0
   return calls.map((call) => {
     if (call.state !== 'running') return call
-    const result = (call.tool_call_id ? byId.get(call.tool_call_id) : undefined) ?? results[cursor]
+    const callId = call.tool_call_id ?? ''
+    let result = callId ? byId.get(callId) : undefined
+    if (!result) {
+      // 兜底：按顺序找一条还没被领走的结果
+      while (cursor < results.length && used.has(results[cursor])) cursor += 1
+      result = results[cursor]
+    }
     if (!result) return call
+    used.add(result)
     cursor += 1
     return {
       ...call,
@@ -162,11 +174,20 @@ export function useChat() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
+  /**
+   * 这一轮助手消息的 id。
+   *
+   * **补丁要认准这条消息**，不能"最后一条助手消息" —— 切会话时历史会整个
+   * 换掉，"最后一条"就成了**另一个会话**的消息，A 的流式文本会贴到 B 上。
+   */
+  const turnMessageIdRef = useRef<string | null>(null)
 
-  /** 往最后一条助手消息上打补丁。 */
-  const patchLastAssistant = useCallback((patch: (message: ChatMessage) => ChatMessage) => {
+  /** 往这一轮的助手消息上打补丁。 */
+  const patchTurnAssistant = useCallback((patch: (message: ChatMessage) => ChatMessage) => {
+    const id = turnMessageIdRef.current
+    if (!id) return
     setMessages((prev) => {
-      const index = prev.findLastIndex((item) => item.role === 'assistant')
+      const index = prev.findIndex((item) => item.id === id)
       if (index === -1) return prev
       const next = [...prev]
       next[index] = patch(next[index])
@@ -179,13 +200,13 @@ export function useChat() {
       switch (event.type) {
         case 'text':
           if (event.text) {
-            patchLastAssistant((message) => ({ ...message, content: message.content + event.text }))
+            patchTurnAssistant((message) => ({ ...message, content: message.content + event.text }))
           }
           break
         case 'tool_call':
           if (event.tool_call) {
             const call = event.tool_call
-            patchLastAssistant((message) => ({
+            patchTurnAssistant((message) => ({
               ...message,
               toolCalls: [
                 ...message.toolCalls,
@@ -196,36 +217,44 @@ export function useChat() {
           break
         case 'tool_result': {
           const result = event.tool_result
-          if (result) {
-            patchLastAssistant((message) => ({
-              ...message,
-              toolCalls: message.toolCalls.map((call) =>
-                call.tool_call_id === result.tool_call_id
-                  ? {
-                      ...call,
-                      state: result.ok ? ('succeeded' as ToolCallState) : ('failed' as ToolCallState),
-                      summary: result.summary,
-                      duration_ms: result.duration_ms,
-                      error_code: result.error_code,
-                      status: result.status,
-                      added: result.added,
-                      removed: result.removed,
-                    }
-                  : call,
-              ),
-            }))
-          }
+          if (!result) break
+          const resultId = result.tool_call_id ?? ''
+          patchTurnAssistant((message) => {
+            // 先按 id 找；两边都没 id 就取第一个"进行中"且没 id 的块
+            let index = message.toolCalls.findIndex(
+              (call) => resultId !== '' && (call.tool_call_id ?? '') === resultId,
+            )
+            if (index === -1 && resultId === '') {
+              index = message.toolCalls.findIndex(
+                (call) => (call.tool_call_id ?? '') === '' && call.state === 'running',
+              )
+            }
+            if (index === -1) return message
+            const toolCalls = [...message.toolCalls]
+            const call = toolCalls[index]
+            toolCalls[index] = {
+              ...call,
+              state: result.ok ? ('succeeded' as ToolCallState) : ('failed' as ToolCallState),
+              summary: result.summary,
+              duration_ms: result.duration_ms,
+              error_code: result.error_code,
+              status: result.status,
+              added: result.added,
+              removed: result.removed,
+            }
+            return { ...message, toolCalls }
+          })
           break
         }
         case 'pending_approval':
-          patchLastAssistant((message) => ({ ...message, pending: event.pending }))
+          patchTurnAssistant((message) => ({ ...message, pending: event.pending }))
           break
         case 'error':
           // 后端把失败也当成一帧推出来（流已经开始，HTTP 状态码改不了了）
           if (event.error) setError(event.error)
           break
         case 'done':
-          patchLastAssistant((message) => ({
+          patchTurnAssistant((message) => ({
             ...message,
             status: event.status === 'pending_approval' ? 'pending_approval' : 'completed',
           }))
@@ -234,7 +263,7 @@ export function useChat() {
           break
       }
     },
-    [patchLastAssistant, setError],
+    [patchTurnAssistant, setError],
   )
 
   /** 发一条消息（流式）。 */
@@ -245,10 +274,13 @@ export function useChat() {
 
       setError('')
       setBusy(true)
+      // 这一轮的助手消息 —— 记下它的 id，后面的事件都往它身上打补丁
+      const assistantId = nextId()
+      turnMessageIdRef.current = assistantId
       setMessages((prev) => [
         ...prev,
         { id: nextId(), role: 'user', content: trimmed, toolCalls: [], pending: [] },
-        { id: nextId(), role: 'assistant', content: '', toolCalls: [], pending: [] },
+        { id: assistantId, role: 'assistant', content: '', toolCalls: [], pending: [] },
       ])
 
       const controller = new AbortController()
@@ -274,6 +306,7 @@ export function useChat() {
         }
       } finally {
         abortRef.current = null
+        turnMessageIdRef.current = null
         setBusy(false)
       }
     },

@@ -165,3 +165,29 @@ async def test_history_of_unknown_thread_is_empty(app, client, session) -> None:
     resp = await client.get(f"{API}/t-never-talked/history")
     assert resp.status_code == 200
     assert resp.json()["data"]["messages"] == []
+
+
+@pytest.mark.asyncio
+async def test_stream_bad_provider_gives_error_frame(app, client, session) -> None:
+    """请求里的供应商配置不存在 —— 要推 error 帧，不是把连接掐了。
+
+    SSE 的 HTTP 状态码在开始推数据时就定了（200），改不了。异常直接冒出去
+    的话，连接断掉，**既没有 error 帧也没有 done 帧** —— 前端界面上只剩一个
+    空的助手气泡，用户完全不知道出了什么事。
+    """
+    thread_id = "t-stream-bad-provider"
+    model = RecordingModel(reply="好")
+    _override(app, model, session)
+
+    resp = await client.post(
+        API + "/stream",
+        json={"message": "说话", "thread_id": thread_id, "provider_id": 99999},
+    )
+    assert resp.status_code == 200
+
+    frames = _frames(resp.text)
+    types = [f["type"] for f in frames]
+    assert "error" in types, f"没有错误帧：{types}"
+    assert types[-1] == "[DONE]", f"最后一帧应该是 [DONE]：{types}"
+    error_frame = next(f for f in frames if f["type"] == "error")
+    assert error_frame["error"], "错误帧里没有原因"

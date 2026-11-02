@@ -202,7 +202,15 @@ sqlalchemy.exc.InvalidRequestError: Session is already flushing
 包住查、写、flush。**工具本身的执行不锁** —— 沙箱里跑命令那几十秒不能被
 锁住，不然并行就白并行了。
 
+锁是**可重入**的（`app/core/locking.py`）：记忆的写入会层层调用
+（写 → 取集合 id → 写），不可重入的锁在那里会死锁。
+
 回归测试在 `tests/test_parallel_tools.py`。
+
+### 调用记录要当场提交
+
+每条调用记录**自己提交**，不等整轮结束 —— 用户点「停止」时这一轮会被取消，
+整轮末尾的提交不会执行。不当场提交的话，文件已经改了、记录却查不到。
 
 配置（`.env`）：
 

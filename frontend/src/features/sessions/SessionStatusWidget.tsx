@@ -19,15 +19,25 @@ export default function SessionStatusWidget({ threadId }: { threadId: string | n
   const [data, setData] = useState<{ threadId: string; status: SessionStatus } | null>(null)
   const [open, setOpen] = useState(false)
   const wrapperRef = useRef<HTMLDivElement>(null)
+  /** 当前该显示哪个会话 —— 用来挡掉"上一个会话的慢响应" */
+  const currentRef = useRef(threadId)
+  useEffect(() => {
+    currentRef.current = threadId
+  }, [threadId])
 
   const load = useCallback(() => {
-    if (!threadId) return
-    sessionStatus(threadId)
-      .then((status) => setData({ threadId, status }))
+    const wanted = currentRef.current
+    if (!wanted) return
+    sessionStatus(wanted)
+      .then((status) => {
+        // 响应回来时会话可能已经切走了 —— 这次的结果作废
+        if (currentRef.current !== wanted) return
+        setData({ threadId: wanted, status })
+      })
       .catch(() => {
         // 读不到就保持上一次的值 —— 状态条不该变成一个报错框
       })
-  }, [threadId])
+  }, [])
 
   useEffect(() => {
     if (!threadId) return
