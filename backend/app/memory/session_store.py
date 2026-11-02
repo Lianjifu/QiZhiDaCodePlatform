@@ -12,6 +12,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, or_, select, update
@@ -22,23 +25,50 @@ from app.models.memory import MemoryItem
 from app.rag.stores.sql import tokenize
 
 
+def _serialized(method: Callable[..., Awaitable]) -> Callable[..., Awaitable]:
+    """方法体在数据库锁里跑。
+
+    **工具是并行跑的** —— 记忆工具跟别的工具同时写同一个 session 会炸
+    （"Session is already flushing"）。锁由 ``ExecutionContext`` 提供；
+    没有锁（直接调 API 的场景）就照旧。
+    """
+
+    @functools.wraps(method)
+    async def wrapper(self: "SessionMemoryStore", *args, **kwargs):
+        lock = self._lock
+        if lock is None:
+            return await method(self, *args, **kwargs)
+        async with lock:
+            return await method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class SessionMemoryStore:
     """会话内记忆的存储。"""
 
     scope = SCOPE_SESSION
 
-    def __init__(self, session: AsyncSession, thread_id: str) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        thread_id: str,
+        lock: asyncio.Lock | None = None,
+    ) -> None:
         """构造存储。
 
         Args:
             session: 数据库会话。
             thread_id: 这个存储服务的会话。记忆按它隔离 —— 会话之间互不可见。
+            lock: 数据库锁（跟别的工具串行用同一个 session 时要）。
         """
         self.session = session
         self.thread_id = thread_id
+        self._lock = lock
 
     # ---------- 写 ----------
 
+    @_serialized
     async def add(self, entry: MemoryEntry) -> str:
         """写入一条记忆。
 
@@ -78,6 +108,7 @@ class SessionMemoryStore:
 
     # ---------- 读 ----------
 
+    @_serialized
     async def get(self, item_id: str) -> MemoryEntry | None:
         """取一条记忆。"""
         row_id = _parse_id(item_id)
@@ -89,6 +120,7 @@ class SessionMemoryStore:
         row = (await self.session.execute(stmt)).scalar_one_or_none()
         return _to_entry(row) if row is not None else None
 
+    @_serialized
     async def search(self, query: str, top_k: int, **_: object) -> list[MemoryEntry]:
         """关键词召回。
 
@@ -131,6 +163,7 @@ class SessionMemoryStore:
         scored.sort(key=lambda item: item.relevance, reverse=True)
         return scored[:top_k]
 
+    @_serialized
     async def list_all(self, limit: int = 100) -> list[MemoryEntry]:
         """列出本会话的全部记忆。"""
         stmt = (
@@ -144,6 +177,7 @@ class SessionMemoryStore:
 
     # ---------- 更新 / 删除 ----------
 
+    @_serialized
     async def touch(self, item_id: str) -> None:
         """命中即重新激活。"""
         row_id = _parse_id(item_id)
@@ -157,6 +191,7 @@ class SessionMemoryStore:
         await self.session.execute(stmt)
         await self.session.flush()
 
+    @_serialized
     async def supersede(self, item_id: str) -> bool:
         """标记一条记忆已被取代。
 
@@ -176,6 +211,7 @@ class SessionMemoryStore:
         await self.session.flush()
         return result.scalar_one_or_none() is not None
 
+    @_serialized
     async def forget(self, item_id: str) -> bool:
         """删除一条记忆。"""
         row_id = _parse_id(item_id)
@@ -190,6 +226,7 @@ class SessionMemoryStore:
         await self.session.flush()
         return result.scalar_one_or_none() is not None
 
+    @_serialized
     async def forget_thread(self, thread_id: str) -> int:
         """删掉一个会话的全部记忆。
 

@@ -52,6 +52,9 @@ export default function ToolCallBlock({ call }: { call: ToolCallView }) {
       <span className="text-success">✓</span>
     )
 
+  // 改动量：改过文件的工具才有（+12 −3）
+  const hasDiff = typeof call.added === 'number' || typeof call.removed === 'number'
+
   return (
     <div className="my-1 overflow-hidden rounded-lg border border-line bg-sunken">
       <button
@@ -61,6 +64,12 @@ export default function ToolCallBlock({ call }: { call: ToolCallView }) {
       >
         <span className="w-3 shrink-0 text-ink-faint">{open ? '▾' : '▸'}</span>
         <span className="min-w-0 flex-1 truncate">{summarize(call)}</span>
+        {hasDiff ? (
+          <span className="shrink-0 font-mono">
+            {call.added ? <span className="text-success">+{call.added}</span> : null}
+            {call.removed ? <span className="ml-1 text-danger">−{call.removed}</span> : null}
+          </span>
+        ) : null}
         {call.duration_ms ? (
           <span className="shrink-0 text-ink-faint">{(call.duration_ms / 1000).toFixed(1)}s</span>
         ) : null}

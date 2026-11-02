@@ -5,6 +5,7 @@
 - 这里管"用哪个模型""给这次会话分配哪个工作区""上下文怎么存""错误怎么翻译成 HTTP"。
 """
 
+import json
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -14,16 +15,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.checkpointer import open_checkpointer
 from app.agents.llm import build_model_for_provider
-from app.agents.runner import STATUS_FAILED, AgentRunner, AgentRunResult
+from app.agents.runner import MEMORY_FILE, STATUS_FAILED, AgentRunner, AgentRunResult, model_window
+from app.agents.status import (
+    build_connectors,
+    build_context_usage,
+    build_environment,
+    build_status,
+    collect_outputs,
+    sum_changes,
+)
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.registration.registry import CapabilityRegistry
-from app.capabilities.registration.spec import KIND_TOOL, SOURCE_MCP, CapabilitySpec
+from app.capabilities.registration.spec import KIND_MCP, KIND_TOOL, SOURCE_MCP, CapabilitySpec
+from app.context.budget import FALLBACK_CONTEXT_WINDOW
 from app.core.config import settings
 from app.core.exceptions import AgentError, AppError, NotFoundError, ValidationError
 from app.core.workspace import resolve_workspace
+from app.repositories.invocation import InvocationRepository
 from app.repositories.llm_provider import LLMProviderRepository
 from app.repositories.mcp_server import MCPServerRepository
-from app.schemas.agent import AgentHistoryOut, AgentStreamChunk
+from app.schemas.agent import AgentHistoryOut, AgentStreamChunk, SessionStatusOut
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +52,89 @@ def _readable_error(exc: Exception) -> str:
     if "connection" in lowered and ("refused" in lowered or "error" in lowered):
         return f"无法连接模型服务：{text or exc.__class__.__name__}"
     return f"智能体执行失败：{text or exc.__class__.__name__}"
+
+
+def _specs_text(specs: list[CapabilitySpec]) -> tuple[str, str]:
+    """能力声明里的工具定义与 MCP 工具定义（两段文本）。
+
+    只量"模型看到的那部分"：名字、描述、参数 schema。
+    **不构造真正的工具** —— 那要去连 MCP 服务器，面板不该等它。
+    """
+    tools: list[str] = []
+    mcp: list[str] = []
+    for spec in specs:
+        if spec.kind == KIND_MCP:
+            mcp.append(
+                "\n".join(
+                    [
+                        spec.key,
+                        spec.description,
+                        json.dumps(spec.input_schema, ensure_ascii=False, default=str),
+                    ]
+                )
+            )
+            continue
+        if spec.kind != KIND_TOOL or not spec.enabled:
+            continue
+        tools.append(
+            "\n".join(
+                [
+                    spec.key,
+                    spec.description,
+                    json.dumps(spec.input_schema, ensure_ascii=False, default=str),
+                ]
+            )
+        )
+    return "\n".join(tools), "\n".join(mcp)
+
+
+def _status_system_prompt(workspace: Path, specs: list[CapabilitySpec]) -> str:
+    """这次会话的系统提示词（估算用）。
+
+    与 runner 装配的是同一套东西：基础提示 + 策略说明 + 上传件清单。
+    """
+    from app.agents.prompts import CODE_AGENT_PROMPT
+    from app.capabilities.intent.middleware import build_policy_note
+    from app.context.service import ContextRequest, build_context_service
+    from app.files.attachments import build_uploads_note
+
+    assembled = build_context_service().assemble(
+        ContextRequest(
+            base_prompt=CODE_AGENT_PROMPT,
+            workspace=workspace,
+            policy_note=build_policy_note(specs, settings.capability_trust_mode),
+            uploads_note=build_uploads_note(workspace),
+        )
+    )
+    return assembled.text
+
+
+def _skills_text(workspace: Path) -> str:
+    """技能正文（导出到工作区旁边的那份快照）。
+
+    没有导出过就是空的 —— 技能是每轮会话才导出的。
+    """
+    skills_dir = Path(workspace).parent / ".skills" / Path(workspace).name
+    if not skills_dir.exists():
+        return ""
+    parts: list[str] = []
+    for path in sorted(skills_dir.rglob("SKILL.md")):
+        try:
+            parts.append(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:  # pragma: no cover - 读不到就当没有
+            continue
+    return "\n".join(parts)
+
+
+def _memory_text(workspace: Path) -> str:
+    """记忆文件（工作区里的 ``AGENTS.md``）。"""
+    path = Path(workspace) / MEMORY_FILE
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:  # pragma: no cover
+        return ""
 
 
 class AgentService:
@@ -270,6 +364,79 @@ class AgentService:
             except Exception as exc:
                 logger.exception("清空会话失败 thread_id=%s", thread_id)
                 raise AgentError(_readable_error(exc)) from exc
+
+    async def status(self, thread_id: str) -> SessionStatusOut:
+        """这个会话的当前状态。
+
+        给前端那个状态面板用：环境、上下文占用、产出、改动量、接进来的东西。
+
+        上下文占用是**估算**（4 字符约 1 token）—— 见 :mod:`app.agents.status`。
+        """
+        workspace = self.resolve_workspace(thread_id)
+        async with open_checkpointer() as checkpointer:
+            try:
+                specs = await self.load_capabilities()
+                context = await self._build_context(workspace, specs, thread_id)
+                runner = self._make_runner(checkpointer, None)
+
+                provider = await self._default_provider()
+                model_name = provider.default_model if provider else settings.llm_model
+                provider_name = provider.name if provider else settings.llm_provider
+                # 窗口：模型 profile 里的最准（供应商配置可能没填）
+                model = await self._resolve_model(None)
+                limit = model_window(model) or int(getattr(provider, "context_window", 0) or 0)
+
+                history = await runner.history(
+                    thread_id, workspace, specs=specs, context=context
+                )
+                messages_text = "\n".join(item.content for item in history)
+
+                tools_text, mcp_text = _specs_text(specs)
+                usage = build_context_usage(
+                    limit=limit or FALLBACK_CONTEXT_WINDOW,
+                    messages_text=messages_text,
+                    system_prompt=_status_system_prompt(workspace, specs),
+                    tools_text=tools_text,
+                    mcp_text=mcp_text,
+                    skills_text=_skills_text(workspace),
+                    memory_text=_memory_text(workspace),
+                )
+
+                providers: list[Any] = []
+                servers: list[Any] = []
+                records: list[Any] = []
+                if self.session is not None:
+                    providers = await LLMProviderRepository(self.session).list_all()
+                    servers = await MCPServerRepository(self.session).list_all()
+                    records = await InvocationRepository(self.session).list_recent(
+                        thread_id, limit=500
+                    )
+
+                return build_status(
+                    thread_id=thread_id,
+                    environment=build_environment(
+                        thread_id=thread_id,
+                        workspace=workspace,
+                        model=model_name,
+                        provider=provider_name,
+                        trust_mode=settings.capability_trust_mode,
+                    ),
+                    context=usage,
+                    outputs=collect_outputs(workspace),
+                    changes=sum_changes(records),
+                    connectors=build_connectors(providers=providers, mcp_servers=servers),
+                )
+            except AppError:
+                raise
+            except Exception as exc:
+                logger.exception("读会话状态失败 thread_id=%s", thread_id)
+                raise AgentError(_readable_error(exc)) from exc
+
+    async def _default_provider(self):
+        """默认的供应商配置；没有就用环境变量里的。"""
+        if self.session is None:
+            return None
+        return await LLMProviderRepository(self.session).get_default()
 
     async def stream(
         self,

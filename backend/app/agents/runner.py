@@ -434,6 +434,7 @@ class AgentRunner:
                 session=context.session,
                 thread_id=context.thread_id,
                 long_term_store=long_term,
+                db_lock=context.db_lock,
             )
             catalog = await service.recall_catalog(message)
             return catalog.render()
@@ -533,7 +534,7 @@ class AgentRunner:
                 memory_catalog=memory_block,
                 policy_note=policy_note,
                 uploads_note=uploads_note,
-                context_window=_model_window(model),
+                context_window=model_window(model),
             )
         )
         agent = await build_agent(
@@ -573,13 +574,32 @@ def _history_entry(msg: Any) -> AgentHistoryMessage | None:
             ],
         )
     if isinstance(msg, ToolMessage):
+        diff = _diff_of(msg)
         return AgentHistoryMessage(
             role="tool",
             content=_message_text(msg.content),
             name=str(getattr(msg, "name", "") or "") or None,
             tool_call_id=str(getattr(msg, "tool_call_id", "") or "") or None,
+            added=diff.get("added"),
+            removed=diff.get("removed"),
         )
     return None
+
+
+def _diff_of(msg: Any) -> dict[str, int]:
+    """工具消息里带的改动量。
+
+    由治理中间件在执行前后各读一次文件算出来，挂在 ``additional_kwargs`` 上。
+    """
+    diff = (getattr(msg, "additional_kwargs", None) or {}).get("diff")
+    if not isinstance(diff, dict):
+        return {}
+    added = diff.get("added")
+    removed = diff.get("removed")
+    return {
+        "added": added if isinstance(added, int) else 0,
+        "removed": removed if isinstance(removed, int) else 0,
+    }
 
 
 def _stream_events(
@@ -626,6 +646,7 @@ def _stream_events(
                     continue
                 seen_results.add(call_id)
                 status = str(getattr(msg, "status", "") or "succeeded")
+                diff = _diff_of(msg)
                 events.append(
                     AgentStreamChunk(
                         type="tool_result",
@@ -635,6 +656,8 @@ def _stream_events(
                             ok=status != "error",
                             status=status,
                             summary=_summarize_tool_output(msg.content),
+                            added=diff.get("added"),
+                            removed=diff.get("removed"),
                         ),
                     )
                 )
@@ -659,7 +682,7 @@ def _summarize_tool_output(content: Any) -> str:
     return text[:TOOL_RESULT_SUMMARY_MAX] + "…"
 
 
-def _model_window(model: Any) -> int:
+def model_window(model: Any) -> int:
     """取模型的上下文窗口（token）；取不到就是 0（未知）。
 
     窗口决定上下文预算与压缩阈值。模型对象上的 ``profile`` 是唯一来源 ——

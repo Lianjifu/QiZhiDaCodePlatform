@@ -20,6 +20,7 @@ from app.schemas.agent import (
     AgentChatRequest,
     AgentHistoryOut,
     PendingApprovalOut,
+    SessionStatusOut,
     SlashCommandOut,
     ToolCallOut,
 )
@@ -154,6 +155,22 @@ async def reject(
     """拒绝挂起的调用：工具不执行，agent 收到拒绝消息后继续。"""
     result = await service.reject(thread_id)
     return ResponseModel[AgentChatOut](data=_to_out(result))
+
+
+@router.get(
+    "/{thread_id}/status",
+    response_model=ResponseModel[SessionStatusOut],
+    summary="会话状态",
+)
+async def status(thread_id: str, service: ServiceDep) -> ResponseModel[SessionStatusOut]:
+    """这个会话的当前状态。
+
+    环境、上下文占用、产出、改动量、接进来的东西 —— 前端的状态面板靠它。
+
+    **上下文占用是估算**（4 字符约 1 token），不是精确的 token 数。
+    """
+    result = await service.status(thread_id)
+    return ResponseModel[SessionStatusOut](data=result)
 
 
 @router.delete("/{thread_id}", summary="清空会话的对话记录")

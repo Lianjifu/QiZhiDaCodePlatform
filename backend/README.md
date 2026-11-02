@@ -165,6 +165,7 @@ deepAgents 额外带来规划（`write_todos`）、子代理（`task`）、技�
 POST /api/v1/agent/chat             跑完一轮再整体返回
 POST /api/v1/agent/stream           SSE 流式推送（一帧一种事件）
 GET  /api/v1/agent/{thread_id}/history   读会话历史
+GET  /api/v1/agent/{thread_id}/status    会话状态（环境/上下文/产出/改动量）
 GET  /api/v1/agent/commands         斜杠命令清单（输入框敲 `/` 弹的那份）
 DELETE /api/v1/agent/{thread_id}    清空会话的对话记录（工作区文件不删）
 ```
@@ -176,6 +177,32 @@ DELETE /api/v1/agent/{thread_id}    清空会话的对话记录（工作区文�
 
 **`error` 帧是必须的**：SSE 一旦开始推数据就改不了 HTTP 状态码了，错误只能
 走帧。少推这一帧，前端就永远停在「思考中…」—— 它只认得 `done` 收尾。
+
+### 改动量统计（`+N −M`）
+
+工具块上那个「+12 −3」是**执行前后各读一次文件**算出来的 —— deepAgents 的
+`write_file` / `edit_file` 自己不返回 diff，成功时只说"Updated file xxx"。
+
+统计落在治理中间件（`app/capabilities/intent/middleware.py`）：执行前后读
+`file_path` 的内容，用 `difflib` 按行比。统计结果挂在工具消息的
+`additional_kwargs["diff"]`，随事件流推给前端，也写进调用记录 —— 会话级的
+「本次改了多少行」从调用记录汇总。
+
+### ⚠️ 工具是并行的，数据库不是
+
+**模型一次回复里可以带多个工具调用**，LangGraph 会并发执行它们。但
+SQLAlchemy 的 `AsyncSession` 不允许并发使用 —— 两个调用同时 `flush` 会炸：
+
+```text
+sqlalchemy.exc.InvalidRequestError: Session is already flushing
+```
+
+这一炸整轮对话就没了。所以数据库那一段必须串行：锁挂在 `ExecutionContext`
+上（`app/capabilities/execution/context.py`），用 `async with context.db():`
+包住查、写、flush。**工具本身的执行不锁** —— 沙箱里跑命令那几十秒不能被
+锁住，不然并行就白并行了。
+
+回归测试在 `tests/test_parallel_tools.py`。
 
 配置（`.env`）：
 

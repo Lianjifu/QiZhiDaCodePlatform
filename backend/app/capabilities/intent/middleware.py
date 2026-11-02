@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest
@@ -50,12 +51,16 @@ from app.capabilities.registration.tool_policy import (
     approval_required_tools,
     policy_for_tool,
 )
+from app.files.diffstat import line_diff
 
 logger = logging.getLogger(__name__)
 
 # 恢复值的类型：HITL 与我们自己的中断统一用这一套
 APPROVE = "approve"
 REJECT = "reject"
+
+# 会改文件的工具 —— 它们的改动量要统计出来（前端工具块上显示 ``+N −M``）
+DIFF_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file"})
 
 
 class CapabilityMiddleware(AgentMiddleware):
@@ -141,6 +146,10 @@ class CapabilityMiddleware(AgentMiddleware):
             return denied
 
         # 2) 执行
+        # 改文件的工具：执行前后各读一次文件，中间差多少行（前端显示 +N −M）
+        watches_file = name in DIFF_TOOLS
+        before = await self._read_target(args) if watches_file else None
+
         started = time.perf_counter()
         try:
             message = await handler(request)
@@ -151,6 +160,16 @@ class CapabilityMiddleware(AgentMiddleware):
                 status="error",
             )
         duration_ms = int((time.perf_counter() - started) * 1000)
+
+        if watches_file and before is not None:
+            after = await self._read_target(args)
+            if after is not None:
+                stat = line_diff(before, after)
+                if stat.changed:
+                    message.additional_kwargs = {
+                        **(getattr(message, "additional_kwargs", None) or {}),
+                        "diff": {"added": stat.added, "removed": stat.removed},
+                    }
 
         # 3) 留痕 + 置信度（只对文件工具；我们自己的工具由执行层写记录）
         blocked = False
@@ -218,6 +237,34 @@ class CapabilityMiddleware(AgentMiddleware):
 
     # ---------- 留痕 ----------
 
+    async def _read_target(self, args: dict[str, Any]) -> str | None:
+        """读这次调用要改的文件当前内容。
+
+        Args:
+            args: 工具参数（取 ``file_path``）。
+
+        Returns:
+            文件内容；**文件不存在**返回空串（新建文件 = 从空变满）；
+            **读不了**（越界、不是文本、路径非法）返回 ``None`` ——
+            统计不了改动量不该影响执行。
+        """
+        if self.context is None:
+            return None
+        raw = str(args.get("file_path") or "")
+        if not raw:
+            return None
+        root = Path(self.context.workspace).resolve()
+        # 软链接可能指向工作区外面 —— resolve 之后再判边界
+        target = (root / raw.lstrip("/")).resolve()
+        if target != root and root not in target.parents:
+            return None
+        try:
+            if not target.exists():
+                return ""
+            return target.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            return None
+
     async def _record(
         self,
         name: str,
@@ -248,30 +295,37 @@ class CapabilityMiddleware(AgentMiddleware):
         error_code = "EXECUTION_ERROR" if failed else None
 
         policy = policy_for_tool(name)
-        state = await load_task_state(self.context.session, self.thread_id, name)
-        confidence = adjust_confidence(state.confidence, error_code)
-        blocked = confidence < self._block_threshold()
+        async with self.context.db():
+            state = await load_task_state(self.context.session, self.thread_id, name)
+            confidence = adjust_confidence(state.confidence, error_code)
+            blocked = confidence < self._block_threshold()
 
-        record = Invocation(
-            thread_id=self.thread_id or None,
-            capability_key=name,
-            arguments=redact(args),
-            payload=dict(args),
-            status=STATUS_BLOCKED if blocked else (STATUS_FAILED if failed else STATUS_SUCCEEDED),
-            risk=policy.risk,
-            permission=policy.permission,
-            decision_reason="文件工具经由 deepAgents 后端执行",
-            result={"content": text[:2000]},
-            error_code=error_code,
-            error_message=text[:500] if failed else None,
-            duration_ms=duration_ms,
-            confidence=confidence,
-            started_at=datetime.now(UTC),
-            decided_at=datetime.now(UTC),
-            finished_at=datetime.now(UTC),
-        )
-        self.context.session.add(record)
-        await self.context.session.flush()
+            # 改动量也存进记录 —— 会话级「本次改了多少行」从这些记录汇总
+            diff = (getattr(message, "additional_kwargs", None) or {}).get("diff")
+            result: dict[str, Any] = {"content": text[:2000]}
+            if isinstance(diff, dict):
+                result["diff"] = diff
+
+            record = Invocation(
+                thread_id=self.thread_id or None,
+                capability_key=name,
+                arguments=redact(args),
+                payload=dict(args),
+                status=STATUS_BLOCKED if blocked else (STATUS_FAILED if failed else STATUS_SUCCEEDED),
+                risk=policy.risk,
+                permission=policy.permission,
+                decision_reason="文件工具经由 deepAgents 后端执行",
+                result=result,
+                error_code=error_code,
+                error_message=text[:500] if failed else None,
+                duration_ms=duration_ms,
+                confidence=confidence,
+                started_at=datetime.now(UTC),
+                decided_at=datetime.now(UTC),
+                finished_at=datetime.now(UTC),
+            )
+            self.context.session.add(record)
+            await self.context.session.flush()
         return blocked
 
     def _block_threshold(self) -> float:

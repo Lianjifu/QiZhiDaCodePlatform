@@ -4,9 +4,11 @@
  * 侧栏的分组照着 Claude 桌面端来：**动作 / 模块入口 / 置顶 / 全部会话**。
  * 模块入口对应平台真实的模块 —— 没有对应东西的就不放（比如「项目」）。
  */
+import { useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 
 import ThemeToggle from './ThemeToggle'
+import SessionStatusWidget from '../../features/sessions/SessionStatusWidget'
 import { useSessions } from '../../features/sessions/store'
 
 interface NavItem {
@@ -25,12 +27,33 @@ const MODULES: NavItem[] = [
 export default function AppShell() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { pinned, others, togglePin } = useSessions()
+  const { pinned, others, create, remove, togglePin } = useSessions()
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [query, setQuery] = useState('')
 
   // 当前会话：从路由里认出来
   const activeThread = location.pathname.startsWith('/chat/')
     ? location.pathname.slice('/chat/'.length)
     : null
+
+  /** 新建一个会话 —— 立刻进列表，不是等用户发了第一条消息才进。 */
+  const handleCreate = () => {
+    const threadId = create()
+    navigate(`/chat/${threadId}`)
+  }
+
+  /** 删一个会话（只删侧栏里的这条记录）。 */
+  const handleRemove = (threadId: string) => {
+    remove(threadId)
+    if (threadId === activeThread) navigate('/chat')
+  }
+
+  // 搜索：按标题过滤。空搜索词就是全列。
+  const keyword = query.trim().toLowerCase()
+  const match = (items: typeof others) =>
+    keyword ? items.filter((item) => item.title.toLowerCase().includes(keyword)) : items
+  const pinnedShown = match(pinned)
+  const othersShown = match(others)
 
   return (
     <div className="flex h-screen overflow-hidden bg-base">
@@ -38,20 +61,38 @@ export default function AppShell() {
         <div className="px-3 py-3">
           <button
             type="button"
-            onClick={() => navigate('/chat')}
+            onClick={handleCreate}
             className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-ink transition-colors hover:bg-hover"
           >
             <span className="text-lg leading-none">+</span>
             <span>新建</span>
           </button>
-          <button
-            type="button"
-            onClick={() => navigate('/chat')}
-            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-ink-muted transition-colors hover:bg-hover hover:text-ink"
-          >
-            <span className="text-base leading-none">⌕</span>
-            <span>搜索</span>
-          </button>
+          {searchOpen ? (
+            <div className="mt-1 px-1">
+              <input
+                autoFocus
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    setQuery('')
+                    setSearchOpen(false)
+                  }
+                }}
+                placeholder="搜会话标题…"
+                className="w-full rounded-lg border border-line bg-base px-2.5 py-1.5 text-sm text-ink outline-none placeholder:text-ink-faint"
+              />
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setSearchOpen(true)}
+              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+            >
+              <span className="text-base leading-none">⌕</span>
+              <span>搜索</span>
+            </button>
+          )}
         </div>
 
         <nav className="px-3 pb-2">
@@ -74,25 +115,31 @@ export default function AppShell() {
         </nav>
 
         <div className="mt-1 min-h-0 flex-1 overflow-y-auto px-3 pb-2">
-          {pinned.length > 0 && (
+          {pinnedShown.length > 0 && (
             <SessionGroup
               title="已置顶"
-              items={pinned}
+              items={pinnedShown}
               activeThread={activeThread}
               onSelect={(threadId) => navigate(`/chat/${threadId}`)}
               onTogglePin={togglePin}
+              onRemove={handleRemove}
             />
           )}
           <SessionGroup
             title="对话和任务"
-            items={others}
+            items={othersShown}
             activeThread={activeThread}
             onSelect={(threadId) => navigate(`/chat/${threadId}`)}
             onTogglePin={togglePin}
+            onRemove={handleRemove}
           />
+          {pinnedShown.length === 0 && othersShown.length === 0 && query.trim() ? (
+            <div className="px-2 py-1 text-xs text-ink-faint">没有匹配的会话</div>
+          ) : null}
         </div>
 
         <div className="border-t border-line p-3">
+          <SessionStatusWidget threadId={activeThread} />
           <ThemeToggle />
         </div>
       </aside>
@@ -110,6 +157,7 @@ interface SessionGroupProps {
   activeThread: string | null
   onSelect: (threadId: string) => void
   onTogglePin: (threadId: string) => void
+  onRemove: (threadId: string) => void
 }
 
 function SessionGroup({
@@ -118,6 +166,7 @@ function SessionGroup({
   activeThread,
   onSelect,
   onTogglePin,
+  onRemove,
 }: SessionGroupProps) {
   return (
     <div className="mb-3">
@@ -129,7 +178,7 @@ function SessionGroup({
           <div
             key={item.threadId}
             className={[
-              'group flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-sm transition-colors',
+              'group flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm transition-colors',
               item.threadId === activeThread
                 ? 'bg-hover text-ink'
                 : 'text-ink-muted hover:bg-hover hover:text-ink',
@@ -149,6 +198,14 @@ function SessionGroup({
               className="shrink-0 rounded px-1 text-xs text-ink-faint opacity-0 transition-opacity group-hover:opacity-100 hover:text-ink"
             >
               {item.pinned ? '★' : '☆'}
+            </button>
+            <button
+              type="button"
+              title="删除会话"
+              onClick={() => onRemove(item.threadId)}
+              className="shrink-0 rounded px-1 text-xs text-ink-faint opacity-0 transition-opacity group-hover:opacity-100 hover:text-danger"
+            >
+              ×
             </button>
           </div>
         ))

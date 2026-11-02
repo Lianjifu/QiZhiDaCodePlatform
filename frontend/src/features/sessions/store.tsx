@@ -68,6 +68,8 @@ interface SessionsValue {
   sessions: SessionMeta[]
   pinned: SessionMeta[]
   others: SessionMeta[]
+  /** 新建一个会话，立刻进列表（不是等用户发了第一条消息才进） */
+  create: (title?: string) => string
   /** 记一笔（会话不存在就建，存在就更新标题与时间） */
   touch: (threadId: string, title?: string) => void
   /** 改标题 */
@@ -84,6 +86,15 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     writeAll(sessions)
   }, [sessions])
+
+  const create = useCallback((title = '新会话'): string => {
+    const threadId = newThreadId()
+    setSessions((prev) => [
+      { threadId, title, pinned: false, updatedAt: Date.now() },
+      ...prev,
+    ])
+    return threadId
+  }, [])
 
   const touch = useCallback((threadId: string, title?: string) => {
     setSessions((prev) => {
@@ -123,12 +134,13 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       sessions,
       pinned: sessions.filter((item) => item.pinned),
       others: sessions.filter((item) => !item.pinned),
+      create,
       touch,
       rename,
       togglePin,
       remove,
     }),
-    [sessions, touch, rename, togglePin, remove],
+    [sessions, create, touch, rename, togglePin, remove],
   )
 
   return <SessionsContext.Provider value={value}>{children}</SessionsContext.Provider>

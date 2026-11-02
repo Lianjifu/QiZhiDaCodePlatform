@@ -77,7 +77,8 @@ async def execute(intent: CapabilityIntent, context: ExecutionContext) -> Execut
     spec = intent.spec
 
     # ---------- ⓪ 任务状态：置信度 / 重试阈值 / 阻塞 ----------
-    task = await load_task_state(context.session, intent.thread_id, spec.key)
+    async with context.db():
+        task = await load_task_state(context.session, intent.thread_id, spec.key)
     if task.blocked:
         error = CapabilityError(
             f"任务已阻塞：{task.reason}（置信度 {task.confidence:.0f}），请转人工处理",
@@ -251,7 +252,10 @@ async def _invoke(intent: CapabilityIntent, context: ExecutionContext) -> Execut
         from app.repositories.invocation import InvocationRepository
 
         repo = InvocationRepository(context.session)
-        previous = await repo.find_recent_success(intent.idempotency_key, intent.thread_id)
+        async with context.db():
+            previous = await repo.find_recent_success(
+                intent.idempotency_key, intent.thread_id
+            )
         if previous is not None:
             logger.info("幂等命中，复用已有结果: %s", intent.capability_key)
             stored = previous.result or {}
@@ -488,8 +492,9 @@ async def _finish(
         decided_at=None if pending else datetime.now(UTC),  # 挂起的还没决定
         finished_at=None if pending else datetime.now(UTC),
     )
-    session.add(record)
-    await session.flush()
+    async with context.db():
+        session.add(record)
+        await session.flush()
     result.invocation_id = record.id
     return result
 

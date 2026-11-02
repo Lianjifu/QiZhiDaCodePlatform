@@ -100,6 +100,12 @@ class ToolResultOut(BaseModel):
     error_code: str | None = Field(default=None, description="失败时的错误码")
     duration_ms: int = Field(default=0, description="执行耗时（毫秒）")
     summary: str = Field(default="", description="结果摘要（截断后的正文）")
+    added: int | None = Field(
+        default=None, description="这次改动新增了几行（改文件的工具才有）"
+    )
+    removed: int | None = Field(
+        default=None, description="这次改动删掉了几行（改文件的工具才有）"
+    )
 
 
 class AgentStreamChunk(BaseModel):
@@ -168,6 +174,8 @@ class AgentHistoryMessage(BaseModel):
         default=None, description="工具消息对应的 tool_call id（前端拿它对上工具块）"
     )
     tool_calls: list[ToolCallOut] = Field(default_factory=list, description="助手消息里的工具调用")
+    added: int | None = Field(default=None, description="这次改动新增了几行")
+    removed: int | None = Field(default=None, description="这次改动删掉了几行")
 
 
 class AgentHistoryOut(BaseModel):
@@ -178,3 +186,74 @@ class AgentHistoryOut(BaseModel):
 
     thread_id: str = Field(description="会话 ID")
     messages: list[AgentHistoryMessage] = Field(default_factory=list, description="历史消息")
+
+
+# ---------- 会话状态 ----------
+
+
+class ContextPartOut(BaseModel):
+    """上下文占用里的一块。"""
+
+    key: str = Field(description="块的标识")
+    label: str = Field(description="显示名")
+    tokens: int = Field(default=0, description="占用多少 token（估算）")
+    percent: float = Field(default=0, description="占整个窗口的百分比")
+
+
+class ContextUsageOut(BaseModel):
+    """上下文窗口用了多少、都被谁占了。"""
+
+    limit: int = Field(default=0, description="上下文窗口（token）")
+    used: int = Field(default=0, description="已占用（token，估算）")
+    percent: float = Field(default=0, description="占用百分比")
+    free: int = Field(default=0, description="还剩多少（token）")
+    parts: list[ContextPartOut] = Field(default_factory=list, description="占用明细")
+
+
+class EnvironmentOut(BaseModel):
+    """这次会话跑在什么环境里。"""
+
+    thread_id: str = Field(default="", description="会话 ID")
+    workspace: str = Field(default="", description="工作区路径")
+    model: str = Field(default="", description="用的模型")
+    provider: str = Field(default="", description="模型来自哪个供应商")
+    trust_mode: str = Field(default="", description="信任模式")
+
+
+class OutputFileOut(BaseModel):
+    """会话里产出或上传的一个文件。"""
+
+    path: str = Field(description="虚拟路径")
+    size: int = Field(default=0, description="字节数")
+    is_dir: bool = Field(default=False, description="是不是目录")
+    uploaded: bool = Field(default=False, description="是不是用户上传的")
+
+
+class ChangesOut(BaseModel):
+    """这个会话一共改了多少行。"""
+
+    added: int = Field(default=0, description="新增行数")
+    removed: int = Field(default=0, description="删除行数")
+
+
+class ConnectorOut(BaseModel):
+    """一个接进来的外部东西（模型供应商、MCP 服务器）。"""
+
+    name: str = Field(description="名字")
+    kind: str = Field(default="", description="provider / mcp")
+    status: str = Field(default="", description="ok / disabled / error")
+    detail: str = Field(default="", description="补充说明")
+
+
+class SessionStatusOut(BaseModel):
+    """一个会话的当前状态。
+
+    给前端那个状态面板用 —— 环境、上下文占用、产出、改动量、接进来的东西。
+    """
+
+    thread_id: str = Field(description="会话 ID")
+    environment: EnvironmentOut = Field(default_factory=EnvironmentOut)
+    context: ContextUsageOut = Field(default_factory=ContextUsageOut)
+    outputs: list[OutputFileOut] = Field(default_factory=list, description="产出与上传件")
+    changes: ChangesOut = Field(default_factory=ChangesOut)
+    connectors: list[ConnectorOut] = Field(default_factory=list, description="接进来的东西")

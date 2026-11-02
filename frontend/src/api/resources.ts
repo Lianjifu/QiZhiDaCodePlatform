@@ -14,6 +14,7 @@ import type {
   FileList,
   LLMProvider,
   PagedList,
+  SessionStatus,
   SlashCommand,
   UploadedFile,
 } from '../types/api'
@@ -61,6 +62,11 @@ export function streamChat(payload: AgentChatRequest, signal?: AbortSignal): Pro
 /** 读会话历史消息（刷新页面后靠它还原对话）。 */
 export function history(threadId: string): Promise<AgentHistory> {
   return api.get<AgentHistory>(`/agent/${threadId}/history`)
+}
+
+/** 读会话状态（环境、上下文占用、产出、改动量）。 */
+export function sessionStatus(threadId: string): Promise<SessionStatus> {
+  return api.get<SessionStatus>(`/agent/${threadId}/status`)
 }
 
 /** 取某个会话当前挂着的待审批调用。 */

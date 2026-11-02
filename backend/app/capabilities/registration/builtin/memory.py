@@ -52,6 +52,7 @@ def _service(context: ExecutionContext) -> MemoryService:
         session=context.session,
         thread_id=context.thread_id,
         long_term_store=long_term,
+        db_lock=context.db_lock,
     )
 
 

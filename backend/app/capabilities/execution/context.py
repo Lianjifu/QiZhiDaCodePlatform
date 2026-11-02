@@ -11,7 +11,10 @@ tool schema 里**。
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -52,6 +55,30 @@ class ExecutionContext:
     #
     # 直接调用的路径：不设这个标志，执行层自己决定要不要挂起等人批。
     approval_handled: bool = False
+
+    # 数据库会话的锁。
+    #
+    # **工具是并行跑的**（LangGraph 的 ToolNode 并发执行同一次回复里的多个
+    # 调用），而 SQLAlchemy 的 AsyncSession 不允许并发使用 —— 两个调用同时
+    # flush 会炸（"Session is already flushing"）。
+    #
+    # 锁只护住**数据库操作**（查、写、flush），不护工具本身的执行 ——
+    # 沙箱里跑命令那几十秒不能被锁住，不然并行就白并行了。
+    db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    @asynccontextmanager
+    async def db(self) -> AsyncIterator[None]:
+        """在锁里做数据库操作。
+
+        用法::
+
+            async with context.db():
+                await session.flush()
+
+        **别把锁持到别的地方去** —— 锁不可重入，嵌套会死锁。
+        """
+        async with self.db_lock:
+            yield
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace)

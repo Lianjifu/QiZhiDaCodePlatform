@@ -76,6 +76,10 @@ export interface ToolResult {
   error_code?: string | null
   duration_ms: number
   summary: string
+  /** 这次改动新增了几行（改文件的工具才有） */
+  added?: number | null
+  /** 这次改动删掉了几行（改文件的工具才有） */
+  removed?: number | null
 }
 
 /** 流式接口的一帧（后端 `AgentStreamChunk`）。 */
@@ -106,6 +110,8 @@ export interface AgentHistoryMessage {
   name?: string | null
   tool_call_id?: string | null
   tool_calls: ToolCall[]
+  added?: number | null
+  removed?: number | null
 }
 
 /** 一个会话的历史（后端 `AgentHistoryOut`）。 */
@@ -143,6 +149,66 @@ export interface UploadedFile {
 export interface FileList {
   files: WorkspaceFile[]
   total: number
+}
+
+// ---------- 会话状态 ----------
+
+/** 上下文占用里的一块（后端 `ContextPartOut`）。 */
+export interface ContextPart {
+  key: string
+  label: string
+  tokens: number
+  percent: number
+}
+
+/** 上下文窗口用了多少（后端 `ContextUsageOut`）。**估算值，不是精确 token 数。 */
+export interface ContextUsage {
+  limit: number
+  used: number
+  percent: number
+  free: number
+  parts: ContextPart[]
+}
+
+/** 会话跑在什么环境里（后端 `EnvironmentOut`）。 */
+export interface SessionEnvironment {
+  thread_id: string
+  workspace: string
+  model: string
+  provider: string
+  trust_mode: string
+}
+
+/** 会话里的一个产出（后端 `OutputFileOut`）。 */
+export interface OutputFile {
+  path: string
+  size: number
+  is_dir: boolean
+  uploaded: boolean
+}
+
+/** 这个会话一共改了多少行（后端 `ChangesOut`）。 */
+export interface SessionChanges {
+  added: number
+  removed: number
+}
+
+/** 接进来的外部东西（后端 `ConnectorOut`）。 */
+export interface Connector {
+  name: string
+  kind: string
+  status: string
+  detail: string
+}
+
+/** 会话状态（后端 `SessionStatusOut`）。 */
+export interface SessionStatus {
+  thread_id: string
+  environment: SessionEnvironment
+  context: ContextUsage
+  outputs: OutputFile[]
+  changes: SessionChanges
+  connectors: Connector[]
 }
 
 // ---------- 模型接入配置 ----------

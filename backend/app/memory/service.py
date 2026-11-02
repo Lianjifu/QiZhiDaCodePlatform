@@ -20,6 +20,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import logging
 from datetime import UTC, datetime
 
@@ -59,6 +61,7 @@ class MemoryService:
         session: AsyncSession | None = None,
         thread_id: str = "",
         long_term_store: MemoryStore | None = None,
+        db_lock: asyncio.Lock | None = None,
     ) -> None:
         """构造服务。
 
@@ -66,12 +69,16 @@ class MemoryService:
             session: 数据库会话（短期记忆要用）。
             thread_id: 当前会话。
             long_term_store: 长期记忆的存储；没配就只支持会话内记忆。
+            db_lock: 数据库锁 —— 工具并行跑时，记忆的读写要跟别的工具串行。
         """
         self.session = session
         self.thread_id = thread_id
         self.long_term_store = long_term_store
+        self.db_lock = db_lock
         self._session_store = (
-            SessionMemoryStore(session, thread_id) if session is not None else None
+            SessionMemoryStore(session, thread_id, lock=db_lock)
+            if session is not None
+            else None
         )
 
     def for_thread(self, thread_id: str) -> MemoryService:
@@ -84,6 +91,7 @@ class MemoryService:
             session=self.session,
             thread_id=thread_id,
             long_term_store=self.long_term_store,
+            db_lock=self.db_lock,
         )
 
     # ---------- 召回 ----------

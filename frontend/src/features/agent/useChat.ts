@@ -31,6 +31,10 @@ export type ToolCallState = 'running' | 'succeeded' | 'failed'
 export interface ToolCallView extends ToolCall {
   state: ToolCallState
   summary?: string
+  /** 这次改动新增了几行（改文件的工具才有） */
+  added?: number | null
+  /** 这次改动删掉了几行（改文件的工具才有） */
+  removed?: number | null
 }
 
 /** 一条消息。 */
@@ -67,6 +71,8 @@ function fromHistory(
     name?: string | null
     tool_call_id?: string | null
     tool_calls: ToolCall[]
+    added?: number | null
+    removed?: number | null
   }[],
 ): ChatMessage[] {
   const messages: ChatMessage[] = []
@@ -84,6 +90,8 @@ function fromHistory(
           ...call,
           state: 'succeeded',
           summary: item.content.slice(0, 400),
+          added: item.added,
+          removed: item.removed,
         }
         pending.delete(callId)
         continue
@@ -200,6 +208,8 @@ export function useChat() {
                       duration_ms: result.duration_ms,
                       error_code: result.error_code,
                       status: result.status,
+                      added: result.added,
+                      removed: result.removed,
                     }
                   : call,
               ),
