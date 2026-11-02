@@ -1,0 +1,31 @@
+@import 'tailwindcss';
+
+/*
+ * 主题变量。
+ *
+ * Tailwind v4 用 CSS 变量定义设计令牌，`@theme` 里的名字会变成工具类
+ * （`--color-brand-500` → `bg-brand-500`）。
+ */
+@theme {
+  --color-brand-50: oklch(0.97 0.01 250);
+  --color-brand-100: oklch(0.93 0.03 250);
+  --color-brand-500: oklch(0.55 0.16 255);
+  --color-brand-600: oklch(0.48 0.16 255);
+  --color-brand-700: oklch(0.42 0.14 255);
+}
+
+/* 滚动条别那么扎眼 */
+@layer base {
+  html {
+    color-scheme: light;
+  }
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+    font-family:
+      system-ui,
+      -apple-system,
+      'PingFang SC',
+      'Microsoft YaHei',
+      sans-serif;
+  }
+}
