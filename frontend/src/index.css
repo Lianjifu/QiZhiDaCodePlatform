@@ -32,6 +32,7 @@
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-muted: var(--accent-muted);
   --color-accent-text: var(--accent-text);
 
   --color-danger: var(--danger);
@@ -40,6 +41,21 @@
   --color-success-soft: var(--success-soft);
   --color-warning: var(--warning);
   --color-warning-soft: var(--warning-soft);
+
+  /*
+   * 字体 —— 之前等宽字体在 markdown.css 里另写了一份栈，两处不一致。
+   * 现在统一走这里：`font-mono` 到处都用同一个定义。
+   */
+  --font-sans:
+    system-ui, -apple-system, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    'Source Han Sans SC', 'Noto Sans CJK SC', sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* 阴影 —— 组件里写 `shadow-1` / `shadow-2` / `shadow-3`，深浅两套各一份值 */
+  --shadow-1: var(--elevation-1);
+  --shadow-2: var(--elevation-2);
+  --shadow-3: var(--elevation-3);
 }
 
 @layer components {
@@ -58,6 +74,62 @@
   .hero-glow {
     background: radial-gradient(ellipse 45% 38% at 50% 46%, var(--glow), transparent 70%);
   }
+
+  /*
+   * 聚焦环 —— 全站统一：品牌色的淡环 + 一圈底色隔开。
+   *
+   * 用 `focus-visible` 而不是 `focus` —— 鼠标点按钮不该冒出一圈环。
+   */
+  .focus-ring {
+    outline: none;
+  }
+  .focus-ring:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* 流式光标 —— 正文最后那个一闪一闪的竖线 */
+  .stream-cursor::after {
+    content: '';
+    display: inline-block;
+    width: 0.5em;
+    height: 1em;
+    margin-left: 0.15em;
+    vertical-align: text-bottom;
+    border-radius: 1px;
+    background: var(--accent);
+    animation: stream-blink 1s steps(2, start) infinite;
+  }
+
+  @keyframes stream-blink {
+    50% {
+      opacity: 0;
+    }
+  }
+
+  /* 「思考中」的三个呼吸点 */
+  .thinking-dot {
+    animation: thinking 1.2s ease-in-out infinite;
+  }
+  .thinking-dot:nth-child(2) {
+    animation-delay: 0.15s;
+  }
+  .thinking-dot:nth-child(3) {
+    animation-delay: 0.3s;
+  }
+
+  @keyframes thinking {
+    0%,
+    60%,
+    100% {
+      opacity: 0.25;
+      transform: translateY(0);
+    }
+    30% {
+      opacity: 1;
+      transform: translateY(-2px);
+    }
+  }
 }
 
 @layer base {
@@ -70,12 +142,16 @@
   }
   body {
     @apply bg-base text-ink antialiased;
-    font-family:
-      system-ui,
-      -apple-system,
-      'PingFang SC',
-      'Microsoft YaHei',
-      sans-serif;
+    font-family: var(--font-sans);
+  }
+  /* 选中文字用品牌色 —— 一点点，但整页都统一了 */
+  ::selection {
+    background: var(--accent-soft);
+    color: var(--text-primary);
+  }
+  .dark ::selection {
+    background: var(--accent-muted);
+    color: var(--text-primary);
   }
   /* 深色下滚动条别那么扎眼 */
   .dark ::-webkit-scrollbar-thumb {

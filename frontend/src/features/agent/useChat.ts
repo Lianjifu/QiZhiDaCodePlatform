@@ -17,8 +17,10 @@ import { useCallback, useRef, useState } from 'react'
 import { readSSE } from '../../api/sse'
 import {
   approve as approveCall,
+  forkConversation,
   history,
   pendingApprovals,
+  regenerateChat,
   reject as rejectCall,
   streamChat,
 } from '../../api/resources'
@@ -48,6 +50,8 @@ export interface ChatMessage {
   status?: 'completed' | 'pending_approval'
   /** 工具消息的名字 */
   name?: string
+  /** checkpoint 里的消息 id —— 分支会话靠它定位分支点（流式产生的消息没有） */
+  sourceId?: string | null
 }
 
 let messageSeq = 0
@@ -66,6 +70,7 @@ function nextId(): string {
  */
 function fromHistory(
   items: {
+    id?: string | null
     role: string
     content: string
     name?: string | null
@@ -103,6 +108,7 @@ function fromHistory(
         toolCalls: [],
         pending: [],
         name: item.name ?? undefined,
+        sourceId: item.id ?? null,
       })
       continue
     }
@@ -111,6 +117,7 @@ function fromHistory(
       id: nextId(),
       role: item.role as ChatMessage['role'],
       content: item.content,
+      sourceId: item.id ?? null,
       toolCalls: (item.tool_calls ?? []).map((call) => ({
         ...call,
         state: 'succeeded' as ToolCallState,
@@ -267,6 +274,16 @@ export function useChat() {
   )
 
   /** 发一条消息（流式）。 */
+  /** 把一轮的 SSE 帧读掉，事件往当前助手消息上打补丁。 */
+  const consume = useCallback(
+    async (response: Response) => {
+      for await (const event of readSSE<AgentStreamChunk>(response)) {
+        handleEvent(event)
+      }
+    },
+    [handleEvent],
+  )
+
   const send = useCallback(
     async (text: string, threadId: string, options?: { attachments?: string[]; providerId?: number | null }) => {
       const trimmed = text.trim()
@@ -295,9 +312,7 @@ export function useChat() {
           },
           controller.signal,
         )
-        for await (const event of readSSE<AgentStreamChunk>(response)) {
-          handleEvent(event)
-        }
+        await consume(response)
       } catch (cause) {
         if ((cause as Error)?.name === 'AbortError') {
           // 用户中断，不是错误
@@ -310,7 +325,72 @@ export function useChat() {
         setBusy(false)
       }
     },
-    [busy, handleEvent],
+    [busy, consume],
+  )
+
+  /**
+   * 重新生成上一轮。
+   *
+   * 后端把最后一条用户消息起往后全删再重跑；**前端也得跟着删** ——
+   * 不删的话屏幕上会留着旧回复，新回复又追加在后面，看着像两轮。
+   */
+  const regenerate = useCallback(
+    async (threadId: string) => {
+      if (busy) return
+      setError('')
+      const assistantId = nextId()
+      turnMessageIdRef.current = assistantId
+      setMessages((prev) => {
+        const index = prev.findLastIndex((item) => item.role === 'user')
+        // **保留到用户消息（含）** —— 后端是拿那条用户消息重跑的，它还在
+        // 历史里；前端要是把它也删了，刷新一下就又冒出来了。
+        const kept = index === -1 ? prev : prev.slice(0, index + 1)
+        return [...kept, { id: assistantId, role: 'assistant', content: '', toolCalls: [], pending: [] }]
+      })
+
+      setBusy(true)
+      const controller = new AbortController()
+      abortRef.current = controller
+      try {
+        await consume(await regenerateChat(threadId, {}, controller.signal))
+      } catch (cause) {
+        if ((cause as Error)?.name !== 'AbortError') {
+          setError(cause instanceof Error ? cause.message : String(cause))
+        }
+      } finally {
+        abortRef.current = null
+        turnMessageIdRef.current = null
+        setBusy(false)
+      }
+    },
+    [busy, consume],
+  )
+
+  /**
+   * 从第 index 条消息分支出新会话，返回新会话 id（失败返回 null）。
+   *
+   * **分支点要的是 checkpoint 里的消息 id** —— 前端流式产生的消息没有 id，
+   * 所以重新读一次历史，用**同一套合并规则**（{@link fromHistory}）算出
+   * 第 index 条对应历史里的哪一条，拿到它的 id 再去分支。
+   */
+  const forkAt = useCallback(
+    async (threadId: string, index: number): Promise<string | null> => {
+      setError('')
+      try {
+        const result = await history(threadId)
+        const visible = fromHistory(result.messages)
+        const target = visible[index]
+        if (!target?.sourceId) {
+          throw new Error('这一条还没进历史，没法分支')
+        }
+        const forked = await forkConversation(threadId, target.sourceId)
+        return forked.thread_id
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+        return null
+      }
+    },
+    [],
   )
 
   /** 读会话历史。 */
@@ -398,5 +478,17 @@ export function useChat() {
     setError('')
   }, [])
 
-  return { messages, busy, error, send, loadHistory, approve, reject, abort, reset }
+  return {
+    messages,
+    busy,
+    error,
+    send,
+    regenerate,
+    forkAt,
+    loadHistory,
+    approve,
+    reject,
+    abort,
+    reset,
+  }
 }

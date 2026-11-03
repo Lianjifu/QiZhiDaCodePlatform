@@ -167,6 +167,7 @@ class SlashCommandOut(BaseModel):
 class AgentHistoryMessage(BaseModel):
     """历史消息里的一条。"""
 
+    id: str | None = Field(default=None, description="消息 id（checkpoint 里的稳定 UUID）")
     role: str = Field(description="user / assistant / tool")
     content: str = Field(default="", description="消息正文")
     name: str | None = Field(default=None, description="工具消息的工具名")
@@ -186,6 +187,35 @@ class AgentHistoryOut(BaseModel):
 
     thread_id: str = Field(description="会话 ID")
     messages: list[AgentHistoryMessage] = Field(default_factory=list, description="历史消息")
+
+
+class AgentRegenerateIn(BaseModel):
+    """重新生成的参数。
+
+    **不需要传消息** —— 用的是历史里最后一条用户消息。
+    """
+
+    provider_id: int | None = Field(default=None, description="用哪个供应商的模型")
+    skill_ids: list[int] = Field(default_factory=list, description="这一轮挂哪些技能")
+
+
+class AgentForkIn(BaseModel):
+    """从某条消息分支出新会话。"""
+
+    message_id: str = Field(
+        min_length=1,
+        max_length=64,
+        description="分支点的消息 id（历史里的 message.id）—— 分支出来的会话保留到这条为止",
+    )
+
+
+class AgentForkOut(BaseModel):
+    """分支的结果。"""
+
+    thread_id: str = Field(description="新会话 ID")
+    source_thread_id: str = Field(default="", description="从哪个会话分出来的")
+    message_id: str = Field(default="", description="分支点的消息 id")
+    kept_messages: int = Field(default=0, description="新会话里保留了几条消息")
 
 
 # ---------- 会话状态 ----------

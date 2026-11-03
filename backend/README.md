@@ -168,7 +168,23 @@ GET  /api/v1/agent/{thread_id}/history   读会话历史
 GET  /api/v1/agent/{thread_id}/status    会话状态（环境/上下文/产出/改动量）
 GET  /api/v1/agent/commands         斜杠命令清单（输入框敲 `/` 弹的那份）
 DELETE /api/v1/agent/{thread_id}    清空会话的对话记录（工作区文件不删）
+POST /api/v1/agent/{thread_id}/regenerate  重新生成上一轮（SSE，帧格式同 /stream）
+POST /api/v1/agent/{thread_id}/fork        从某条消息分支出新会话
 ```
+
+### 重新生成 与 分支
+
+两个能力都作用在 **checkpoint 的历史**上，只用 LangGraph 的公开接口
+（`update_state` + `RemoveMessage`），**不碰 checkpoint 表里的 blob**：
+
+- **重新生成**（`app/agents/runner.py` 的 `regenerate()`）：从最后一条用户消息
+  起（含它）往后全删，再用那条用户消息重跑一遍。帧格式与 `/stream` 完全一致。
+- **分支**（`fork()`）：新会话用 `update_state` 播种 —— 写入切到分支点为止的
+  消息，**不跑模型**；工作区文件也复制过去（只带对话不带文件的话，新会话是
+  空的）。分支点靠**消息 id** 定位，历史接口现在会带 `message.id`。
+
+> **这两个接口也没有鉴权** —— 知道 `thread_id` 就能改别人会话的历史、重跑别人的
+> 对话。跟文件接口一样，上线前必须补鉴权。
 
 流式接口的帧有六种类型（`type` 字段决定）：`text`（文本增量）、
 `tool_call`（模型决定调工具）、`tool_result`（工具跑完）、

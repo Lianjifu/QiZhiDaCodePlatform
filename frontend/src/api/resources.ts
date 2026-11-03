@@ -9,6 +9,7 @@ import { api, API_BASE } from './client'
 import type {
   AgentChatRequest,
   AgentChatResult,
+  AgentForkResult,
   AgentHistory,
   BuiltinTool,
   CapabilityList,
@@ -198,6 +199,33 @@ export function listCommands(): Promise<SlashCommand[]> {
 /** 清空会话的对话记录（删掉 checkpoint 里的历史）。 */
 export function clearConversation(threadId: string): Promise<{ thread_id: string; status: string }> {
   return api.delete<{ thread_id: string; status: string }>(`/agent/${threadId}`)
+}
+
+/**
+ * 重新生成上一轮（流式）。
+ *
+ * 后端把最后一条用户消息起往后全删，再用那条消息重跑 —— 帧格式与
+ * {@link streamChat} 完全一致。
+ */
+export function regenerateChat(
+  threadId: string,
+  payload: { provider_id?: number | null; skill_ids?: number[] } = {},
+  signal?: AbortSignal,
+): Promise<Response> {
+  return fetch(`${API_BASE}/agent/${threadId}/regenerate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal,
+  })
+}
+
+/** 从某条消息分支出新会话。 */
+export function forkConversation(
+  threadId: string,
+  messageId: string,
+): Promise<AgentForkResult> {
+  return api.post<AgentForkResult>(`/agent/${threadId}/fork`, { message_id: messageId })
 }
 
 // ---------- 文件 ----------

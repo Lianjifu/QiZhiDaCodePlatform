@@ -208,3 +208,48 @@ export function AutoIcon(props: IconProps) {
     </Svg>
   )
 }
+
+export function RefreshIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.7-3.9" />
+      <path d="M13.5 2.5V5H11" />
+    </Svg>
+  )
+}
+
+export function BranchIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="4.5" cy="3.5" r="1.8" />
+      <circle cx="4.5" cy="12.5" r="1.8" />
+      <circle cx="11.5" cy="6" r="1.8" />
+      <path d="M4.5 5.3v5.4M11.5 7.8c0 2.4-1.7 3.4-3.6 4" />
+    </Svg>
+  )
+}
+
+export function KeyboardIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="1.5" y="4" width="13" height="8" rx="1.5" />
+      <path d="M4 6.5h.01M6.5 6.5h.01M9 6.5h.01M11.5 6.5h.01M4.5 9.5h7" />
+    </Svg>
+  )
+}
+
+export function CommandIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M5.5 2.5a1.75 1.75 0 1 0 1.75 1.75h1.5a1.75 1.75 0 1 0 1.75-1.75A1.75 1.75 0 1 0 8.75 4.25v7.5A1.75 1.75 0 1 0 10.5 13.5a1.75 1.75 0 1 0-1.75-1.75h-1.5a1.75 1.75 0 1 0-1.75 1.75A1.75 1.75 0 1 0 7.25 11.75v-7.5" />
+    </Svg>
+  )
+}
+
+export function SparkIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M8 2.5 9.4 6.6 13.5 8l-4.1 1.4L8 13.5 6.6 9.4 2.5 8l4.1-1.4z" />
+    </Svg>
+  )
+}

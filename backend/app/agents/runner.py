@@ -46,6 +46,7 @@ from langchain_core.messages import (
     HumanMessage,
     ToolMessage,
 )
+from langgraph.graph.message import RemoveMessage
 
 from app.agents.builder import build_agent
 from app.agents.llm import get_chat_model, supports_vision
@@ -56,6 +57,7 @@ from app.capabilities.registration.spec import KIND_SKILL, CapabilitySpec
 from app.capabilities.skills_export import export_skills
 from app.context.service import ContextRequest, build_context_service
 from app.core.config import settings
+from app.core.exceptions import NotFoundError, ValidationError
 from app.files.attachments import Attachment, build_attachments, build_uploads_note
 from app.schemas.agent import (
     AgentHistoryMessage,
@@ -366,6 +368,17 @@ class AgentRunner:
             skill_ids=skill_ids,
             attachments=parsed,
         )
+        async for event in self._stream_turn(agent, message, thread_id, blocks):
+            yield event
+
+    async def _stream_turn(
+        self,
+        agent: Any,
+        message: str,
+        thread_id: str,
+        blocks: list[dict[str, Any]],
+    ) -> AsyncIterator[AgentStreamChunk]:
+        """跑一轮并把事件流出去 —— ``stream`` 与 ``regenerate`` 共用。"""
         seen_calls: set[str] = set()
         seen_results: set[str] = set()
 
@@ -394,6 +407,102 @@ class AgentRunner:
             yield AgentStreamChunk(type="done", status=STATUS_PENDING_APPROVAL)
         else:
             yield AgentStreamChunk(type="done", status=STATUS_COMPLETED)
+
+    async def regenerate(
+        self,
+        thread_id: str,
+        workspace: Path,
+        *,
+        specs: list[CapabilitySpec] | None = None,
+        context: ExecutionContext | None = None,
+        skill_ids: list[int] | None = None,
+    ) -> AsyncIterator[AgentStreamChunk]:
+        """把上一轮删掉重跑一遍。
+
+        **怎么删的**：LangGraph 的 ``update_state`` 支持 ``RemoveMessage`` ——
+        按消息 id 把它们从 checkpoint 的历史里摘掉。我们摘掉**最后一条用户
+        消息及其之后的所有消息**（助手回复 + 工具消息），然后拿那条用户消息
+        重新跑一遍。
+
+        为什么连用户消息一起删：留着它再发一遍，历史里就会出现两条一样的用户
+        消息。
+        """
+        model = self._resolve_model()
+        agent, _skills = await self._build(
+            "",
+            thread_id,
+            workspace,
+            specs=specs,
+            context=context,
+            skill_ids=skill_ids,
+            with_memory=False,
+        )
+        config = {"configurable": {"thread_id": thread_id}}
+        state = await agent.aget_state(config)
+        messages = list((getattr(state, "values", None) or {}).get("messages") or [])
+        last_user = _last_user_index(messages)
+        if last_user < 0:
+            raise ValidationError("这个会话还没有可以重新生成的消息")
+
+        # 摘掉这一轮：用户消息 + 之后的助手与工具消息
+        removals = [
+            RemoveMessage(id=str(msg.id))
+            for msg in messages[last_user:]
+            if getattr(msg, "id", None)
+        ]
+        if removals:
+            await agent.aupdate_state(config, {"messages": removals})
+
+        text = _message_text(messages[last_user].content)
+        async for event in self._stream_turn(agent, text, thread_id, []):
+            yield event
+
+    async def fork(
+        self,
+        thread_id: str,
+        message_id: str,
+        new_thread_id: str,
+        workspace: Path,
+        *,
+        specs: list[CapabilitySpec] | None = None,
+        context: ExecutionContext | None = None,
+        skill_ids: list[int] | None = None,
+    ) -> int:
+        """从某条消息分支出一个新会话。
+
+        **不搬 checkpoint** —— 新会话直接 ``update_state`` 播种：把原会话的
+        消息列表切到分支点之前，写进新会话的第一个 checkpoint。这么做比复制
+        checkpoint 表里的 blob 稳（不用碰存储格式），而且新会话就是个干净的
+        普通会话。
+
+        Returns:
+            新会话里保留了几条消息。
+        """
+        agent, _skills = await self._build(
+            "",
+            thread_id,
+            workspace,
+            specs=specs,
+            context=context,
+            skill_ids=skill_ids,
+            with_memory=False,
+        )
+        state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
+        messages = list((getattr(state, "values", None) or {}).get("messages") or [])
+        index = -1
+        for position, msg in enumerate(messages):
+            if str(getattr(msg, "id", "") or "") == message_id:
+                index = position
+                break
+        if index < 0:
+            raise NotFoundError(f"找不到消息 {message_id}")
+
+        kept = messages[: index + 1]
+        await agent.aupdate_state(
+            {"configurable": {"thread_id": new_thread_id}},
+            {"messages": kept},
+        )
+        return len(kept)
 
     async def _pending_from_state(self, agent: Any, thread_id: str) -> list[PendingApprovalOut]:
         """从 checkpoint 读这一轮挂起的待批条目。"""
@@ -552,6 +661,17 @@ class AgentRunner:
         return agent, skill_specs
 
 
+def _last_user_index(messages: list[Any]) -> int:
+    """最后一条用户消息的下标；没有就是 -1。
+
+    「重新生成」要拿它当回退点 —— 从这条往后全删。
+    """
+    for index in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[index], HumanMessage):
+            return index
+    return -1
+
+
 def _history_entry(msg: Any) -> AgentHistoryMessage | None:
     """checkpoint 里的一条消息 → 历史消息。
 
@@ -559,9 +679,14 @@ def _history_entry(msg: Any) -> AgentHistoryMessage | None:
     没有意义，还会让列表变长。
     """
     if isinstance(msg, HumanMessage):
-        return AgentHistoryMessage(role="user", content=_message_text(msg.content))
+        return AgentHistoryMessage(
+            id=getattr(msg, "id", None),
+            role="user",
+            content=_message_text(msg.content),
+        )
     if isinstance(msg, AIMessage):
         return AgentHistoryMessage(
+            id=getattr(msg, "id", None),
             role="assistant",
             content=_message_text(msg.content),
             tool_calls=[
@@ -576,6 +701,7 @@ def _history_entry(msg: Any) -> AgentHistoryMessage | None:
     if isinstance(msg, ToolMessage):
         diff = _diff_of(msg)
         return AgentHistoryMessage(
+            id=getattr(msg, "id", None),
             role="tool",
             content=_message_text(msg.content),
             name=str(getattr(msg, "name", "") or "") or None,

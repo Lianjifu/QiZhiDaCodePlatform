@@ -23,7 +23,9 @@ export default function ApprovalCard({
   return (
     <div className="my-3 overflow-hidden rounded-xl border border-warning/60 bg-warning-soft">
       <div className="flex items-center gap-2 border-b border-warning/30 px-4 py-2.5">
-        <AlertIcon className="h-4 w-4 shrink-0 text-warning" />
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-warning/15">
+          <AlertIcon className="h-3.5 w-3.5 text-warning" />
+        </span>
         <span className="text-sm font-medium text-ink">需要你批准</span>
       </div>
 

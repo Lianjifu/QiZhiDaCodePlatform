@@ -30,7 +30,7 @@ export default function Button({
     <button
       {...props}
       className={[
-        'rounded-lg font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+        'rounded-lg font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-50',
         VARIANTS[variant],
         SIZES[size],
         className ?? '',

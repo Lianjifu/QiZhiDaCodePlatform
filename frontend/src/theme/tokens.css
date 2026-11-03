@@ -10,30 +10,45 @@
  *
  * 深色不是把浅色反过来 —— Claude 桌面端那套深色里，**侧栏比主区更暗**
  * （ sunken < base ），卡片和输入框又是更亮的一层（ raised > base ）。
+ *
+ * ## 品牌色：朱砂橙
+ *
+ * 底色是暖纸感（hue 78），主色是朱砂红（hue 38）—— 两者同属暖色系，
+ * 放在一起是「宣纸 + 朱印」的东方气质，不打架。
+ *
+ * **主色只在这里改** —— 组件全部走 `accent` 系列语义类。
  */
 
 :root {
   /* 背景三层：页面底 / 侧栏与凹陷区 / 卡片与输入框 */
-  --surface-base: oklch(0.985 0.002 90);
-  --surface-sunken: oklch(0.955 0.003 90);
+  --surface-base: oklch(0.985 0.002 78);
+  --surface-sunken: oklch(0.955 0.003 78);
   --surface-raised: oklch(1 0 0);
   --surface-overlay: oklch(1 0 0);
-  --surface-hover: oklch(0.96 0.003 90);
+  --surface-hover: oklch(0.96 0.003 78);
 
   /* 描边 */
-  --border-subtle: oklch(0.905 0.004 90);
-  --border-strong: oklch(0.82 0.006 90);
+  --border-subtle: oklch(0.905 0.004 78);
+  --border-strong: oklch(0.82 0.006 78);
 
   /* 文字三级 */
-  --text-primary: oklch(0.22 0.01 90);
-  --text-secondary: oklch(0.5 0.01 90);
-  --text-tertiary: oklch(0.65 0.01 90);
+  --text-primary: oklch(0.22 0.01 60);
+  --text-secondary: oklch(0.5 0.012 60);
+  --text-tertiary: oklch(0.65 0.012 60);
 
-  /* 主色 */
-  --accent: oklch(0.52 0.17 255);
-  --accent-hover: oklch(0.46 0.16 255);
-  --accent-soft: oklch(0.95 0.02 255);
+  /* 主色：朱砂橙 */
+  --accent: oklch(0.58 0.16 38);
+  --accent-hover: oklch(0.51 0.16 38);
+  --accent-soft: oklch(0.955 0.03 40);
   --accent-text: oklch(1 0 0);
+  /* 更浅一档的主色 —— 选中项底色、浅底强调 */
+  --accent-muted: oklch(0.92 0.045 40);
+  /* 品牌渐变（logo 方块、hero 光晕用） */
+  --brand-gradient: linear-gradient(135deg, oklch(0.62 0.17 42), oklch(0.52 0.16 22));
+
+  /* 聚焦环 —— 品牌色的淡版，深浅各一套 */
+  --ring: oklch(0.58 0.16 38 / 0.35);
+  --ring-offset: oklch(1 0 0);
 
   /* 语义色 */
   --danger: oklch(0.53 0.2 25);
@@ -45,41 +60,53 @@
 
   /* 空状态页的背景效果：点阵 + 中心光晕 */
   --grid-dot: oklch(0 0 0 / 0.09);
-  --glow: oklch(0.55 0.16 255 / 0.1);
+  --glow: oklch(0.58 0.16 38 / 0.12);
 
-  /* 代码高亮的颜色 —— 语法着色需要比正文更多区分度 */
-  --code-keyword: oklch(0.48 0.19 300);
-  --code-string: oklch(0.45 0.12 145);
-  --code-comment: oklch(0.58 0.02 90);
-  --code-number: oklch(0.52 0.14 60);
-  --code-func: oklch(0.44 0.13 255);
-  --code-type: oklch(0.47 0.12 200);
-  --code-var: oklch(0.4 0.02 90);
-  --code-attr: oklch(0.5 0.1 90);
-  --code-meta: oklch(0.55 0.03 90);
+  /* 阴影 —— 别在组件里写 `shadow-[0_1px_2px_oklch(0_0_0/0.05)]` 那种任意值，
+     深色下黑色阴影会糊成一片。深浅两套在这里给不同的值。 */
+  --elevation-1: 0 1px 2px oklch(0.2 0.02 40 / 0.06);
+  --elevation-2: 0 6px 24px -16px oklch(0.2 0.02 40 / 0.28);
+  --elevation-3: 0 18px 50px -20px oklch(0.2 0.02 40 / 0.32);
+
+  /* 代码高亮的颜色 —— 语法着色需要比正文更多区分度。
+     橙系主色下把 keyword 挪到紫、function 挪到蓝，才不会跟品牌色混。 */
+  --code-keyword: oklch(0.46 0.19 300);
+  --code-string: oklch(0.43 0.13 145);
+  --code-comment: oklch(0.58 0.02 78);
+  --code-number: oklch(0.5 0.15 55);
+  --code-func: oklch(0.42 0.15 255);
+  --code-type: oklch(0.45 0.13 200);
+  --code-var: oklch(0.36 0.02 60);
+  --code-attr: oklch(0.48 0.11 85);
+  --code-meta: oklch(0.55 0.03 78);
   --code-tag: oklch(0.5 0.18 25);
   --code-del: oklch(0.53 0.2 25);
 }
 
 .dark {
-  --surface-base: oklch(0.32 0.004 90);
-  --surface-sunken: oklch(0.275 0.004 90);
-  --surface-raised: oklch(0.375 0.004 90);
-  --surface-overlay: oklch(0.42 0.005 90);
-  --surface-hover: oklch(0.4 0.005 90);
+  --surface-base: oklch(0.32 0.004 78);
+  --surface-sunken: oklch(0.275 0.004 78);
+  --surface-raised: oklch(0.375 0.004 78);
+  --surface-overlay: oklch(0.42 0.005 78);
+  --surface-hover: oklch(0.4 0.005 78);
 
-  --border-subtle: oklch(0.42 0.005 90);
-  --border-strong: oklch(0.54 0.006 90);
+  --border-subtle: oklch(0.42 0.005 78);
+  --border-strong: oklch(0.54 0.006 78);
 
-  --text-primary: oklch(0.93 0.005 90);
-  --text-secondary: oklch(0.72 0.006 90);
-  --text-tertiary: oklch(0.58 0.006 90);
+  --text-primary: oklch(0.93 0.005 78);
+  --text-secondary: oklch(0.72 0.006 78);
+  --text-tertiary: oklch(0.58 0.006 78);
 
   /* 深色下主色要提亮一档 —— 原色在深底上偏暗，看不清 */
-  --accent: oklch(0.68 0.15 255);
-  --accent-hover: oklch(0.74 0.14 255);
-  --accent-soft: oklch(0.32 0.06 255);
-  --accent-text: oklch(0.16 0.02 255);
+  --accent: oklch(0.76 0.15 45);
+  --accent-hover: oklch(0.82 0.14 48);
+  --accent-soft: oklch(0.3 0.075 38);
+  --accent-text: oklch(0.18 0.04 38);
+  --accent-muted: oklch(0.34 0.06 38);
+  --brand-gradient: linear-gradient(135deg, oklch(0.7 0.16 45), oklch(0.58 0.15 25));
+
+  --ring: oklch(0.76 0.15 45 / 0.4);
+  --ring-offset: oklch(0.32 0.004 78);
 
   --danger: oklch(0.68 0.17 25);
   --danger-soft: oklch(0.3 0.06 25);
@@ -89,18 +116,23 @@
   --warning-soft: oklch(0.32 0.05 75);
 
   --grid-dot: oklch(1 0 0 / 0.11);
-  --glow: oklch(0.62 0.15 255 / 0.16);
+  --glow: oklch(0.72 0.15 45 / 0.16);
+
+  /* 深色下阴影几乎看不见 —— 靠描边分层，不靠投影 */
+  --elevation-1: 0 1px 2px oklch(0 0 0 / 0.4);
+  --elevation-2: 0 6px 24px -16px oklch(0 0 0 / 0.6);
+  --elevation-3: 0 18px 50px -20px oklch(0 0 0 / 0.7);
 
   /* 深色下代码颜色整体提亮一档，不然在深底上发闷 */
   --code-keyword: oklch(0.78 0.15 300);
   --code-string: oklch(0.76 0.13 150);
-  --code-comment: oklch(0.55 0.02 90);
+  --code-comment: oklch(0.55 0.02 78);
   --code-number: oklch(0.79 0.13 65);
   --code-func: oklch(0.76 0.12 250);
   --code-type: oklch(0.74 0.11 200);
-  --code-var: oklch(0.88 0.01 90);
+  --code-var: oklch(0.88 0.01 78);
   --code-attr: oklch(0.8 0.09 95);
-  --code-meta: oklch(0.62 0.03 90);
+  --code-meta: oklch(0.62 0.03 78);
   --code-tag: oklch(0.75 0.15 30);
   --code-del: oklch(0.7 0.17 25);
 }

@@ -109,6 +109,19 @@ export default function ChatPage() {
     }
   }
 
+  /**
+   * 从某条消息分支出新会话。
+   *
+   * 分支出来的是**新会话** —— 有自己的 id、自己的侧栏条目、自己的工作区
+   * （工作区文件也复制过去了）。
+   */
+  const handleFork = async (index: number) => {
+    const newThread = await chat.forkAt(threadId, index)
+    if (!newThread) return
+    touch(newThread, `${currentTitle()}（分支）`)
+    navigate(`/chat/${newThread}`)
+  }
+
   const currentTitle = () => {
     // 侧栏里的标题最准 —— 没有就退回第一条用户消息
     const known = sessions.find((item) => item.threadId === threadId)
@@ -188,7 +201,7 @@ export default function ChatPage() {
                   key={suggestion}
                   type="button"
                   onClick={() => composerRef.current?.setText(suggestion)}
-                  className="rounded-xl border border-line bg-sunken/70 px-3.5 py-2 text-left text-xs text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+                  className="rounded-xl border border-line bg-sunken/70 px-3.5 py-2 text-left text-xs text-ink-muted transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-ink"
                 >
                   {suggestion}
                 </button>
@@ -201,6 +214,8 @@ export default function ChatPage() {
             busy={chat.busy}
             onApprove={() => void chat.approve(threadId)}
             onReject={() => void chat.reject(threadId)}
+            onRegenerate={() => void chat.regenerate(threadId)}
+            onFork={(index) => void handleFork(index)}
           />
         )}
       </div>

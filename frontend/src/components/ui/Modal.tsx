@@ -49,7 +49,7 @@ export default function Modal({
             type="button"
             onClick={onClose}
             title="关闭"
-            className="rounded px-1.5 text-sm text-ink-faint transition-colors hover:bg-hover hover:text-ink"
+            className="rounded px-1.5 text-sm text-ink-faint transition-colors hover:bg-hover hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ring)]"
           >
             ×
           </button>

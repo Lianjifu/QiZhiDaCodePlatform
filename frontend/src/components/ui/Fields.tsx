@@ -7,7 +7,7 @@ import { useState, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttr
 
 /** 输入框统一样式 —— 只在这个文件里定义，不导出去（免得触发"只导出组件"那条规则）。 */
 const CONTROL =
-  'w-full rounded-lg border border-line bg-base px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:opacity-60'
+  'w-full rounded-lg border border-line bg-base px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent focus:shadow-[0_0_0_3px_var(--ring)] disabled:opacity-60'
 
 /** 一个带标签的控件。 */
 export function Field({

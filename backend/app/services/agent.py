@@ -7,8 +7,10 @@
 
 import json
 import logging
+import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
+from uuid import uuid4
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +39,7 @@ from app.repositories.invocation import InvocationRepository
 from app.repositories.llm_provider import LLMProviderRepository
 from app.repositories.mcp_server import MCPServerRepository
 from app.schemas.agent import (
+    AgentForkOut,
     AgentHistoryOut,
     AgentStreamChunk,
     RunningTaskOut,
@@ -44,6 +47,19 @@ from app.schemas.agent import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _copy_workspace(source: Path, target: Path) -> None:
+    """把工作区里的文件复制到新会话的工作区。
+
+    分支只带对话历史是不够的 —— 文件是 agent 的工作对象，新会话得看得见。
+
+    **复制失败不算致命** —— 新会话照样能聊，只是工作区是空的。
+    """
+    try:
+        shutil.copytree(source, target, dirs_exist_ok=True)
+    except OSError as exc:
+        logger.warning("复制工作区失败 %s → %s: %s", source, target, exc)
 
 
 def _readable_error(exc: Exception) -> str:
@@ -376,6 +392,77 @@ class AgentService:
                 await checkpointer.adelete_thread(thread_id)
             except Exception as exc:
                 logger.exception("清空会话失败 thread_id=%s", thread_id)
+                raise AgentError(_readable_error(exc)) from exc
+
+    async def regenerate(
+        self,
+        thread_id: str,
+        provider_id: int | None = None,
+        skill_ids: list[int] | None = None,
+    ) -> AsyncIterator[AgentStreamChunk]:
+        """把上一轮删掉重跑一遍（流式）。
+
+        事件格式与 :meth:`stream` 完全一致 —— 前端那边不用为它单开一条路。
+        """
+        workspace = self.resolve_workspace(thread_id)
+        async with open_checkpointer() as checkpointer:
+            try:
+                model = await self._resolve_model(provider_id)
+                specs = await self.load_capabilities()
+                context = await self._build_context(workspace, specs, thread_id)
+                runner = self._make_runner(checkpointer, model)
+                async for event in runner.regenerate(
+                    thread_id,
+                    workspace,
+                    specs=specs,
+                    context=context,
+                    skill_ids=skill_ids,
+                ):
+                    yield event
+                if self.session is not None:
+                    await self.session.commit()
+            except Exception as exc:
+                logger.exception("重新生成失败 thread_id=%s", thread_id)
+                text = _readable_error(exc)
+                yield AgentStreamChunk(type="error", error=text, text=text)
+                yield AgentStreamChunk(type="done", status=STATUS_FAILED)
+
+    async def fork(self, thread_id: str, message_id: str) -> AgentForkOut:
+        """从某条消息分支出一个新会话。
+
+        新会话保留到分支点为止的历史，之后可以接着聊 —— 原会话不动。
+
+        **工作区也带过去** —— 只带对话不带文件的话，分支出来的会话是空的，
+        agent 看不见之前的代码。
+        """
+        new_thread_id = f"t_{uuid4().hex[:16]}"
+        workspace = self.resolve_workspace(thread_id)
+        _copy_workspace(workspace, self.resolve_workspace(new_thread_id))
+        async with open_checkpointer() as checkpointer:
+            try:
+                specs = await self.load_capabilities()
+                context = await self._build_context(workspace, specs, thread_id)
+                runner = self._make_runner(checkpointer, await self._resolve_model(None))
+                kept = await runner.fork(
+                    thread_id,
+                    message_id,
+                    new_thread_id,
+                    workspace,
+                    specs=specs,
+                    context=context,
+                )
+                if self.session is not None:
+                    await self.session.commit()
+                return AgentForkOut(
+                    thread_id=new_thread_id,
+                    source_thread_id=thread_id,
+                    message_id=message_id,
+                    kept_messages=kept,
+                )
+            except AppError:
+                raise
+            except Exception as exc:
+                logger.exception("分支会话失败 thread_id=%s", thread_id)
                 raise AgentError(_readable_error(exc)) from exc
 
     async def status(self, thread_id: str) -> SessionStatusOut:

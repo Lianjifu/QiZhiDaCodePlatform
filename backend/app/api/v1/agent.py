@@ -18,6 +18,9 @@ from app.api.deps import get_agent_service
 from app.schemas.agent import (
     AgentChatOut,
     AgentChatRequest,
+    AgentForkIn,
+    AgentForkOut,
+    AgentRegenerateIn,
     AgentHistoryOut,
     PendingApprovalOut,
     SessionStatusOut,
@@ -234,3 +237,52 @@ async def history(
     """
     result = await service.history(thread_id)
     return ResponseModel[AgentHistoryOut](data=result)
+
+
+@router.post(
+    "/{thread_id}/regenerate",
+    summary="重新生成上一轮回复（流式）",
+)
+async def regenerate(
+    thread_id: str,
+    payload: AgentRegenerateIn,
+    service: ServiceDep,
+) -> StreamingResponse:
+    """把上一轮删掉重跑一遍。
+
+    **删的是 checkpoint 里的历史** —— 从最后一条用户消息起（含它）往后全删，
+    然后拿那条用户消息重跑。帧格式与 ``/stream`` 完全一致。
+    """
+
+    async def event_stream():
+        async for event in service.regenerate(
+            thread_id,
+            payload.provider_id,
+            payload.skill_ids,
+        ):
+            yield f"data: {event.model_dump_json()}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post(
+    "/{thread_id}/fork",
+    response_model=ResponseModel[AgentForkOut],
+    summary="从某条消息分支出新会话",
+)
+async def fork(
+    thread_id: str,
+    payload: AgentForkIn,
+    service: ServiceDep,
+) -> ResponseModel[AgentForkOut]:
+    """从某条消息分支出一个新会话。
+
+    新会话保留到分支点为止的历史；原会话不动。
+    """
+    result = await service.fork(thread_id, payload.message_id)
+    return ResponseModel[AgentForkOut](data=result)

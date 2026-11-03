@@ -105,6 +105,8 @@ export interface SlashCommand {
 
 /** 历史消息里的一条（后端 `AgentHistoryMessage`）。 */
 export interface AgentHistoryMessage {
+  /** checkpoint 里的稳定消息 id —— 分支会话靠它定位分支点 */
+  id?: string | null
   role: 'user' | 'assistant' | 'tool'
   content: string
   name?: string | null
@@ -112,6 +114,14 @@ export interface AgentHistoryMessage {
   tool_calls: ToolCall[]
   added?: number | null
   removed?: number | null
+}
+
+/** 分支会话的结果（后端 `AgentForkOut`）。 */
+export interface AgentForkResult {
+  thread_id: string
+  source_thread_id: string
+  message_id: string
+  kept_messages: number
 }
 
 /** 一个会话的历史（后端 `AgentHistoryOut`）。 */

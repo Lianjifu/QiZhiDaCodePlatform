@@ -4,13 +4,25 @@
  * 侧栏的分组照着 Claude 桌面端来：**产品头 / 动作 / 模块入口 / 全部会话**。
  * 模块入口对应平台真实的模块 —— 没有对应东西的就不放（比如「项目」）。
  */
-import { useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 
-import { ChatIcon, FolderIcon, LayersIcon, PlugIcon, PlusIcon, SearchIcon } from '../../components/icons'
+import {
+  AutoIcon,
+  ChatIcon,
+  FolderIcon,
+  LayersIcon,
+  MoonIcon,
+  PlugIcon,
+  PlusIcon,
+  SearchIcon,
+  SunIcon,
+} from '../../components/icons'
 import ThemeToggle from './ThemeToggle'
+import CommandPalette, { type PaletteCommand } from '../../features/commands/CommandPalette'
 import SessionStatusPanel from '../../features/sessions/SessionStatusPanel'
 import { useSessions } from '../../features/sessions/store'
+import { useTheme } from '../../theme/ThemeProvider'
 
 interface NavItem {
   to: string
@@ -50,7 +62,9 @@ export default function AppShell() {
   const navigate = useNavigate()
   const location = useLocation()
   const { pinned, others, create, remove, togglePin } = useSessions()
+  const { setMode } = useTheme()
   const [searchOpen, setSearchOpen] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
   /**
    * 状态面板看哪个会话。
@@ -88,12 +102,107 @@ export default function AppShell() {
   // 面板看哪个会话：显式指定过的优先，否则就是路由上的那个
   const panelThread = statusThread ?? activeThread
 
+  /**
+   * ⌘K / Ctrl+K —— 打开命令面板。
+   *
+   * 在输入框里按 ⌘K 不该弹面板（那是用户要输内容的地方），所以先看
+   * 焦点是不是落在输入框 / 文本域里。
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 'k' || !(event.metaKey || event.ctrlKey)) return
+      const target = event.target as HTMLElement | null
+      const tag = target?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return
+      event.preventDefault()
+      setPaletteOpen((value) => !value)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  /** 命令清单 —— 面板里按关键词过滤。 */
+  const commands = useMemo<PaletteCommand[]>(
+    () => [
+      {
+        id: 'new-session',
+        title: '新建会话',
+        hint: '开一个空白对话',
+        icon: <PlusIcon className="h-3.5 w-3.5" />,
+        action: () => {
+          const threadId = create()
+          navigate(`/chat/${threadId}`)
+        },
+      },
+      {
+        id: 'go-chat',
+        title: '编码助手',
+        hint: '回到对话页',
+        icon: <ChatIcon className="h-3.5 w-3.5" />,
+        action: () => navigate('/chat'),
+      },
+      {
+        id: 'go-files',
+        title: '工作区文件',
+        hint: '文件与上传件',
+        icon: <FolderIcon className="h-3.5 w-3.5" />,
+        action: () => navigate(activeThread ? `/files?thread=${activeThread}` : '/files'),
+      },
+      {
+        id: 'go-capabilities',
+        title: '能力清单',
+        hint: '工具 / 技能 / MCP',
+        icon: <LayersIcon className="h-3.5 w-3.5" />,
+        action: () => navigate('/capabilities'),
+      },
+      {
+        id: 'go-providers',
+        title: '模型接入',
+        hint: '供应商配置',
+        icon: <PlugIcon className="h-3.5 w-3.5" />,
+        action: () => navigate('/providers'),
+      },
+      {
+        id: 'toggle-panel',
+        title: '会话状态面板',
+        hint: '打开右侧那一列',
+        icon: <LayersIcon className="h-3.5 w-3.5" />,
+        action: () => setStatusOpen(true),
+      },
+      {
+        id: 'theme-light',
+        title: '切换到浅色',
+        hint: '主题',
+        icon: <SunIcon className="h-3.5 w-3.5" />,
+        action: () => setMode('light'),
+      },
+      {
+        id: 'theme-dark',
+        title: '切换到深色',
+        hint: '主题',
+        icon: <MoonIcon className="h-3.5 w-3.5" />,
+        action: () => setMode('dark'),
+      },
+      {
+        id: 'theme-system',
+        title: '主题跟随系统',
+        hint: '主题',
+        icon: <AutoIcon className="h-3.5 w-3.5" />,
+        action: () => setMode('system'),
+      },
+    ],
+    [activeThread, create, navigate, setMode],
+  )
+
   return (
     <div className="flex h-screen overflow-hidden bg-base">
       <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-sunken">
         {/* 产品头 */}
         <div className="flex items-center gap-2.5 px-4 pb-2 pt-4">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-sm font-semibold text-accent-text">
+          <div
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-sm font-semibold text-accent-text"
+            style={{ background: 'var(--brand-gradient)' }}
+          >
             智
           </div>
           <div className="min-w-0">
@@ -105,7 +214,7 @@ export default function AppShell() {
           <button
             type="button"
             onClick={handleCreate}
-            className="flex w-full items-center gap-2 rounded-lg bg-raised px-2.5 py-2 text-sm font-medium text-ink shadow-[0_1px_2px_oklch(0_0_0/0.06)] transition-colors hover:bg-hover"
+            className="flex w-full items-center gap-2 rounded-lg bg-raised px-2.5 py-2 text-sm font-medium text-ink shadow-1 transition-colors hover:bg-hover"
           >
             <PlusIcon className="h-4 w-4" />
             <span>新建会话</span>
@@ -134,6 +243,10 @@ export default function AppShell() {
             >
               <SearchIcon className="h-4 w-4" />
               <span>搜索</span>
+              <span className="flex-1" />
+              <kbd className="rounded border border-line px-1.5 py-0.5 text-[10px] text-ink-faint">
+                ⌘K
+              </kbd>
             </button>
           )}
         </div>
@@ -211,6 +324,10 @@ export default function AppShell() {
         右侧的状态面板 —— 占一整列，中间是对话区（参考 Claude 桌面端的布局）。
         面板自己滚，不影响对话区。
       */}
+      {paletteOpen ? (
+        <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />
+      ) : null}
+
       {statusOpen ? (
         <aside className="flex w-[22rem] shrink-0 flex-col overflow-y-auto border-l border-line bg-sunken p-3">
           <div className="mb-2 flex items-center justify-between px-1">

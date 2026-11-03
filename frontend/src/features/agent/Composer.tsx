@@ -400,10 +400,12 @@ export default forwardRef<ComposerHandle, {
 
         <div
           className={[
-            'rounded-3xl border border-line bg-raised',
+            'rounded-3xl border border-line bg-raised transition-[border-color,box-shadow]',
+            // 聚焦时透出品牌色 —— 输入框是页面上最该有"焦点"的东西
+            'focus-within:border-accent/50 focus-within:shadow-[0_0_0_3px_var(--ring)]',
             centered
-              ? 'shadow-[0_18px_50px_-20px_oklch(0_0_0/0.28)]'
-              : 'shadow-[0_6px_24px_-16px_oklch(0_0_0/0.24)]',
+              ? 'shadow-3'
+              : 'shadow-2',
           ].join(' ')}
         >
           {visibleAttachments.length > 0 && (
@@ -583,7 +585,7 @@ export default forwardRef<ComposerHandle, {
                 type="button"
                 title="停止"
                 onClick={onStop}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-ink text-base transition-transform hover:opacity-90"
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-ink text-accent-text transition-transform hover:opacity-90"
               >
                 <StopIcon className="h-3.5 w-3.5" />
               </button>
@@ -593,7 +595,7 @@ export default forwardRef<ComposerHandle, {
                 title="发送"
                 disabled={!canSend}
                 onClick={() => void submit()}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-ink text-base transition-transform hover:opacity-90 disabled:opacity-25"
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-accent text-accent-text transition-colors hover:bg-accent-hover disabled:opacity-25"
               >
                 <ArrowUpIcon className="h-4 w-4" />
               </button>
