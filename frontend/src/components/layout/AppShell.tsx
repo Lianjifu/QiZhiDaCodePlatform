@@ -9,7 +9,6 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 
 import ThemeToggle from './ThemeToggle'
 import SessionStatusPanel from '../../features/sessions/SessionStatusPanel'
-import SessionStatusWidget from '../../features/sessions/SessionStatusWidget'
 import { useSessions } from '../../features/sessions/store'
 
 interface NavItem {
@@ -143,17 +142,12 @@ export default function AppShell() {
         </div>
 
         <div className="border-t border-line p-3">
-          <SessionStatusWidget
-            threadId={activeThread}
-            open={statusOpen}
-            onToggle={() => setStatusOpen((value) => !value)}
-          />
           <ThemeToggle />
         </div>
       </aside>
 
       <main className="min-w-0 flex-1 overflow-hidden bg-base">
-        <Outlet />
+        <Outlet context={{ openStatusPanel: () => setStatusOpen(true) }} />
       </main>
 
       {/*

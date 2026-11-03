@@ -14,17 +14,8 @@ import { useEffect, useState } from 'react'
 import { sessionStatus } from '../../api/resources'
 import { humanSize } from '../../lib/format'
 import type { SessionStatus } from '../../types/api'
-
-/** 每块上下文占一个颜色 —— 跟参考图一样，一眼能分清谁占了多少。 */
-const PART_COLORS: Record<string, string> = {
-  messages: 'bg-accent',
-  system_prompt: 'bg-warning',
-  tools: 'bg-danger',
-  mcp_tools: 'bg-success',
-  skills: 'bg-ink-faint',
-  memory: 'bg-ink-faint',
-  autocompact: 'bg-ink-faint',
-}
+import { ContextBreakdown } from './ContextBreakdown'
+import { PART_COLORS, formatTokens } from './contextFormat'
 
 /** 一段内容 —— 一张独立的卡片。 */
 function Section({
@@ -39,31 +30,6 @@ function Section({
       <div className="mb-1.5 text-xs font-medium text-ink-muted">{title}</div>
       {children}
     </section>
-  )
-}
-
-/** 可展开的明细（每个 MCP 工具、每个记忆文件）。 */
-function DetailToggle({ items }: { items: string[] }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="ml-4 mt-0.5">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="text-[11px] text-ink-faint transition-colors hover:text-ink-muted"
-      >
-        {open ? '▾' : '▸'} {items.length} 项
-      </button>
-      {open ? (
-        <ul className="mt-0.5 space-y-0.5">
-          {items.map((item) => (
-            <li key={item} className="truncate text-[11px] text-ink-faint">
-              {item}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
   )
 }
 
@@ -145,32 +111,9 @@ export default function SessionStatusPanel({ threadId }: { threadId: string }) {
             />
           ))}
         </div>
-        <ul className="mt-2 space-y-1">
-          {context.parts.map((part) => (
-            <li key={part.key}>
-              <div className="flex items-center gap-2 text-xs">
-                <span
-                  className={`h-2 w-2 shrink-0 rounded-sm ${PART_COLORS[part.key] ?? 'bg-ink-faint'}`}
-                />
-                <span className="min-w-0 flex-1 truncate text-ink-muted">{part.label}</span>
-                <span className="shrink-0 text-ink-faint">{formatTokens(part.tokens)}</span>
-                <span className="w-10 shrink-0 text-right text-ink-faint">{part.percent}%</span>
-              </div>
-              {/* 有明细的可以展开看看具体是什么 */}
-              {part.items && part.items.length > 0 ? (
-                <DetailToggle items={part.items} />
-              ) : null}
-            </li>
-          ))}
-          <li className="flex items-center gap-2 text-xs">
-            <span className="h-2 w-2 shrink-0 rounded-sm bg-transparent" />
-            <span className="min-w-0 flex-1 truncate text-ink-muted">剩余空间</span>
-            <span className="shrink-0 text-ink-faint">{formatTokens(context.free)}</span>
-            <span className="w-10 shrink-0 text-right text-ink-faint">
-              {Math.max(100 - context.percent, 0).toFixed(1)}%
-            </span>
-          </li>
-        </ul>
+        <div className="mt-2">
+          <ContextBreakdown context={context} />
+        </div>
         <p className="mt-2 text-[10px] leading-relaxed text-ink-faint">
           按 4 字符约 1 token 估算，不是精确的 token 数。
         </p>
@@ -282,12 +225,6 @@ function Row({ label, value, mono }: { label: string; value: string; mono?: bool
       </dd>
     </div>
   )
-}
-
-/** token 数显示成 k —— 面板上写「128k」比「128000」好读。 */
-function formatTokens(value: number): string {
-  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`
-  return String(value)
 }
 
 /** 毫秒显示成「2h 53m」那样。 */
