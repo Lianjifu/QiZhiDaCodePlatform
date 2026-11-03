@@ -15,7 +15,10 @@ import { sessionStatus } from '../../api/resources'
 import { humanSize } from '../../lib/format'
 import type { SessionStatus } from '../../types/api'
 import { ContextBreakdown } from './ContextBreakdown'
-import { PART_COLORS, formatTokens } from './contextFormat'
+import { PART_COLORS, RESERVED_COLOR, formatTokens } from './contextFormat'
+
+/** 多久刷一次状态。 */
+const REFRESH_MS = 30_000
 
 /** 一段内容 —— 一张独立的卡片。 */
 function Section({
@@ -40,21 +43,29 @@ export default function SessionStatusPanel({ threadId }: { threadId: string }) {
 
   useEffect(() => {
     let cancelled = false
-    sessionStatus(threadId)
-      .then((result) => {
-        if (cancelled) return
-        setData(result)
-        setLoadedThread(threadId)
-      })
-      .catch((cause) => {
-        if (cancelled) return
-        setFailure({
-          threadId,
-          message: cause instanceof Error ? cause.message : String(cause),
+    const load = () => {
+      sessionStatus(threadId)
+        .then((result) => {
+          if (cancelled) return
+          setData(result)
+          setLoadedThread(threadId)
         })
-      })
+        .catch((cause) => {
+          if (cancelled) return
+          setFailure({
+            threadId,
+            message: cause instanceof Error ? cause.message : String(cause),
+          })
+        })
+    }
+    load()
+    // 面板开着就定期刷 —— 后台任务在跑的时候，占用和改动量都在变
+    const timer = window.setInterval(() => {
+      if (!document.hidden) load()
+    }, REFRESH_MS)
     return () => {
       cancelled = true
+      window.clearInterval(timer)
     }
   }, [threadId])
 
@@ -110,6 +121,13 @@ export default function SessionStatusPanel({ threadId }: { threadId: string }) {
               title={`${part.label} ${formatTokens(part.tokens)}`}
             />
           ))}
+          {context.reserved > 0 ? (
+            <div
+              className={RESERVED_COLOR}
+              style={{ width: `${(context.reserved / (context.limit || 1)) * 100}%` }}
+              title={`压缩缓冲（预留） ${formatTokens(context.reserved)}`}
+            />
+          ) : null}
         </div>
         <div className="mt-2">
           <ContextBreakdown context={context} />

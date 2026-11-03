@@ -208,9 +208,10 @@ class ContextUsageOut(BaseModel):
     """上下文窗口用了多少、都被谁占了。"""
 
     limit: int = Field(default=0, description="上下文窗口（token）")
-    used: int = Field(default=0, description="已占用（token，估算）")
+    used: int = Field(default=0, description="已占用（token，估算，不含压缩缓冲）")
     percent: float = Field(default=0, description="占用百分比")
-    free: int = Field(default=0, description="还剩多少（token）")
+    reserved: int = Field(default=0, description="压缩缓冲（预留出来放摘要的，不算占用）")
+    free: int = Field(default=0, description="还能用多少（token）")
     parts: list[ContextPartOut] = Field(default_factory=list, description="占用明细")
 
 

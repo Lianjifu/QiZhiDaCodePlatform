@@ -168,6 +168,8 @@ export interface ContextUsage {
   limit: number
   used: number
   percent: number
+  /** 压缩缓冲 —— 预留出来放摘要的，不算占用 */
+  reserved: number
   free: number
   parts: ContextPart[]
 }

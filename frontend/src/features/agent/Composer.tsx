@@ -527,6 +527,7 @@ export default forwardRef<ComposerHandle, {
             {/* 上下文占用：在模型选择的左边，点开看明细 */}
             <ContextUsageIndicator
               threadId={threadId}
+              busy={busy}
               open={contextOpen}
               onToggle={() => {
                 setContextOpen((value) => !value)

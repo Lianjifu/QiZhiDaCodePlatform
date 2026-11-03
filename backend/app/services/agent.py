@@ -418,6 +418,9 @@ class AgentService:
                     memory_items=memory_items,
                     # 压缩缓冲：窗口用到 85% 就触发压缩，那 15% 得一直空着
                     buffer_tokens=int(window * (1 - TRIGGER_FRACTION)),
+                    # **没开口就什么都没占** —— 系统提示词和工具定义是每次请求
+                    # 都带上的，可请求还没发出去
+                    started=bool(history),
                 )
 
                 providers: list[Any] = []

@@ -19,11 +19,14 @@ const REFRESH_MS = 30_000
 
 export default function ContextUsageIndicator({
   threadId,
+  busy,
   open,
   onToggle,
   onOpenDetail,
 }: {
   threadId: string
+  /** 这一轮还在跑吗 —— 跑完了要重新读一次上下文 */
+  busy: boolean
   /** 展开与否由外层管 —— 输入框里同时只能开一个浮层 */
   open: boolean
   onToggle: () => void
@@ -57,6 +60,17 @@ export default function ContextUsageIndicator({
     }, REFRESH_MS)
     return () => window.clearInterval(timer)
   }, [threadId, load])
+
+  /**
+   * 这一轮跑完了就重新读一次。
+   *
+   * 光靠 30 秒的轮询太慢 —— 一轮对话刚结束，占用数字还停在上一轮，看着像没变。
+   */
+  const prevBusy = useRef(busy)
+  useEffect(() => {
+    if (prevBusy.current && !busy) load()
+    prevBusy.current = busy
+  }, [busy, load])
 
   const status = data?.threadId === threadId ? data.status : null
   const percent = status?.context.percent ?? 0

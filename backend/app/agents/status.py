@@ -21,7 +21,10 @@
 | 技能 | 技能正文（``SKILL.md``） |
 | 记忆文件 | 工作区里的 ``AGENTS.md`` |
 
-剩余空间 = 窗口 − 已用。
+**压缩缓冲不算"已用"** —— 它是留给摘要的那段空间，一直空着，等着被摘要占。
+算成占用的话，一个刚开的会话就显示 15%，看着像已经用掉了一块。
+
+剩余空间 = 窗口 − 已用 − 压缩缓冲。
 """
 
 from __future__ import annotations
@@ -95,6 +98,7 @@ def build_context_usage(
     mcp_items: list[str] | None = None,
     memory_items: list[str] | None = None,
     buffer_tokens: int = 0,
+    started: bool = True,
 ) -> ContextUsageOut:
     """把各部分的体量拼成上下文占用。
 
@@ -109,10 +113,23 @@ def build_context_usage(
         mcp_items: 每个 MCP 工具的名字（面板上可展开）。
         memory_items: 每个记忆文件的名字（面板上可展开）。
         buffer_tokens: 压缩缓冲（窗口用到这个比例就触发压缩，那段空间一直空着）。
+        started: 这个会话开口说过话没有。**没开口就什么都不占** —— 系统提示词
+            和工具定义是每次请求都带上的，可请求还没发出去，占用就该是 0。
 
     Returns:
-        上下文占用（含明细与剩余空间）。
+        上下文占用（含明细、预留与剩余空间）。
     """
+    if not started:
+        # 一个字都还没说：什么都没进过窗口，占用 0，剩下的是整个窗口
+        return ContextUsageOut(
+            limit=limit,
+            used=0,
+            percent=0.0,
+            reserved=0,
+            free=limit,
+            parts=[],
+        )
+
     raw = [
         ("messages", "对话消息", estimate_tokens(messages_text), []),
         ("system_prompt", "系统提示词", estimate_tokens(system_prompt), []),
@@ -120,8 +137,6 @@ def build_context_usage(
         ("mcp_tools", "MCP 工具", estimate_tokens(mcp_text), list(mcp_items or [])),
         ("skills", "技能", estimate_tokens(skills_text), []),
         ("memory", "记忆文件", estimate_tokens(memory_text), list(memory_items or [])),
-        # 压缩缓冲：窗口用到 85% 就触发压缩 —— 那 15% 得一直空着
-        ("autocompact", "压缩缓冲", buffer_tokens, []),
     ]
     used = sum(item[2] for item in raw)
     parts = [
@@ -135,11 +150,14 @@ def build_context_usage(
         for key, label, tokens, items in raw
         if tokens > 0
     ]
+    # 压缩缓冲是**预留**，不是占用 —— 它一直空着，等着放摘要
+    reserved = max(buffer_tokens, 0)
     return ContextUsageOut(
         limit=limit,
         used=used,
         percent=_percent(used, limit),
-        free=max(limit - used, 0),
+        reserved=reserved,
+        free=max(limit - used - reserved, 0),
         parts=parts,
     )
 
