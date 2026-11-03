@@ -8,6 +8,7 @@ import { useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 
 import ThemeToggle from './ThemeToggle'
+import SessionStatusPanel from '../../features/sessions/SessionStatusPanel'
 import SessionStatusWidget from '../../features/sessions/SessionStatusWidget'
 import { useSessions } from '../../features/sessions/store'
 
@@ -29,6 +30,7 @@ export default function AppShell() {
   const location = useLocation()
   const { pinned, others, create, remove, togglePin } = useSessions()
   const [searchOpen, setSearchOpen] = useState(false)
+  const [statusOpen, setStatusOpen] = useState(false)
   const [query, setQuery] = useState('')
 
   // 当前会话：从路由里认出来
@@ -141,7 +143,11 @@ export default function AppShell() {
         </div>
 
         <div className="border-t border-line p-3">
-          <SessionStatusWidget threadId={activeThread} />
+          <SessionStatusWidget
+            threadId={activeThread}
+            open={statusOpen}
+            onToggle={() => setStatusOpen((value) => !value)}
+          />
           <ThemeToggle />
         </div>
       </aside>
@@ -149,6 +155,33 @@ export default function AppShell() {
       <main className="min-w-0 flex-1 overflow-hidden bg-base">
         <Outlet />
       </main>
+
+      {/*
+        右侧的状态面板 —— 占一整列，中间是对话区（参考 Claude 桌面端的布局）。
+        面板自己滚，不影响对话区。
+      */}
+      {statusOpen ? (
+        <aside className="flex w-[22rem] shrink-0 flex-col overflow-y-auto border-l border-line bg-sunken p-3">
+          <div className="mb-2 flex items-center justify-between px-1">
+            <span className="text-xs font-medium text-ink-muted">会话状态</span>
+            <button
+              type="button"
+              title="收起面板"
+              onClick={() => setStatusOpen(false)}
+              className="rounded px-1 text-xs text-ink-faint transition-colors hover:bg-hover hover:text-ink"
+            >
+              ×
+            </button>
+          </div>
+          {activeThread ? (
+            <SessionStatusPanel threadId={activeThread} />
+          ) : (
+            <div className="rounded-xl border border-line bg-raised px-3 py-2.5 text-xs text-ink-faint">
+              还没有会话 —— 进一个会话才能看它的状态。
+            </div>
+          )}
+        </aside>
+      ) : null}
     </div>
   )
 }

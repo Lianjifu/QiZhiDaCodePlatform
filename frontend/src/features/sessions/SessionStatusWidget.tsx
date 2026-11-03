@@ -1,7 +1,8 @@
 /**
  * 侧栏底部的会话状态条。
  *
- * 一根「上下文占用」的进度条 —— 点开就是 {@link SessionStatusPanel}。
+ * 一根「上下文占用」的进度条 —— 点一下就把**右侧**的状态面板拉开
+ * （参考 Claude 桌面端：面板占右侧一整列，中间是对话区）。
  *
  * **多久刷一次**：进会话时读一次，之后每 30 秒读一次（标签页不可见时不读）。
  * 面板上的数字是估算值，差个几百 token 无所谓 —— 但也不能一直不更新，
@@ -11,14 +12,20 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { sessionStatus } from '../../api/resources'
 import type { SessionStatus } from '../../types/api'
-import SessionStatusPanel from './SessionStatusPanel'
 
 const REFRESH_MS = 30_000
 
-export default function SessionStatusWidget({ threadId }: { threadId: string | null }) {
+export default function SessionStatusWidget({
+  threadId,
+  open,
+  onToggle,
+}: {
+  threadId: string | null
+  /** 右侧面板是不是开着 */
+  open: boolean
+  onToggle: () => void
+}) {
   const [data, setData] = useState<{ threadId: string; status: SessionStatus } | null>(null)
-  const [open, setOpen] = useState(false)
-  const wrapperRef = useRef<HTMLDivElement>(null)
   /** 当前该显示哪个会话 —— 用来挡掉"上一个会话的慢响应" */
   const currentRef = useRef(threadId)
   useEffect(() => {
@@ -48,51 +55,34 @@ export default function SessionStatusWidget({ threadId }: { threadId: string | n
     return () => window.clearInterval(timer)
   }, [threadId, load])
 
-  // 点外面收起面板
-  useEffect(() => {
-    if (!open) return
-    const onPointerDown = (event: MouseEvent) => {
-      if (!wrapperRef.current?.contains(event.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onPointerDown)
-    return () => document.removeEventListener('mousedown', onPointerDown)
-  }, [open])
-
   const status = data?.threadId === threadId ? data.status : null
   const percent = status?.context.percent ?? 0
   const used = status?.context.used ?? 0
   const limit = status?.context.limit ?? 0
 
   return (
-    <div ref={wrapperRef} className="relative">
-      {open && threadId ? (
-        <div className="absolute bottom-full left-0 z-30 mb-2">
-          <SessionStatusPanel threadId={threadId} />
-        </div>
-      ) : null}
-
-      <button
-        type="button"
-        disabled={!threadId}
-        onClick={() => setOpen((value) => !value)}
-        title={threadId ? '会话状态' : '还没有会话'}
-        className="w-full rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-hover disabled:opacity-60"
-      >
-        <div className="flex items-baseline justify-between text-[11px]">
-          <span className="text-ink-muted">{threadId ? '上下文' : '上下文'}</span>
-          <span className="text-ink-faint">
-            {status ? `${percent}%` : '—'}
-            {status ? ` · ${formatTokens(used)}/${formatTokens(limit)}` : ''}
-          </span>
-        </div>
-        <div className="mt-1 h-1 overflow-hidden rounded-full bg-sunken">
-          <div
-            className="h-full rounded-full bg-accent transition-[width]"
-            style={{ width: `${Math.min(percent, 100)}%` }}
-          />
-        </div>
-      </button>
-    </div>
+    <button
+      type="button"
+      disabled={!threadId}
+      onClick={onToggle}
+      title={threadId ? '会话状态' : '还没有会话'}
+      className="w-full rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-hover disabled:opacity-60"
+    >
+      <div className="flex items-baseline justify-between text-[11px]">
+        <span className="text-ink-muted">上下文</span>
+        <span className="text-ink-faint">
+          {status ? `${percent}%` : '—'}
+          {status ? ` · ${formatTokens(used)}/${formatTokens(limit)}` : ''}
+          {open ? ' · 收起' : ''}
+        </span>
+      </div>
+      <div className="mt-1 h-1 overflow-hidden rounded-full bg-sunken">
+        <div
+          className="h-full rounded-full bg-accent transition-[width]"
+          style={{ width: `${Math.min(percent, 100)}%` }}
+        />
+      </div>
+    </button>
   )
 }
 

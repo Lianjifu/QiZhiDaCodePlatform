@@ -1,8 +1,10 @@
 /**
  * 会话状态面板。
  *
- * 侧栏底部那根「上下文占用」条点开就是它 —— 环境、上下文占了多少、接进来
- * 什么、产出了什么、改了多少行。
+ * **右侧一栏**，不是浮在侧栏上的浮层 —— 参考 Claude 桌面端的布局：
+ * 面板占右侧一整列，中间是对话区。
+ *
+ * 内容：环境、上下文占了多少、接进来什么、产出了什么、改了多少行、现在在跑什么。
  *
  * **上下文占用是估算**（4 字符约 1 token），面板上写明了 —— 别让人拿它当
  * 精确的 token 数看。
@@ -24,6 +26,7 @@ const PART_COLORS: Record<string, string> = {
   autocompact: 'bg-ink-faint',
 }
 
+/** 一段内容 —— 一张独立的卡片。 */
 function Section({
   title,
   children,
@@ -32,7 +35,7 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <section className="border-b border-line px-3 py-2.5 last:border-b-0">
+    <section className="rounded-xl border border-line bg-raised px-3 py-2.5">
       <div className="mb-1.5 text-xs font-medium text-ink-muted">{title}</div>
       {children}
     </section>
@@ -95,7 +98,7 @@ export default function SessionStatusPanel({ threadId }: { threadId: string }) {
 
   if (!status && !error) {
     return (
-      <div className="w-80 rounded-xl border border-line bg-overlay p-4 text-xs text-ink-faint shadow-xl">
+      <div className="rounded-xl border border-line bg-raised px-3 py-2.5 text-xs text-ink-faint">
         正在读会话状态…
       </div>
     )
@@ -103,7 +106,7 @@ export default function SessionStatusPanel({ threadId }: { threadId: string }) {
 
   if (error || !status) {
     return (
-      <div className="w-80 rounded-xl border border-line bg-overlay p-4 text-xs text-danger shadow-xl">
+      <div className="rounded-xl border border-line bg-raised px-3 py-2.5 text-xs text-danger">
         读不到会话状态：{error || '未知原因'}
       </div>
     )
@@ -112,7 +115,7 @@ export default function SessionStatusPanel({ threadId }: { threadId: string }) {
   const { context, environment, changes } = status
 
   return (
-    <div className="max-h-[70vh] w-80 overflow-y-auto rounded-xl border border-line bg-overlay shadow-xl">
+    <div className="flex flex-col gap-2">
       <Section title="环境">
         <dl className="space-y-1 text-xs">
           <Row label="工作区" value={environment.workspace} mono />
@@ -256,7 +259,7 @@ export default function SessionStatusPanel({ threadId }: { threadId: string }) {
         ) : null}
       </Section>
 
-      <div className="px-3 py-2 text-[10px] leading-relaxed text-ink-faint">
+      <div className="px-3 py-1 text-[10px] leading-relaxed text-ink-faint">
         最后更新：{formatUpdatedAt(status.updated_at)}。每 30 秒刷新一次。
       </div>
     </div>
