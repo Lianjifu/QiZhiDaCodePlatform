@@ -33,6 +33,9 @@ check('类型的中文名', () => {
   assert.equal(kindLabel('repo'), '仓库')
   assert.equal(kindLabel('folder'), '目录')
   assert.equal(kindLabel('别的'), '目录')
+  // 仓库是靠 is_repo 认出来的 —— kind 只有 folder / worktree 两种
+  assert.equal(kindLabel('folder', true), '仓库')
+  assert.equal(kindLabel('worktree', true), 'Worktree')
 })
 
 check('隐藏目录不能绑成工作目录', () => {

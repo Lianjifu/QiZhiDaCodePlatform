@@ -52,6 +52,8 @@ def roots(tmp_path, monkeypatch):
     _init_repo(root / "demo")
     monkeypatch.setattr(settings, "repo_roots", str(root))
     monkeypatch.setattr(settings, "workspace_root", str(tmp_path / "workspace"))
+    # worktree 的落点也要挪进临时目录 —— 否则测试会动到真实的 worktree 根
+    monkeypatch.setattr(settings, "worktree_root", str(tmp_path / "worktrees"))
     return root
 
 
@@ -228,3 +230,29 @@ async def test_建_worktree_的接口(client, roots):
     data = response.json()["data"]
     assert data["branch"] == "feat/接口建的"
     assert Path(data["path"]).is_dir()
+
+
+@needs_git
+async def test_不填分支名就自动生成(client, roots):
+    """选中仓库就该直接能用 —— 不该逼着人先想好分支叫什么。"""
+    response = await client.post(
+        "/api/v1/environments",
+        json={"repo_path": str(roots / "demo")},
+    )
+    assert response.status_code == 200
+    branch = response.json()["data"]["branch"]
+    assert branch.startswith("qzd/")
+    assert "demo" in branch
+
+
+async def test_绑定可以带名字(client, roots):
+    """用户给环境起个名 —— 之后在界面上好认。"""
+    response = await client.post(
+        "/api/v1/environments/binding/t_api_3",
+        json={"path": str(roots / "demo"), "label": "我的应用"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["name"] == "我的应用"
+
+    response = await client.get("/api/v1/environments/binding/t_api_3")
+    assert response.json()["data"]["name"] == "我的应用"

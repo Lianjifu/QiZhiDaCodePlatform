@@ -148,7 +148,7 @@ async def bind_environment(
 
     目录必须在白名单里（``REPO_ROOTS``）—— 这是平台没有鉴权时唯一的闸门。
     """
-    binding = _service().bind(thread_id, payload.path)
+    binding = _service().bind(thread_id, payload.path, label=payload.label)
     return ResponseModel[EnvironmentBindingOut](
         data=EnvironmentBindingOut(
             thread_id=thread_id,

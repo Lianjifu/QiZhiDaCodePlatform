@@ -98,6 +98,8 @@ def repo(tmp_path, monkeypatch):
     _init_repo(root / "demo")
     monkeypatch.setattr(settings, "repo_roots", str(root))
     monkeypatch.setattr(settings, "workspace_root", str(tmp_path / "workspace"))
+    # worktree 的落点也要挪进临时目录 —— 否则测试会动到真实的 worktree 根
+    monkeypatch.setattr(settings, "worktree_root", str(tmp_path / "worktrees"))
     return root / "demo"
 
 

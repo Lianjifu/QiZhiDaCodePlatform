@@ -5,10 +5,15 @@
  * `scripts/*.mjs`，直接跑 `.ts` 纯函数）。
  */
 
-/** 环境类型的中文名。 */
-export function kindLabel(kind: string): string {
+/**
+ * 环境类型的中文名。
+ *
+ * `kind` 只有两种（folder / worktree）—— 仓库是靠 `is_repo` 认出来的，
+ * 所以两个都得看。
+ */
+export function kindLabel(kind: string, isRepo = false): string {
   if (kind === 'worktree') return 'Worktree'
-  if (kind === 'repo') return '仓库'
+  if (kind === 'repo' || isRepo) return '仓库'
   return '目录'
 }
 

@@ -42,6 +42,7 @@ class Binding:
 
     path: str
     kind: str = KIND_FOLDER
+    #: 显示名 —— 用户给的名字（新建环境时填的），没给就是目录名
     name: str = ""
     branch: str = ""
     repo: str | None = None

@@ -27,13 +27,22 @@ class BindEnvironmentIn(BaseModel):
     """把会话绑到某个环境。"""
 
     path: str = Field(min_length=1, max_length=1024, description="要绑定的目录绝对路径")
+    label: str = Field(
+        default="",
+        max_length=120,
+        description="给这个环境起的名字（新建时填的）；不给就是目录名",
+    )
 
 
 class CreateWorktreeIn(BaseModel):
     """从一个仓库派生 worktree。"""
 
     repo_path: str = Field(min_length=1, max_length=1024, description="仓库目录")
-    branch: str = Field(min_length=1, max_length=200, description="新分支名")
+    branch: str | None = Field(
+        default=None,
+        max_length=200,
+        description="新分支名；**不给就自动生成** —— 选中仓库就该直接能用",
+    )
     base: str | None = Field(default=None, max_length=200, description="基点分支或提交")
 
 
@@ -43,7 +52,7 @@ class EnvironmentBindingOut(BaseModel):
     thread_id: str = Field(description="会话 ID")
     path: str = Field(default="", description="绑定的目录；空串表示没绑")
     kind: str = Field(default="", description="folder / worktree")
-    name: str = Field(default="", description="目录名")
+    name: str = Field(default="", description="显示名（用户起的名字，没给就是目录名）")
     branch: str = Field(default="", description="分支")
     repo: str | None = Field(default=None, description="所属的主仓库")
     bound_at: str = Field(default="", description="绑定时间")

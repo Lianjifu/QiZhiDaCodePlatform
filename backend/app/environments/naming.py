@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from uuid import uuid4
 
 from app.core.exceptions import ValidationError
 
@@ -59,4 +60,19 @@ def validate_branch(branch: str) -> str:
     return name
 
 
-__all__ = ["slugify", "validate_branch"]
+def auto_branch(repo_name: str) -> str:
+    """自动生成一个分支名。
+
+    **选中仓库就该直接能用** —— 不该逼着人先想好分支叫什么。名字带
+    ``qzd/`` 前缀，一眼看出是平台派出去的。
+
+    Args:
+        repo_name: 仓库目录名。
+
+    Returns:
+        分支名，如 ``qzd/demo-1a2b``。
+    """
+    return f"qzd/{slugify(repo_name)[:24]}-{uuid4().hex[:4]}"
+
+
+__all__ = ["auto_branch", "slugify", "validate_branch"]

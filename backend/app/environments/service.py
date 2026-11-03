@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.exceptions import NotFoundError, ValidationError
-from app.environments.naming import slugify, validate_branch
+from app.environments.naming import auto_branch, slugify, validate_branch
 from app.environments.paths import (
     RESERVED_DIRNAMES,
     is_allowed,
@@ -200,12 +200,13 @@ class EnvironmentService:
         """这个会话当前绑的环境；没绑就是 ``None``。"""
         return load_binding(thread_id)
 
-    def bind(self, thread_id: str, path: str | Path) -> Binding:
+    def bind(self, thread_id: str, path: str | Path, *, label: str = "") -> Binding:
         """把会话绑到某个环境。
 
         Args:
             thread_id: 会话 ID。
             path: 目标目录。
+            label: 用户给这个环境起的名字（新建时填的）；不给就是目录名。
 
         Returns:
             绑定记录。
@@ -219,7 +220,7 @@ class EnvironmentService:
         binding = Binding(
             path=env.path,
             kind=env.kind,
-            name=env.name,
+            name=label.strip() or env.name,
             branch=env.branch,
             repo=env.repo,
         )
@@ -234,7 +235,7 @@ class EnvironmentService:
     def create_worktree(
         self,
         repo_path: str | Path,
-        branch: str,
+        branch: str | None = None,
         *,
         base: str | None = None,
         reuse: bool = False,
@@ -243,7 +244,8 @@ class EnvironmentService:
 
         Args:
             repo_path: 仓库目录（子目录也行，会归到仓库根）。
-            branch: 分支名。
+            branch: 分支名。**不给就自动生成** —— 选中仓库就该直接能用，
+                不该逼着人先想好分支叫什么。
             base: 基点分支/提交；不给就是仓库当前 HEAD。
             reuse: 目标已存在时复用它（**幂等**）。
 
@@ -262,7 +264,7 @@ class EnvironmentService:
         root = git.repo_root()
         if root is None:
             raise NotFoundError(f"不是一个 git 仓库：{repo}")
-        name = validate_branch(branch)
+        name = validate_branch(branch or auto_branch(root.name))
         target = worktree_path(root.name, slugify(name.replace("/", "-")))
         # git 不允许 worktree 落在主仓库的工作树内部
         if root == target or root in target.parents:

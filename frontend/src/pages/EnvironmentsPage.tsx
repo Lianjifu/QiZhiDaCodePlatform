@@ -159,8 +159,13 @@ export default function EnvironmentsPage() {
       {creating ? (
         <WorktreeDialog
           repos={repos}
+          folders={folders}
           onClose={() => setCreating(false)}
           onCreated={async () => {
+            setCreating(false)
+            await load()
+          }}
+          onWorktree={async () => {
             setCreating(false)
             setNote('已创建 worktree')
             await load()

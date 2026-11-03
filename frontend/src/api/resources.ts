@@ -241,7 +241,8 @@ export function listEnvironments(): Promise<EnvironmentList> {
 /** 从一个仓库派生新的 worktree（独立检出 + 新分支）。 */
 export function createWorktree(payload: {
   repo_path: string
-  branch: string
+  /** 分支名；不给就自动生成 */
+  branch?: string
   base?: string | null
 }): Promise<Environment> {
   return api.post<Environment>('/environments', payload)
@@ -263,9 +264,11 @@ export function getEnvironmentBinding(threadId: string): Promise<EnvironmentBind
 export function bindEnvironment(
   threadId: string,
   path: string,
+  label?: string,
 ): Promise<EnvironmentBinding> {
   return api.post<EnvironmentBinding>(`/environments/binding/${encodeURIComponent(threadId)}`, {
     path,
+    label: label ?? '',
   })
 }
 
