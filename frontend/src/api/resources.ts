@@ -8,6 +8,7 @@
 import { api, API_BASE } from './client'
 import type {
   AgentChatRequest,
+  BrowseResult,
   AgentChatResult,
   AgentForkResult,
   AgentHistory,
@@ -232,6 +233,12 @@ export function forkConversation(
 }
 
 // ---------- 工作目录（环境） ----------
+
+/** 浏览一个目录下的子目录（选文件夹用）。 */
+export function browseEnvironments(path?: string): Promise<BrowseResult> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+  return api.get<BrowseResult>(`/environments/browse${query}`)
+}
 
 /** 列出可作为工作目录的环境。 */
 export function listEnvironments(): Promise<EnvironmentList> {

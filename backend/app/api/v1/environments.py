@@ -23,6 +23,8 @@ from app.git.service import GitService
 from app.schemas.common import ResponseModel
 from app.schemas.environment import (
     BindEnvironmentIn,
+    BrowseEntryOut,
+    BrowseOut,
     CreateWorktreeIn,
     EnvironmentBindingOut,
     EnvironmentListOut,
@@ -58,6 +60,30 @@ async def list_environments() -> ResponseModel[EnvironmentListOut]:
             environments=[EnvironmentOut(**env.to_dict()) for env in environments],
             roots=[str(root) for root in roots],
             enabled=True,
+        )
+    )
+
+
+@router.get("/browse", response_model=ResponseModel[BrowseOut], summary="浏览目录（选文件夹用）")
+async def browse(
+    path: Annotated[str | None, Query(description="要浏览的目录；不给就浏览第一个白名单根")] = None,
+) -> ResponseModel[BrowseOut]:
+    """浏览一个目录下的子目录。
+
+    界面上"选文件夹"靠它 —— 白名单下可能有几十层目录，一个固定的下拉列表
+    挑不动。
+
+    **路径必须在白名单里** —— 目录浏览也是读宿主机的文件系统，白名单是唯一
+    的闸门（路径解析之后比较，软链接指向外面的一律拒绝）。
+    """
+    result = _service().browse(path)
+    return ResponseModel[BrowseOut](
+        data=BrowseOut(
+            path=str(result["path"]),
+            parent=result["parent"],
+            entries=[
+                BrowseEntryOut(**entry) for entry in result["entries"]
+            ],
         )
     )
 

@@ -256,3 +256,39 @@ async def test_绑定可以带名字(client, roots):
 
     response = await client.get("/api/v1/environments/binding/t_api_3")
     assert response.json()["data"]["name"] == "我的应用"
+
+
+# ---------- 目录浏览 ----------
+
+
+async def test_浏览目录列出子目录(client, roots):
+    """选文件夹靠它 —— 白名单下几十层目录，一个下拉列表挑不动。"""
+    response = await client.get("/api/v1/environments/browse")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["path"] == str(roots)
+    names = [entry["name"] for entry in data["entries"]]
+    assert "demo" in names
+
+
+async def test_浏览能往下钻也能往回退(client, roots):
+    (roots / "demo" / "子目录").mkdir()
+    response = await client.get(
+        "/api/v1/environments/browse",
+        params={"path": str(roots / "demo")},
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["path"] == str(roots / "demo")
+    assert data["parent"] == str(roots)
+    assert [entry["name"] for entry in data["entries"]] == ["子目录"]
+
+
+async def test_浏览白名单外的目录要被拒(client, roots, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    response = await client.get(
+        "/api/v1/environments/browse",
+        params={"path": str(outside)},
+    )
+    assert response.status_code == 422

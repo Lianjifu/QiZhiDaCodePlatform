@@ -263,6 +263,21 @@ export interface EnvironmentList {
   enabled: boolean
 }
 
+/** 目录浏览时的一个子目录（后端 `BrowseEntryOut`）。 */
+export interface BrowseEntry {
+  name: string
+  path: string
+  is_repo: boolean
+}
+
+/** 一次目录浏览的结果（后端 `BrowseOut`）。 */
+export interface BrowseResult {
+  path: string
+  /** 上一级；已经在白名单根上就没有 */
+  parent: string | null
+  entries: BrowseEntry[]
+}
+
 /** 会话当前绑定的环境（后端 `EnvironmentBindingOut`）。 */
 export interface EnvironmentBinding {
   thread_id: string

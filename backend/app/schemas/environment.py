@@ -74,8 +74,26 @@ class WorktreeListOut(BaseModel):
     worktrees: list[WorktreeOut] = Field(default_factory=list)
 
 
+class BrowseEntryOut(BaseModel):
+    """目录浏览时的一个子目录。"""
+
+    name: str = Field(description="目录名")
+    path: str = Field(description="绝对路径")
+    is_repo: bool = Field(default=False, description="是不是 git 仓库")
+
+
+class BrowseOut(BaseModel):
+    """一次目录浏览的结果。"""
+
+    path: str = Field(description="当前浏览的目录")
+    parent: str | None = Field(default=None, description="上一级；已经在白名单根上就没有")
+    entries: list[BrowseEntryOut] = Field(default_factory=list, description="子目录")
+
+
 __all__ = [
     "BindEnvironmentIn",
+    "BrowseEntryOut",
+    "BrowseOut",
     "CreateWorktreeIn",
     "EnvironmentBindingOut",
     "EnvironmentListOut",

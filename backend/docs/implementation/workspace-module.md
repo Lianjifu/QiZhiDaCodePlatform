@@ -74,6 +74,9 @@ WORKTREE_ROOT="/Users/me/qzd-worktrees"      # worktree 的落点
 
 绑定可以带一个 `label`（用户起的名字）—— 界面上显示的是它，不是目录名。
 
+选目录靠 `GET /api/v1/environments/browse`：能往下钻、往回退，也能粘路径。
+**目录浏览也是读宿主机的文件系统**，所以同样受白名单约束。
+
 ## git 是平台能力
 
 沙箱镜像里没有 git；worktree 里的 `.git` 是个指向主仓库的**指针文件**，容器里

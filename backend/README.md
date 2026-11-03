@@ -895,6 +895,7 @@ curl 'http://127.0.0.1:8000/api/v1/context/preview?query=pnpm&workspace=/tmp/ws'
 
 ```text
 GET    /api/v1/environments                    白名单下的目录、仓库、已有 worktree
+GET    /api/v1/environments/browse             浏览目录下的子目录（选文件夹用）
 POST   /api/v1/environments                    从仓库派生 worktree（独立检出 + 新分支）
 DELETE /api/v1/environments?path=...           删掉平台创建的 worktree
 GET    /api/v1/environments/worktrees          列出 worktree
@@ -934,6 +935,15 @@ agent；记忆文件同理走 `/.memory` 路由。见 `app/capabilities/backends
 独立检出不是一个需要单独配置的动作。
 
 绑定的环境也可以**起个名字**（`label`）—— 界面上显示的是那个名字，不是目录名。
+
+### 选本机的文件夹
+
+「新建工作区」里的目录选择器**能往下钻**（点子目录进去）、**能往回退**（上一级），
+也能把路径直接粘进去（在访达里按 `⌘⌥C` 复制路径，回车跳过去）—— 白名单下可能
+有几十层目录，一个固定的下拉列表挑不动。
+
+底下是 `GET /api/v1/environments/browse`：**目录浏览也是读宿主机的文件系统**，
+所以它跟绑定一样受白名单约束（解析真实路径之后比较，软链接指向外面的一律拒绝）。
 
 ### git 是平台能力，不是 agent 自己敲的命令
 

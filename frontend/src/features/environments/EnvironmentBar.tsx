@@ -28,9 +28,10 @@ import {
 } from '../../api/resources'
 import { BranchIcon, FolderIcon, SearchIcon } from '../../components/icons'
 import Button from '../../components/ui/Button'
-import { Select, TextInput } from '../../components/ui/Fields'
+import { TextInput } from '../../components/ui/Fields'
 import Modal from '../../components/ui/Modal'
 import type { Environment, EnvironmentList } from '../../types/api'
+import FolderBrowser from './FolderBrowser'
 import { bindableEnvironments, filterEnvironments } from './format'
 
 export default function EnvironmentBar({
@@ -185,7 +186,6 @@ export default function EnvironmentBar({
 
       {creating ? (
         <CreateWorkspaceDialog
-          folders={environments.filter((item) => item.kind !== 'worktree' && !item.is_repo)}
           onClose={() => setCreating(false)}
           onCreated={async (path, label) => {
             setCreating(false)
@@ -405,16 +405,14 @@ function Row({
  * **只有这一种** —— 独立检出不是"新建"出来的，选中仓库就会自动分配。
  */
 export function CreateWorkspaceDialog({
-  folders,
   onClose,
   onCreated,
 }: {
-  folders: Environment[]
   onClose: () => void
   onCreated: (path: string, label: string) => void | Promise<void>
 }) {
   const [name, setName] = useState('')
-  const [folderPath, setFolderPath] = useState(folders[0]?.path ?? '')
+  const [folderPath, setFolderPath] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -457,16 +455,16 @@ export function CreateWorkspaceDialog({
           placeholder="我的应用"
           hint="给这个工作区起个名字，之后好认"
         />
-        <Select
-          label="目录"
-          value={folderPath}
-          onChange={(event) => setFolderPath(event.target.value)}
-          options={folders.map((item) => ({
-            value: item.path,
-            label: item.name || item.path,
-          }))}
-          hint="agent 的文件读写与命令执行都在这个目录里"
-        />
+        <div>
+          <span className="mb-1 block text-xs font-medium text-ink-muted">
+            目录
+            <span className="ml-0.5 text-danger">*</span>
+          </span>
+          <FolderBrowser value={folderPath} onChange={setFolderPath} />
+          <span className="mt-1 block text-[11px] text-ink-faint">
+            agent 的文件读写与命令执行都在这个目录里 —— 只能选白名单内的目录
+          </span>
+        </div>
         {error ? (
           <div className="rounded-lg border border-danger bg-danger-soft px-3 py-2 text-xs text-danger">
             {error}

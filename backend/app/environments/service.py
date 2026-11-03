@@ -23,6 +23,7 @@ import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from app.core.exceptions import NotFoundError, ValidationError
 from app.environments.naming import auto_branch, slugify, validate_branch
@@ -229,6 +230,55 @@ class EnvironmentService:
     def unbind(self, thread_id: str) -> None:
         """解绑这个会话（回到平台自带的会话工作区）。"""
         clear_binding(thread_id)
+
+    def browse(self, path: str | Path | None = None) -> dict[str, Any]:
+        """浏览一个目录下的子目录。
+
+        **这是给界面上的"选文件夹"用的** —— 白名单下可能有几十层目录，
+        光给一个固定的下拉列表没法挑。
+
+        路径必须落在白名单里（``require_allowed``）—— 目录浏览也是读宿主机
+        的文件系统，白名单是唯一的闸门。
+
+        Args:
+            path: 要浏览的目录；不给就浏览第一个白名单根。
+
+        Returns:
+            ``{"path", "parent", "entries"}``。
+        """
+        if path is None:
+            roots = repo_roots()
+            if not roots:
+                raise ValidationError("平台还没有配置可用的仓库目录（REPO_ROOTS）")
+            current = roots[0]
+        else:
+            current = require_allowed(path)
+
+        entries: list[dict[str, Any]] = []
+        try:
+            children = sorted(current.iterdir())
+        except OSError as exc:
+            raise ValidationError(f"目录读不了：{current}（{exc}）") from exc
+        for child in children:
+            if child.is_symlink() or not child.is_dir():
+                continue
+            if child.name.startswith(".") or child.name in RESERVED_DIRNAMES:
+                continue
+            entries.append(
+                {
+                    "name": child.name,
+                    "path": str(child),
+                    "is_repo": (child / ".git").exists(),
+                }
+            )
+
+        # 上一级：还在白名单里才给
+        parent: str | None = None
+        up = current.parent
+        if up != current and is_allowed(up):
+            parent = str(up)
+
+        return {"path": str(current), "parent": parent, "entries": entries}
 
     # ---------- worktree ----------
 
