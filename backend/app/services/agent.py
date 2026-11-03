@@ -395,7 +395,14 @@ class AgentService:
 
                 provider = await self._default_provider()
                 model_name = provider.default_model if provider else settings.llm_model
-                provider_name = provider.name if provider else settings.llm_provider
+                # **供应商报类型，不报名字** —— 名字是用户自己起的标签
+                # （"DeepSeek（本地调试）"），类型才是"哪家的模型"。
+                # 环境变量兜底时也一样报类型。
+                provider_name = (
+                    (provider.provider or provider.name)
+                    if provider
+                    else settings.llm_provider
+                )
                 # 窗口：模型 profile 里的最准（供应商配置可能没填）
                 model = await self._resolve_model(None)
                 limit = model_window(model) or int(getattr(provider, "context_window", 0) or 0)

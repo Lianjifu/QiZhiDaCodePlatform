@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.core.crypto import decrypt_secret, encrypt_secret, mask_secret
 from app.models.llm_provider import LLMProvider
+from app.repositories.llm_provider import LLMProviderRepository
 
 API = "/api/v1/llm-providers"
 
@@ -205,3 +206,30 @@ async def test_presets_endpoint_lists_supported_providers(client: AsyncClient) -
 async def test_provider_without_default_model_is_rejected(client: AsyncClient) -> None:
     resp = await client.post(API, json=_payload(default_model=""))
     assert resp.status_code == 422
+
+
+# ---------- 没有标默认的时候怎么办 ----------
+
+
+@pytest.mark.asyncio
+async def test_没有标默认时取第一条启用的(client: AsyncClient, session) -> None:
+    """一条都没标默认，不该返回"没有默认"。
+
+    前端的模型选择是"先找标了默认的，没有就拿列表里第一条" —— 后端也得是
+    同一个顺序，否则界面选的模型跟后端实际用的对不上。
+    """
+    await client.post(API, json=_payload(name="唯一一条", is_default=False))
+
+    provider = await LLMProviderRepository(session).get_default()
+    assert provider is not None
+    assert provider.name == "唯一一条"
+
+
+@pytest.mark.asyncio
+async def test_停用的不当作默认(client: AsyncClient, session) -> None:
+    await client.post(API, json=_payload(name="停用的", is_default=False, is_active=False))
+    await client.post(API, json=_payload(name="启用的", is_default=False, is_active=True))
+
+    provider = await LLMProviderRepository(session).get_default()
+    assert provider is not None
+    assert provider.name == "启用的"
