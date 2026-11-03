@@ -63,8 +63,13 @@ src/
       ApprovalCard.tsx  Composer.tsx  useChat.ts
       SlashCommandMenu.tsx  斜杠命令面板
       MentionPicker.tsx     @ 提及面板
+    markdown/
+      Markdown.tsx  Markdown 渲染（react-markdown + remark-gfm）
+      CodeBlock.tsx 代码块（语言标签 + 复制按钮）
+      markdown.css  `.md` 作用域下的正文样式
     sessions/
       store.tsx     会话元数据（localStorage）
+      title.ts      从消息里取会话标题（纯函数，可单测）
   pages/
     StatusPage.tsx  FilesPage.tsx  ProvidersPage.tsx  CapabilitiesPage.tsx
   lib/          工具函数
@@ -102,10 +107,38 @@ src/
 `@` 面板列的是**工作区的文件与目录**（`GET /api/v1/files/tree`）—— agent 建的
 文件也能提到。每次打开面板会重新读一次，因为 agent 可能刚建了新东西。
 
+## 对话正文：全量 Markdown
+
+**助手和用户的正文都按 Markdown 渲染**（`features/markdown/Markdown.tsx`）。
+模型输出的 `**粗体**` 得是粗体，不是把星号露给用户看。
+
+支持的语法：
+
+| 语法 | 说明 |
+| --- | --- |
+| 标题 | `#` ~ `######` |
+| 强调 | `**粗**` `*斜*` `~~删除线~~` |
+| 列表 | 无序、有序、**嵌套**、任务列表 `- [x]` |
+| 表格 | GFM 表格，带列对齐（`\| --- \| :---: \|`） |
+| 代码 | 行内代码、围栏代码块（语言标签 + **复制按钮** + 语法高亮） |
+| 其他 | 引用块、分隔线、链接、图片、自动链接 |
+
+实现是 `react-markdown` + `remark-gfm` + `rehype-highlight`：
+
+- **原始 HTML 不渲染** —— 不挂 `rehype-raw`。助手消息来自模型，而模型会被诱导
+  输出 HTML；不渲染就只是显示成一段文字，渲染了就是 XSS。
+- **语法高亮认别名** —— `tsx` 当 typescript、`vue` 当 xml；认不出来的语言就
+  不高亮（`rehype-highlight` 对未知语言只记一条 message，不抛错）。
+- **样式全在 `.md` 作用域里**（`markdown.css`），不污染页面其余部分；颜色只用
+  语义 token，代码高亮那组是 `--code-*`（深浅各一份）。
+
+`CodeBlock` 里有个细节：**渲染用的是高亮后的节点树，复制用的是另抽的纯文本**。
+自己抽文本会把颜色丢了。
+
 ## 侧栏
 
-侧栏从上到下：**动作**（新建 / 搜索）、**模块入口**、**会话列表**（已置顶 +
-对话和任务）。
+侧栏从上到下：**产品头**、**动作**（新建 / 搜索）、**模块入口**、**会话列表**
+（已置顶 + 对话和任务）。
 
 | 能力 | 说明 |
 | --- | --- |
@@ -119,6 +152,10 @@ src/
 孤儿，再也进不来了。
 
 **改过的标题不会被消息内容冲掉** —— 只有默认的「新会话」才让消息标题顶掉它。
+
+**标题里不带 Markdown 记号** —— 正文渲染成 Markdown 了，标题却是裸的
+`# 标题` 看着像坏了一样。`titleFromMessage` 会把 `#`、`**`、`` ` ``、引用、
+列表记号去掉。
 
 ### 上下文占用条 与 会话状态面板
 
@@ -201,4 +238,9 @@ npm run dev      # 开发服务器（6001）
 npm run build    # 类型检查 + 生产构建
 npm run preview  # 预览生产构建
 npm run lint     # oxlint
+npm test         # 纯函数的单测（触发符、会话标题）
 ```
+
+`npm test` 跑的是 `scripts/*.mjs` —— Node 24 能直接跑 `.ts`（类型擦除），
+所以纯函数不用先构建。**只有纯函数能这么测**：`.tsx` 里带 JSX，Node 跑不了
+（`titleFromMessage` 之所以单独放在 `features/sessions/title.ts` 就是这个原因）。

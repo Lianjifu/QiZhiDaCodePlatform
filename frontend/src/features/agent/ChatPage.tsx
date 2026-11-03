@@ -15,7 +15,8 @@ import ContextUsageBar from '../sessions/ContextUsageBar'
 import Composer, { type ComposerHandle } from './Composer'
 import MessageList from './MessageList'
 import { useChat } from './useChat'
-import { newThreadId, titleFromMessage, useSessions } from '../sessions/store'
+import { newThreadId, useSessions } from '../sessions/store'
+import { titleFromMessage } from '../sessions/title'
 
 /** 空状态页的推荐问题 —— 点一下填进输入框。 */
 const SUGGESTIONS = [
@@ -183,7 +184,7 @@ export default function ChatPage() {
               onCommandAction={(action) => void runCommandAction(action)}
             />
 
-            <div className="relative flex max-w-3xl flex-wrap justify-center gap-2">
+            <div className="relative flex max-w-4xl flex-wrap justify-center gap-2">
               {SUGGESTIONS.map((suggestion) => (
                 <button
                   key={suggestion}
@@ -209,7 +210,7 @@ export default function ChatPage() {
       {!empty && (
         <div className="shrink-0">
           {statusHint ? (
-            <div className="mx-auto max-w-3xl px-6 pb-1 text-xs text-ink-faint">{statusHint}</div>
+            <div className="mx-auto max-w-4xl px-6 pb-1 text-xs text-ink-faint">{statusHint}</div>
           ) : null}
           <ContextUsageBar threadId={threadId} onOpenDetail={openStatusPanel} />
           <Composer

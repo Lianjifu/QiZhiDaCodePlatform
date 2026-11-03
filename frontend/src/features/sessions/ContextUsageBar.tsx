@@ -60,7 +60,7 @@ export default function ContextUsageBar({
   const limit = status?.context.limit ?? 0
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 pb-1.5">
+    <div className="mx-auto w-full max-w-4xl px-6 pb-1.5">
       <div className="overflow-hidden rounded-xl border border-line bg-raised">
         <button
           type="button"

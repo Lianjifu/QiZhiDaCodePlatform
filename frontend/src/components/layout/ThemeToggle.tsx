@@ -5,6 +5,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 
+import { AutoIcon, MoonIcon, SunIcon } from '../../components/icons'
 import { useTheme, type ThemeMode } from '../../theme/ThemeProvider'
 
 const OPTIONS: { mode: ThemeMode; label: string }[] = [
@@ -13,10 +14,11 @@ const OPTIONS: { mode: ThemeMode; label: string }[] = [
   { mode: 'dark', label: '深色' },
 ]
 
-const ICONS: Record<ThemeMode, string> = {
-  system: '◐',
-  light: '☀',
-  dark: '☾',
+function Icon({ mode }: { mode: ThemeMode }) {
+  const className = 'h-4 w-4'
+  if (mode === 'light') return <SunIcon className={className} />
+  if (mode === 'dark') return <MoonIcon className={className} />
+  return <AutoIcon className={className} />
 }
 
 export default function ThemeToggle() {
@@ -40,9 +42,9 @@ export default function ThemeToggle() {
         type="button"
         onClick={() => setOpen((value) => !value)}
         title="切换主题"
-        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+        className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-ink-muted transition-colors hover:bg-hover hover:text-ink"
       >
-        <span className="w-4 text-center">{ICONS[mode]}</span>
+        <Icon mode={mode} />
         <span>{OPTIONS.find((option) => option.mode === mode)?.label}</span>
       </button>
 
@@ -57,13 +59,13 @@ export default function ThemeToggle() {
                 setOpen(false)
               }}
               className={[
-                'flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-hover',
+                'flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors hover:bg-hover',
                 option.mode === mode ? 'text-ink' : 'text-ink-muted',
               ].join(' ')}
             >
-              <span className="w-4 text-center">{ICONS[option.mode]}</span>
+              <Icon mode={option.mode} />
               <span className="flex-1">{option.label}</span>
-              {option.mode === mode && <span className="text-xs">✓</span>}
+              {option.mode === mode ? <span className="text-xs">✓</span> : null}
             </button>
           ))}
         </div>

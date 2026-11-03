@@ -46,6 +46,19 @@
   /* 空状态页的背景效果：点阵 + 中心光晕 */
   --grid-dot: oklch(0 0 0 / 0.09);
   --glow: oklch(0.55 0.16 255 / 0.1);
+
+  /* 代码高亮的颜色 —— 语法着色需要比正文更多区分度 */
+  --code-keyword: oklch(0.48 0.19 300);
+  --code-string: oklch(0.45 0.12 145);
+  --code-comment: oklch(0.58 0.02 90);
+  --code-number: oklch(0.52 0.14 60);
+  --code-func: oklch(0.44 0.13 255);
+  --code-type: oklch(0.47 0.12 200);
+  --code-var: oklch(0.4 0.02 90);
+  --code-attr: oklch(0.5 0.1 90);
+  --code-meta: oklch(0.55 0.03 90);
+  --code-tag: oklch(0.5 0.18 25);
+  --code-del: oklch(0.53 0.2 25);
 }
 
 .dark {
@@ -77,4 +90,17 @@
 
   --grid-dot: oklch(1 0 0 / 0.11);
   --glow: oklch(0.62 0.15 255 / 0.16);
+
+  /* 深色下代码颜色整体提亮一档，不然在深底上发闷 */
+  --code-keyword: oklch(0.78 0.15 300);
+  --code-string: oklch(0.76 0.13 150);
+  --code-comment: oklch(0.55 0.02 90);
+  --code-number: oklch(0.79 0.13 65);
+  --code-func: oklch(0.76 0.12 250);
+  --code-type: oklch(0.74 0.11 200);
+  --code-var: oklch(0.88 0.01 90);
+  --code-attr: oklch(0.8 0.09 95);
+  --code-meta: oklch(0.62 0.03 90);
+  --code-tag: oklch(0.75 0.15 30);
+  --code-del: oklch(0.7 0.17 25);
 }

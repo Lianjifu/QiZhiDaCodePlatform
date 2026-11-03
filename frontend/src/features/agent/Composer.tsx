@@ -369,7 +369,7 @@ export default forwardRef<ComposerHandle, {
   return (
     <div
       className={
-        centered ? 'mx-auto w-full max-w-3xl px-6' : 'mx-auto w-full max-w-3xl px-6 pb-6'
+        centered ? 'mx-auto w-full max-w-4xl px-6' : 'mx-auto w-full max-w-4xl px-6 pb-6'
       }
     >
       <div ref={shellRef} className="relative">

@@ -4,6 +4,7 @@
  * agent 要调一个需要人批的工具时，流里推来 `pending_approval` 事件，
  * 这里弹卡片让人批。批准后图继续跑，agent 接着往下做。
  */
+import { AlertIcon } from '../../components/icons'
 import type { PendingApproval } from '../../types/api'
 
 export default function ApprovalCard({
@@ -20,36 +21,54 @@ export default function ApprovalCard({
   if (pending.length === 0) return null
 
   return (
-    <div className="my-2 rounded-lg border border-warning bg-warning-soft px-3 py-3">
-      <div className="text-sm font-medium text-ink">需要你批准</div>
-      {pending.map((item, index) => (
-        <div key={`${item.tool}-${index}`} className="mt-2 text-xs text-ink-muted">
-          <div className="flex items-center gap-2">
-            <span className="rounded bg-base px-1.5 py-0.5 font-mono">{item.tool}</span>
-            {item.risk ? <span className="text-warning">风险：{item.risk}</span> : null}
+    <div className="my-3 overflow-hidden rounded-xl border border-warning/60 bg-warning-soft">
+      <div className="flex items-center gap-2 border-b border-warning/30 px-4 py-2.5">
+        <AlertIcon className="h-4 w-4 shrink-0 text-warning" />
+        <span className="text-sm font-medium text-ink">需要你批准</span>
+      </div>
+
+      <div className="px-4 py-3">
+        {pending.map((item, index) => (
+          <div
+            key={`${item.tool}-${index}`}
+            className={index > 0 ? 'mt-3 border-t border-warning/25 pt-3' : ''}
+          >
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="rounded-md bg-base px-1.5 py-0.5 font-mono text-ink">
+                {item.tool}
+              </span>
+              {item.risk ? (
+                <span className="rounded-md bg-warning/15 px-1.5 py-0.5 text-warning">
+                  风险：{item.risk}
+                </span>
+              ) : null}
+            </div>
+            {item.message ? (
+              <div className="mt-1.5 text-sm leading-relaxed text-ink">{item.message}</div>
+            ) : null}
+            {item.reasons.length > 0 && (
+              <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-xs text-ink-muted">
+                {item.reasons.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            )}
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs text-ink-faint">调用参数</summary>
+              <pre className="mt-1 max-h-32 overflow-auto rounded-lg bg-base p-2 text-[11px]">
+                {JSON.stringify(item.arguments, null, 2)}
+              </pre>
+            </details>
           </div>
-          {item.message ? <div className="mt-1 text-ink">{item.message}</div> : null}
-          {item.reasons.length > 0 && (
-            <ul className="mt-1 list-disc pl-4">
-              {item.reasons.map((reason) => (
-                <li key={reason}>{reason}</li>
-              ))}
-            </ul>
-          )}
-          <details className="mt-1">
-            <summary className="cursor-pointer text-ink-faint">调用参数</summary>
-            <pre className="mt-1 max-h-32 overflow-auto rounded bg-base p-2 text-[11px]">
-              {JSON.stringify(item.arguments, null, 2)}
-            </pre>
-          </details>
-        </div>
-      ))}
-      <div className="mt-3 flex gap-2">
+        ))}
+      </div>
+
+      <div className="flex gap-2 border-t border-warning/30 bg-base/40 px-4 py-2.5">
         <button
           type="button"
           disabled={busy}
           onClick={onApprove}
-          className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-text transition-colors hover:bg-accent-hover disabled:opacity-50"
+          className="rounded-lg bg-accent px-3.5 py-1.5 text-xs font-medium text-accent-text transition-colors hover:bg-accent-hover disabled:opacity-50"
         >
           批准
         </button>
@@ -57,7 +76,7 @@ export default function ApprovalCard({
           type="button"
           disabled={busy}
           onClick={onReject}
-          className="rounded-lg border border-line bg-base px-3 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:bg-hover disabled:opacity-50"
+          className="rounded-lg border border-line bg-base px-3.5 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:bg-hover disabled:opacity-50"
         >
           拒绝
         </button>

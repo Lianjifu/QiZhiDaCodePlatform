@@ -22,10 +22,9 @@ import {
   type ReactNode,
 } from 'react'
 
-const STORAGE_KEY = 'qzd.sessions'
+import { DEFAULT_TITLE } from './title'
 
-/** 默认标题。消息标题只覆盖它，不覆盖用户自己起的名字。 */
-const DEFAULT_TITLE = '新会话'
+const STORAGE_KEY = 'qzd.sessions'
 
 export interface SessionMeta {
   threadId: string
@@ -59,12 +58,6 @@ export function newThreadId(): string {
   const bytes = new Uint8Array(16)
   crypto.getRandomValues(bytes)
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
-/** 从用户输入里取标题。 */
-export function titleFromMessage(message: string): string {
-  const firstLine = message.trim().split('\n')[0] ?? ''
-  return firstLine.slice(0, 30) || DEFAULT_TITLE
 }
 
 interface SessionsValue {

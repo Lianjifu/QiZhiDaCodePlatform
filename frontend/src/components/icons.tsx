@@ -102,3 +102,109 @@ export function StopIcon(props: IconProps) {
     </Svg>
   )
 }
+
+export function TerminalIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2.5" y="3.5" width="11" height="9" rx="1.5" />
+      <path d="M5 7l2 1.5L5 10M8.5 10.5H11" />
+    </Svg>
+  )
+}
+
+export function SearchIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="7" cy="7" r="3.75" />
+      <path d="M10 10l3 3" />
+    </Svg>
+  )
+}
+
+export function PencilIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M11 2.8l2.2 2.2-7.6 7.6-3 .8.8-3z" />
+      <path d="M9.4 4.4l2.2 2.2" />
+    </Svg>
+  )
+}
+
+export function CheckIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3 8.5 6.5 12 13 4.5" />
+    </Svg>
+  )
+}
+
+export function AlertIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M8 2.8 14 13H2z" />
+      <path d="M8 6.6v3M8 11.4h.01" />
+    </Svg>
+  )
+}
+
+export function CopyIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+      <path d="M10.5 5.5v-1a1 1 0 0 0-1-1h-5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h1" />
+    </Svg>
+  )
+}
+
+export function ChatIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H6l-3 2.5v-9A1.5 1.5 0 0 1 4.5 3h7.5A1.5 1.5 0 0 1 13.5 4.5z" />
+    </Svg>
+  )
+}
+
+export function LayersIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M8 2.5 14 5.5 8 8.5 2 5.5z" />
+      <path d="M2.8 8.8 8 11.5l5.2-2.7M2.8 11.6 8 14.3l5.2-2.7" />
+    </Svg>
+  )
+}
+
+export function PlugIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M6 2.5v3M10 2.5v3" />
+      <path d="M4.5 5.5h7v3a3.5 3.5 0 0 1-7 0z" />
+      <path d="M8 12v1.5" />
+    </Svg>
+  )
+}
+
+export function SunIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="8" cy="8" r="3" />
+      <path d="M8 1.5v1.2M8 13.3v1.2M14.5 8h-1.2M2.7 8H1.5M12.6 3.4l-.85.85M4.25 11.75l-.85.85M12.6 12.6l-.85-.85M4.25 4.25l-.85-.85" />
+    </Svg>
+  )
+}
+
+export function MoonIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.9 5.9 0 1 0 7.1 7.1z" />
+    </Svg>
+  )
+}
+
+export function AutoIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="8" cy="8" r="5.5" />
+      <path d="M8 2.5v11" />
+    </Svg>
+  )
+}
