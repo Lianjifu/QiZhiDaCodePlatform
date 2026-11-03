@@ -159,34 +159,46 @@ query string，其余进 JSON body。
 - 风险基线（写进调用记录，参数级规则只能上调它）；
 - 幂等标记（决定能不能自动重试）。
 
-| 工具 | 风险 | 权限 | 幂等 | 审批 |
-| --- | --- | --- | --- | --- |
-| `ls` / `read_file` / `glob` / `grep` | read | none | ✓ | 只读，自动放行 |
-| `write_file` / `edit_file` | write | confirm | ✓ | strict 下要人批 |
-| `delete` | write | confirm | ✗ | **永远**要人批 |
-| `execute` | execute | confirm | ✗ | balanced 以上要人批 |
+| 工具 | 风险 | 档位 | 权限 | 幂等 | 审批 |
+| --- | --- | --- | --- | --- | --- |
+| `ls` / `read_file` / `glob` / `grep` | read | 低 | none | ✓ | 自动放行 |
+| `write_file` / `edit_file` | write | 低 | none | ✓ | 自动放行 |
+| `delete` | destructive | 高 | none | ✗ | **永远**要人批 |
+| `execute` | execute | 中 | none | ✗ | balanced / strict 要人批 |
 
-`delete` 单独一档：写文件能靠再写一遍补救，**删掉的回不来** —— 信任模式再宽松
+`delete` 是高档：写文件能靠再写一遍补救，**删掉的回不来** —— 信任模式再宽松
 也要人批。
 
 我们自己的工具（`web_fetch` / `web_search` / `run_python` / MCP）走同一套判定 ——
 它们的 `permission` / `risk` 来自声明。两边合起来才是完整的工具集，判定函数
 只有一个（`policy.needs_approval`）。
 
-### 3.5 风险与权限是两个正交维度
+### 3.5 风险档位与权限是两个正交维度
 
 - `risk` —— 这能力**最坏**能造成什么（描述能力本身）；
 - `permission` —— **谁来放行**这次调用（描述运行时策略）。
 
-实际要不要审批，由**信任模式**在运行时决定：
+**审批按风险档位判**（用户定的口径：只有中高档才需要审批）：
+
+| 档位 | 风险等级 | 要不要人批 |
+| --- | --- | --- |
+| 低 | read / write | 自动放行 —— 改错了能改回来 |
+| 中 | execute / network | 要人批 —— 会在进程外产生副作用 |
+| 高 | destructive | **永远**要人批 —— 不可逆 |
+
+`permission` 是档位之上的两个口子：`confirm` = 运营额外要求人确认，
+`admin` = 管理员放行（信任模式放宽不了）。出厂能力的 `permission` 一律 `none`
+—— 档位说了算，声明不重复表达一遍。
+
+信任模式只决定**中档**放不放心行：
 
 | 模式 | 放行范围 | 用途 |
 | --- | --- | --- |
-| `strict` | 完全按 `permission` 声明 | 生产 |
-| `balanced`（默认） | 读写自动放行；执行命令 / 联网抓取需确认 | 默认 |
-| `permissive` | 只有 `destructive` 需确认 | 本地开发 |
+| `strict` | 中高档要人批；标了 `confirm` 的低档能力也要人批 | 生产 |
+| `balanced`（默认） | 中高档要人批 | 默认 |
+| `permissive` | 只有高档要人批（中档也放行） | 本地开发 |
 
-信任模式只能**放宽**审批，放宽不了 `delete` 这种"标了就要人批"的工具。
+信任模式只能**放宽**中档，放宽不了高档这种"不可逆"的操作。
 
 风险还会被**参数级规则上调**（规则是纯函数，便于单测、便于向模型解释"这次
 为什么要审批"）：
@@ -247,11 +259,11 @@ query string，其余进 JSON body。
 
 ### 4.2 我们自己的内置能力（3 个）
 
-| key | 名称 | 参数 | 风险 | 权限 | 超时 | 重试 | 幂等 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `run_python` | 执行 Python | `code` | execute | confirm | 60s | TIMEOUT×2 | ✗ |
-| `web_fetch` | 抓取网页 | `url` | network | confirm | 20s | NETWORK_ERROR×3 | ✓ |
-| `web_search` | 联网搜索 | `query` `max_results?` | network | confirm | 20s | NETWORK_ERROR×3 | ✓ |
+| key | 名称 | 参数 | 风险 | 档位 | 权限 | 超时 | 重试 | 幂等 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `run_python` | 执行 Python | `code` | execute | 中 | none | 60s | TIMEOUT×2 | ✗ |
+| `web_fetch` | 抓取网页 | `url` | network | 中 | none | 20s | NETWORK_ERROR×3 | ✓ |
+| `web_search` | 联网搜索 | `query` `max_results?` | network | 中 | none | 20s | NETWORK_ERROR×3 | ✓ |
 
 | 能力 | 做什么 | 约束 |
 | --- | --- | --- |
@@ -383,7 +395,7 @@ CompositeBackend(
 ③ 风险评估    assess()              execution/risk.py
                声明的 risk + 参数级规则（破坏性命令 / SSRF）
 ④ 审批等待    _decide_approval()    pipeline.py
-               按 permission + 信任模式 → approved / pending / denied
+               按风险档位 + permission + 信任模式 → approved / pending / denied
 ⑤ 实际调用    _invoke()             pipeline.py
                幂等去重 → 超时 → 重试 → 适配器
 ⑥ 结果验证    _verify_output()      pipeline.py
@@ -505,7 +517,8 @@ POST /api/v1/agent/chat
 
 ```text
 当前信任模式：balanced。
-一般读写操作会直接执行；执行命令、联网抓取、删除文件需要人工审批。
+审批按风险档位：只读、写入是低档，直接执行；执行命令、联网是中档，需要人工
+审批；破坏性操作是高档，永远需要人工审批。
 以下工具需要人工批准才能执行：delete、execute。
 每次触发审批都会中断当前任务等人工处理，调用前请把参数一次做对。
 另外：平时不用人批的工具，碰到命令里含删除/写设备等特征、或抓取的是内网地址，

@@ -53,41 +53,42 @@ SUPERSEDED_BUILTIN_TOOLS: frozenset[str] = frozenset(
 class ToolPolicy:
     """一个工具的治理策略。"""
 
-    risk: str = RiskLevel.READ  # 风险基线
+    risk: str = RiskLevel.READ  # 风险基线（审批按它归的档位判）
     permission: str = PermissionLevel.NONE  # 权限要求
     idempotent: bool = True  # 重复执行结果相同（重试的前提）
-    needs_approval: bool = False  # 要不要人工审批
 
 
-# 文件工具的策略：只读的自动放行；写类按信任模式决定；删除永远要人批；执行命令要人批
+# 文件工具的策略：审批按**风险档位**判（低=只读/写入、中=执行命令、高=破坏性）。
+#
+# 出厂文件的 permission 一律 none —— 档位说了算，声明不再重复表达一遍。
 TOOL_POLICIES: dict[str, ToolPolicy] = {
     "ls": ToolPolicy(risk=RiskLevel.READ, permission=PermissionLevel.NONE, idempotent=True),
     "read_file": ToolPolicy(risk=RiskLevel.READ, permission=PermissionLevel.NONE, idempotent=True),
     "glob": ToolPolicy(risk=RiskLevel.READ, permission=PermissionLevel.NONE, idempotent=True),
     "grep": ToolPolicy(risk=RiskLevel.READ, permission=PermissionLevel.NONE, idempotent=True),
-    # 写类在 balanced 下自动放行（读写类照旧），strict 下要人批
+    # 写类：**低档**，自动放行（改错了能改回来）
     "write_file": ToolPolicy(
         risk=RiskLevel.WRITE,
-        permission=PermissionLevel.CONFIRM,
+        permission=PermissionLevel.NONE,
         idempotent=True,
     ),
     "edit_file": ToolPolicy(
         risk=RiskLevel.WRITE,
-        permission=PermissionLevel.CONFIRM,
+        permission=PermissionLevel.NONE,
         idempotent=True,
     ),
-    # 删除：**永远**要人批，不管信任模式。
+    # 删除：**高档**，永远要人批，不管信任模式。
     # 写文件能靠再写一遍补救，删掉的回不来 —— 不可重试（删了就是删了）。
     "delete": ToolPolicy(
-        risk=RiskLevel.WRITE,
-        permission=PermissionLevel.CONFIRM,
+        risk=RiskLevel.DESTRUCTIVE,
+        permission=PermissionLevel.NONE,
         idempotent=False,
-        needs_approval=True,
     ),
-    # 执行命令：不幂等（超时只说明"不知道执行完没有"，重跑可能把副作用做两遍）
+    # 执行命令：**中档**，strict / balanced 要人批，permissive 放行。
+    # 不幂等（超时只说明"不知道执行完没有"，重跑可能把副作用做两遍）
     "execute": ToolPolicy(
         risk=RiskLevel.EXECUTE,
-        permission=PermissionLevel.CONFIRM,
+        permission=PermissionLevel.NONE,
         idempotent=False,
     ),
 }
@@ -114,20 +115,15 @@ def approval_tool_names(trust_mode: str) -> set[str]:
     Returns:
         工具名集合。
 
-    信任模式只能**放宽**审批：permissive 也不会放过 ``destructive``。
-    但标了 ``needs_approval`` 的工具（删除）不在放宽范围内 —— 信任模式决定的是
-    "按风险多严来卡"，不是"这一类操作不用问人"。
+    审批按**风险档位**判：低档（只读、写入）自动放行，中档（执行命令）与
+    高档（删除）要人批。信任模式只能**放宽中档**，放宽不了高档 ——
+    删除是不可逆的，permissive 也不放过。
     """
     mode = (trust_mode or "balanced").lower()
     return {
         name
         for name, policy in TOOL_POLICIES.items()
-        if needs_approval(
-            policy.permission,
-            policy.risk,
-            mode,
-            always=policy.needs_approval,
-        )
+        if needs_approval(policy.permission, policy.risk, mode)
     }
 
 
@@ -146,6 +142,10 @@ def approval_required_tools(
     - ``builder.py`` 算出 deepAgents 的 ``interrupt_on``（谁要挂起等人批）；
     - ``middleware.py`` 告诉模型"哪些工具会要人批"；
     - 执行层在直接调用的路径上决定要不要挂起。
+
+    审批按**风险档位**判：低档（只读、写入）自动放行，中档（执行命令、联网）
+    与高档（破坏性）要人批 —— 声明里的 ``permission=confirm`` 只是"运营额外
+    要求人确认"，``admin`` 是"管理员放行"。
 
     Args:
         specs: 统一能力清单（我们的工具用它）。

@@ -433,13 +433,30 @@ deepAgents 迁移的方案与决策见 [`docs/plans/agent-migration-deepagents.m
 | `risk` | read / write / execute / network / destructive | 最坏能造成什么 |
 | `permission` | none / confirm / admin | 谁能放行这次调用 |
 
-实际要不要审批，由**信任模式**（`CAPABILITY_TRUST_MODE`）在运行时决定：
+**审批按风险档位判**（用户定的口径：**只有中高档才需要审批**）：
+
+| 档位 | 风险等级 | 要不要人批 |
+| --- | --- | --- |
+| 低 | read / write | 自动放行 —— 改错了能改回来 |
+| 中 | execute / network | 要人批 —— 会在进程外产生副作用 |
+| 高 | destructive | **永远**要人批 —— 不可逆 |
+
+`permission` 是档位之上的两个口子：`confirm` = 运营额外要求人确认，
+`admin` = 管理员放行（信任模式放宽不了）。出厂能力的 `permission` 一律 `none`
+—— 档位说了算，声明不重复表达一遍。
+
+信任模式（`CAPABILITY_TRUST_MODE`）只决定**中档**放不放心行：
 
 | 模式 | 放行范围 | 用途 |
 | --- | --- | --- |
-| `strict` | 完全按 `permission` 声明 | 生产 |
-| `balanced`（默认） | 读写自动放行；执行命令 / 联网抓取需确认 | 默认 |
-| `permissive` | 只有 `destructive` 需确认 | 本地开发 |
+| `strict` | 中高档要人批；标了 `confirm` 的低档能力也要人批 | 生产 |
+| `balanced`（默认） | 中高档要人批 | 默认 |
+| `permissive` | 只有高档要人批（中档也放行） | 本地开发 |
+
+**不可逆的操作归高档**，不管信任模式：删文件（`delete`）、删 worktree
+（`git_worktree_remove`）、合并分支（`git_merge`）。派子 agent
+（`delegate_worker`）归**中档** —— 它会在自己的 worktree 里跑一整轮 agent
+（写文件 + 执行命令）。
 
 风险还会被**参数级规则上调**：`execute` 命中 `rm -rf`、`dd`、`curl … | sh`，
 或 `web_fetch` 的 URL 指向内网地址（SSRF），都会把风险顶到 `destructive` 并要求
@@ -463,18 +480,20 @@ deepAgents 迁移的方案与决策见 [`docs/plans/agent-migration-deepagents.m
 | `read_file` | 读取文件 | `file_path` `offset` `limit` | read | 读文本文件，带行号 |
 | `write_file` | 写入文件 | `file_path` `content` | write | 写入（覆盖），自动建父目录 |
 | `edit_file` | 编辑文件 | `file_path` `old_string` `new_string` | write | 精确字符串替换；**原文必须唯一** |
-| `delete` | 删除 | `file_path` | write | **永远要人批**；不可重试 |
+| `delete` | 删除 | `file_path` | destructive | **永远要人批**；不可重试 |
 | `glob` | 按模式找文件 | `pattern` `path` | read | 按 glob 模式找文件，如 `**/*.py` |
 | `grep` | 搜索文件内容 | `pattern` `path` | read | 按正则搜内容 |
 | `execute` | 执行命令 | `command` | execute | 在沙箱里跑一条 shell 命令 |
 
 **我们自己的内置能力**（3 个）：
 
-| key | 名称 | 参数 | 风险 | 权限 | 说明 |
+| key | 名称 | 参数 | 风险 | 档位 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| `run_python` | 执行 Python | `code` | execute | confirm | 在沙箱里跑一段 Python，返回退出码 / 输出 |
-| `web_fetch` | 抓取网页 | `url` | network | confirm | 抓 http/https 页面并转纯文本（去脚本、去样式） |
-| `web_search` | 联网搜索 | `query` `max_results` | network | confirm | 走 Tavily / Serper / Bing 搜索，需配 API Key |
+| `run_python` | 执行 Python | `code` | execute | 中 | 在沙箱里跑一段 Python，返回退出码 / 输出 |
+| `web_fetch` | 抓取网页 | `url` | network | 中 | 抓 http/https 页面并转纯文本（去脚本、去样式） |
+| `web_search` | 联网搜索 | `query` `max_results` | network | 中 | 走 Tavily / Serper / Bing 搜索，需配 API Key |
+
+出厂能力的权限要求一律 `none` —— 审批按档位判，声明不重复表达一遍。
 
 几个设计取舍：
 
@@ -950,14 +969,14 @@ agent；记忆文件同理走 `/.memory` 路由。见 `app/capabilities/backends
 沙箱镜像里没有 git，而且 worktree 里的 `.git` 是个指向主仓库的**指针文件**，
 容器里解析不了。所以 git 一律是**宿主侧**的能力（`app/git/service.py`）：
 
-| 能力 | 做什么 |
-| --- | --- |
-| `git_status` | 当前分支、未提交的改动 |
-| `git_worktree_add` | 开一个新的独立检出（独立分支） |
-| `git_worktree_list` | 列 worktree |
-| `git_worktree_remove` | 删平台创建的 worktree |
-| `git_commit` | 提交当前目录的改动 |
-| `git_merge` | 把分支合进来（有冲突就报告冲突文件） |
+| 能力 | 做什么 | 档位 |
+| --- | --- | --- |
+| `git_status` | 当前分支、未提交的改动 | 低 |
+| `git_worktree_add` | 开一个新的独立检出（独立分支） | 低 |
+| `git_worktree_list` | 列 worktree | 低 |
+| `git_worktree_remove` | 删平台创建的 worktree | **高**（永远要人批） |
+| `git_commit` | 提交当前目录的改动 | 低 |
+| `git_merge` | 把分支合进来（有冲突就报告冲突文件） | **高**（永远要人批） |
 
 **会话没绑工作目录时，这些能力根本不会出现在模型的工具列表里** —— 给模型一批
 用不了的工具，它会试了再报错，白烧轮次。
@@ -966,6 +985,9 @@ agent；记忆文件同理走 `/.memory` 路由。见 `app/capabilities/backends
 
 任务能拆成互不相干的几块时，主 agent 可以调 `delegate_worker` 把一块交给子
 agent：它在**自己的 worktree**（独立检出 + 独立分支）里干活，干完提交。
+
+`delegate_worker` 是**中档**（跟 `execute` 一样）：worker 会在自己的 worktree 里
+跑一整轮 agent，写文件 + 执行命令 —— 所以派活之前要人点一次批准。
 
 ```text
 主 agent（工作区 A）

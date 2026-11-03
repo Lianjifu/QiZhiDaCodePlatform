@@ -6,6 +6,7 @@
  */
 import { AlertIcon } from '../../components/icons'
 import type { PendingApproval } from '../../types/api'
+import { riskLabel, riskTier, tierLabel } from '../capabilities/risk'
 
 export default function ApprovalCard({
   pending,
@@ -41,7 +42,7 @@ export default function ApprovalCard({
               </span>
               {item.risk ? (
                 <span className="rounded-md bg-warning/15 px-1.5 py-0.5 text-warning">
-                  风险：{item.risk}
+                  风险：{tierLabel(riskTier(item.risk))}档 · {riskLabel(item.risk)}
                 </span>
               ) : null}
             </div>

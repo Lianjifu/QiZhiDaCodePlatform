@@ -70,6 +70,7 @@ src/
       MentionPicker.tsx     @ 提及面板
     capabilities/
       ToolForm.tsx  SkillForm.tsx  MCPForm.tsx   三个管理页的表单
+      risk.ts        风险档位与审批显示（纯函数，可单测）
     environments/
       EnvironmentBar.tsx  工作目录条（初始状态，挂在对话框下方）
       format.ts           显示规则（纯函数，可单测）
@@ -266,6 +267,23 @@ token 数看。后端在 `app/agents/status.py`；在跑的任务在 `app/agents
 - **入参 schema 只有 http 类型才要填** —— builtin / mcp 传空字典是正常的。
 - **改文件内容只处理文本** —— 二进制走上传。
 - 删除一律要确认（`window.confirm`）；删工具会连带清掉技能里对它的引用。
+
+**工具表里的「权限 / 风险」那一列**显示的是档位 + 要不要人批：
+
+| 显示 | 含义 |
+| --- | --- |
+| `低 · 自动放行` | 只读、写入 —— 改错了能改回来 |
+| `中 · 要人批` | 执行命令、联网 —— 会在进程外产生副作用 |
+| `高 · 要人批` | 破坏性 —— 不可逆，永远要人批 |
+
+档位与显示规则在 `features/capabilities/risk.ts`（纯函数，可单测）；**判定在后端**
+（`app/capabilities/registration/policy.py`），前端不自己再判一遍。
+
+新增工具时表单里的两个选择项：
+
+- **风险等级** —— 决定档位（中档要人批，高档永远要人批）；
+- **权限要求** —— 档位之上的额外要求：「一定要人批」（运营显式要求）与
+  「管理员放行」。默认的「按风险档位判定」就是跟着档位走。
 
 ## 工作目录（环境）
 

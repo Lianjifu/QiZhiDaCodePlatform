@@ -468,7 +468,7 @@ if contains_secret(content):
 | --- | --- | --- | --- |
 | `memory_search` | `query`, `scope`（默认 **all**）, `top_k` | **命中条目的摘要 + id + 分数**（不给全文） | `read` |
 | `memory_read` | `id` | 一条记忆的全文 | `read` |
-| `memory_write` | `content`, `kind`, `tags[]`, `scope`（默认 **session**）, `supersedes?` | 写入或合并的结果 | `write` / `confirm` |
+| `memory_write` | `content`, `kind`, `tags[]`, `scope`（默认 **session**）, `supersedes?` | 写入或合并的结果 | `write`（低档，自动放行） |
 
 要点：
 
@@ -538,7 +538,7 @@ if spec.annotations.open_world and risk == RiskLevel.READ:
     risk = RiskLevel.NETWORK      # ← 记忆检索会被顶成 network
 ```
 
-`balanced` 模式拦 `network` → 每查一次记忆都要人批。
+中档（`network`）要人批 → 每查一次记忆都要人批。
 
 ### 9.1 拆成两个正交维度
 

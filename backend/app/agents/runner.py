@@ -54,7 +54,8 @@ from app.agents.prompts import CODE_AGENT_PROMPT
 from app.capabilities.backends.assembly import MEMORY_ROUTE
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.intent.middleware import build_policy_note
-from app.capabilities.registration.spec import KIND_SKILL, CapabilitySpec
+from app.capabilities.registration.spec import KIND_SKILL, KIND_TOOL, CapabilitySpec
+from app.capabilities.registration.tool_policy import policy_for_tool
 from app.capabilities.skills_export import export_skills
 from app.context.service import ContextRequest, build_context_service
 from app.core.config import settings
@@ -175,7 +176,7 @@ class AgentRunner:
             {"messages": _input_messages(message, blocks)},
             config={"configurable": {"thread_id": thread_id}},
         )
-        return await self._result_from(result, skills, thread_id, context)
+        return await self._result_from(result, skills, thread_id, context, specs)
 
     async def history(
         self,
@@ -242,7 +243,7 @@ class AgentRunner:
         )
         state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
         interrupts = getattr(state, "interrupts", ()) or ()
-        return [_pending_entry(item) for item in interrupts]
+        return [_pending_entry(item, specs) for item in interrupts]
 
     async def resume(
         self,
@@ -290,7 +291,7 @@ class AgentRunner:
             Command(resume={"decisions": [{"type": decision}]}),
             config={"configurable": {"thread_id": thread_id}},
         )
-        return await self._result_from(result, skills, thread_id, context)
+        return await self._result_from(result, skills, thread_id, context, specs)
 
     async def _result_from(
         self,
@@ -298,6 +299,7 @@ class AgentRunner:
         skills: list[Any],
         thread_id: str,
         context: ExecutionContext | None,
+        specs: list[CapabilitySpec] | None = None,
     ) -> AgentRunResult:
         """把图的结果整理成 ``AgentRunResult``。
 
@@ -322,7 +324,7 @@ class AgentRunner:
                 tool_calls=_collect_tool_calls(turn_messages),
                 skills=[skill.key for skill in skills],
                 status=STATUS_PENDING_APPROVAL,
-                pending=[_pending_entry(item) for item in interrupts],
+                pending=[_pending_entry(item, specs) for item in interrupts],
             )
 
         tool_calls = _collect_tool_calls(turn_messages)
@@ -377,7 +379,7 @@ class AgentRunner:
             skill_ids=skill_ids,
             attachments=parsed,
         )
-        async for event in self._stream_turn(agent, message, thread_id, blocks):
+        async for event in self._stream_turn(agent, message, thread_id, blocks, specs):
             yield event
 
     async def _stream_turn(
@@ -386,6 +388,7 @@ class AgentRunner:
         message: str,
         thread_id: str,
         blocks: list[dict[str, Any]],
+        specs: list[CapabilitySpec] | None = None,
     ) -> AsyncIterator[AgentStreamChunk]:
         """跑一轮并把事件流出去 —— ``stream`` 与 ``regenerate`` 共用。"""
         seen_calls: set[str] = set()
@@ -410,7 +413,7 @@ class AgentRunner:
         # 收尾：这一轮是跑完了还是停在审批上？
         # 中断的信息在 checkpoint 的 state 里（与 pending_approvals 同一个来源）——
         # 流里不一定带得全，所以这里直接读状态。
-        pending = await self._pending_from_state(agent, thread_id)
+        pending = await self._pending_from_state(agent, thread_id, specs)
         if pending:
             yield AgentStreamChunk(type="pending_approval", pending=pending)
             yield AgentStreamChunk(type="done", status=STATUS_PENDING_APPROVAL)
@@ -463,7 +466,7 @@ class AgentRunner:
             await agent.aupdate_state(config, {"messages": removals})
 
         text = _message_text(messages[last_user].content)
-        async for event in self._stream_turn(agent, text, thread_id, []):
+        async for event in self._stream_turn(agent, text, thread_id, [], specs):
             yield event
 
     async def fork(
@@ -513,7 +516,12 @@ class AgentRunner:
         )
         return len(kept)
 
-    async def _pending_from_state(self, agent: Any, thread_id: str) -> list[PendingApprovalOut]:
+    async def _pending_from_state(
+        self,
+        agent: Any,
+        thread_id: str,
+        specs: list[CapabilitySpec] | None = None,
+    ) -> list[PendingApprovalOut]:
         """从 checkpoint 读这一轮挂起的待批条目。"""
         try:
             state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
@@ -521,7 +529,7 @@ class AgentRunner:
             logger.debug("读会话状态失败，无法判断是否挂起审批")
             return []
         interrupts = getattr(state, "interrupts", ()) or ()
-        return [_pending_entry(item) for item in interrupts]
+        return [_pending_entry(item, specs) for item in interrupts]
 
     async def _memory_block(
         self,
@@ -883,6 +891,17 @@ def _skills_dir(workspace: Path) -> Path:
     return Path(workspace).parent / ".skills" / Path(workspace).name
 
 
+def _risk_for(name: str, specs: list[CapabilitySpec] | None = None) -> str:
+    """查一个工具的风险等级 —— 审批卡片要按档位告诉人"这次为什么危险"。
+
+    我们的能力从声明里查；deepAgents 的文件工具没有声明，查策略表。
+    """
+    for spec in specs or []:
+        if spec.kind == KIND_TOOL and spec.key == name:
+            return spec.risk
+    return policy_for_tool(name).risk
+
+
 def _interrupts(result: dict[str, Any]) -> list[Any]:
     """从图的结果里取出中断载荷。
 
@@ -896,7 +915,10 @@ def _interrupts(result: dict[str, Any]) -> list[Any]:
     return [raw]
 
 
-def _pending_entry(interrupt_obj: Any) -> dict[str, Any]:
+def _pending_entry(
+    interrupt_obj: Any,
+    specs: list[CapabilitySpec] | None = None,
+) -> dict[str, Any]:
     """把一个中断整理成待审批条目。
 
     两种中断（deepAgents HITL 的声明级、我们自己的参数级）载荷形状不同，
@@ -915,6 +937,8 @@ def _pending_entry(interrupt_obj: Any) -> dict[str, Any]:
             "kind": "declared",
             "tool": name,
             "arguments": args,
+            # 带上风险等级：前端要按档位（低/中/高）告诉人"这次为什么危险"
+            "risk": _risk_for(name, specs),
             "message": f"工具 {name} 需要人工批准后才能执行",
         }
     # 我们自己的参数级中断

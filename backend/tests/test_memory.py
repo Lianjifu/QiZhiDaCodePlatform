@@ -447,7 +447,7 @@ async def test_memory_capabilities_are_installed_and_callable(session):
 
     write = specs["memory_write"]
     assert write.risk == "write"
-    assert write.permission == "confirm"
+    assert write.permission == "none"
     assert "kind" in write.input_schema["required"], "记忆类型必填 —— 它决定召回准不准"
 
 

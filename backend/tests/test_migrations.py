@@ -161,6 +161,54 @@ async def test_migration_backfills_context_window_from_preset(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_migration_switches_builtins_to_risk_tier_policy(tmp_path) -> None:
+    """出厂能力的审批改成按风险档位判 —— 存量的旧行要迁过来。
+
+    ``sync_builtins`` 只补空字段、不覆盖已有行（那是刻意的），所以声明改了
+    风险/权限之后，库里的旧行不会自己跟上。这条迁移就是补上这一刀。
+    """
+    db_path = str(tmp_path / "tier.db")
+
+    _alembic("upgrade", "0011_llm_provider_vision", db_path=db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "insert into tool (name, display_name, description, type, source, config,"
+        " parameters, origin, tags, permission, risk, output_schema, timeout_s,"
+        " retry_policy, annotations, enabled, version, created_at, updated_at)"
+        " values ('git_merge', '合并分支', '', 'builtin', 'x', '{}', '{}', 'builtin',"
+        " '[]', 'confirm', 'write', null, 30, '{}', '{}', 1, 1,"
+        " CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+    conn.execute(
+        "insert into tool (name, display_name, description, type, source, config,"
+        " parameters, origin, tags, permission, risk, output_schema, timeout_s,"
+        " retry_policy, annotations, enabled, version, created_at, updated_at)"
+        " values ('我自己写的', '用户能力', '', 'builtin', 'x', '{}', '{}', 'user',"
+        " '[]', 'confirm', 'read', null, 30, '{}', '{}', 1, 1,"
+        " CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+    conn.commit()
+    conn.close()
+
+    _alembic("upgrade", "head", db_path=db_path)
+
+    conn = sqlite3.connect(db_path)
+    rows = {
+        name: (permission, risk)
+        for name, permission, risk in conn.execute(
+            "select name, permission, risk from tool where name in"
+            " ('git_merge', '我自己写的')"
+        )
+    }
+    conn.close()
+
+    # 出厂能力：权限交给档位判，合并分支升到高档（永远要人批）
+    assert rows["git_merge"] == ("none", "destructive")
+    # 用户自建的能力一概不动 —— 那是运营自己配的策略
+    assert rows["我自己写的"] == ("confirm", "read")
+
+
+@pytest.mark.asyncio
 async def test_migration_downgrade_restores_legacy_schema(tmp_path) -> None:
     """降级要能把新字段退回去。"""
     db_path = str(tmp_path / "downgrade.db")

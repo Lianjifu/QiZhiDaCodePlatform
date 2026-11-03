@@ -413,13 +413,15 @@ def build_policy_note(
     Returns:
         策略说明正文。没有可说的内容时返回空串。
     """
-    notes = [f"当前信任模式：{trust_mode}。"]
-    if trust_mode == "balanced":
-        notes.append("一般读写操作会直接执行；执行命令、联网抓取、删除文件需要人工审批。")
+    notes = [
+        f"当前信任模式：{trust_mode}。",
+        "审批按风险档位：只读、写入是低档，直接执行；执行命令、联网是中档，"
+        "需要人工审批；破坏性操作是高档，永远需要人工审批。",
+    ]
+    if trust_mode == "permissive":
+        notes.append("宽松模式：中档（执行命令、联网）也自动放行，只有破坏性操作仍要人批。")
     elif trust_mode == "strict":
-        notes.append("所有写类、执行类、联网操作都会挂起，等待人工审批。")
-    elif trust_mode == "permissive":
-        notes.append("只有破坏性操作与删除文件需要人工审批。")
+        notes.append("严格模式：标了「要人确认」的能力即使是低档也要人批。")
 
     approval = approval_required_tools(specs, trust_mode, allowed_tool_keys)
     if approval:

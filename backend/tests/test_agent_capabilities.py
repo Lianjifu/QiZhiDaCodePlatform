@@ -96,38 +96,39 @@ async def test_approval_round_trip_pushes_result_back(app, client, session, monk
     新契约：审批走 LangGraph 中断。批准后**图恢复、agent 自己接着往下跑**，
     结果直接回到它的上下文 —— 不再需要"下一轮把结果补给它"那套回流机制。
 
-    用 ``write_file`` 而不是 ``execute``：写文件在本地跑，测试不依赖 docker；
-    strict 模式下写类操作要人批。
+    用 ``delete`` 而不是 ``execute``：删除在本地跑，测试不依赖 docker；
+    删文件是**破坏性（高档）**—— 不可逆，永远要人批，跟信任模式无关。
     """
-    monkeypatch.setattr(settings, "capability_trust_mode", "strict")
-
     thread_id = "t-approve"
+    workspace = resolve_workspace(thread_id)
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "out.txt").write_text("写点东西", encoding="utf-8")
+
     model = RecordingModel(
-        tool_name="write_file",
-        tool_args={"file_path": "out.txt", "content": "写点东西"},
-        reply="写完了",
+        tool_name="delete",
+        tool_args={"file_path": "out.txt"},
+        reply="删完了",
     )
     _override(app, model, session)
 
-    resp = await client.post(API + "/chat", json={"message": "写个文件", "thread_id": thread_id})
+    resp = await client.post(API + "/chat", json={"message": "删个文件", "thread_id": thread_id})
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
-    # strict 模式下写类操作要人批 → 这一轮挂起了
+    # 破坏性操作要人批 → 这一轮挂起了
     assert data["status"] == "pending_approval"
     assert data["pending"], "挂起时应该给出待审批条目"
-    assert data["pending"][0]["tool"] == "write_file"
+    assert data["pending"][0]["tool"] == "delete"
 
     # 人工批准 → 恢复图
     approve = await client.post(f"{API}/{thread_id}/approve")
     assert approve.status_code == 200, approve.text
     approved = approve.json()["data"]
     assert approved["status"] == "completed"
-    assert "写完了" in approved["content"]
-    # 工具真的执行了：文件落盘
+    assert "删完了" in approved["content"]
+    # 工具真的执行了：文件没了
     assert approved["tool_calls"], "恢复后应该有工具调用"
-    assert approved["tool_calls"][0]["name"] == "write_file"
-    workspace = resolve_workspace(thread_id)
-    assert (workspace / "out.txt").read_text(encoding="utf-8") == "写点东西"
+    assert approved["tool_calls"][0]["name"] == "delete"
+    assert not (workspace / "out.txt").exists()
 
 
 @pytest.mark.asyncio
@@ -195,14 +196,24 @@ def test_execution_artifact_marks_pending_approval() -> None:
 @pytest.mark.parametrize(
     ("permission", "risk", "mode", "expected"),
     [
+        # 低档（只读、写入）：自动放行 —— 改错了能改回来
         ("none", "read", "balanced", "approved"),
-        ("none", "execute", "balanced", "approved"),
-        ("confirm", "read", "balanced", "approved"),
-        ("confirm", "write", "balanced", "approved"),
-        ("confirm", "execute", "balanced", "pending"),
-        ("confirm", "network", "balanced", "pending"),
-        ("confirm", "execute", "strict", "pending"),
-        ("confirm", "execute", "permissive", "approved"),
+        ("none", "read", "strict", "approved"),
+        ("none", "write", "balanced", "approved"),
+        ("none", "write", "strict", "approved"),
+        # 中档（执行命令、联网）：strict / balanced 要人批，permissive 放行
+        ("none", "execute", "balanced", "pending"),
+        ("none", "network", "balanced", "pending"),
+        ("none", "execute", "strict", "pending"),
+        ("none", "execute", "permissive", "approved"),
+        # 高档（破坏性）：永远要人批，permissive 也不放过
+        ("none", "destructive", "balanced", "pending"),
+        ("none", "destructive", "permissive", "pending"),
+        # 显式声明"要人确认"：运营额外要求，permissive 才放宽
+        ("confirm", "read", "balanced", "pending"),
+        ("confirm", "write", "balanced", "pending"),
+        ("confirm", "read", "permissive", "approved"),
+        # 管理员放行：谁也放宽不了
         ("admin", "read", "permissive", "pending"),
         ("admin", "read", "strict", "pending"),
     ],
@@ -211,11 +222,50 @@ def test_approval_decision(permission: str, risk: str, mode: str, expected: str)
     assert approval_decision(permission, risk, mode) == expected
 
 
+def test_低档不需要审批_中高档才需要() -> None:
+    """用户定的口径：只有中高档才需要人工审批。"""
+    from app.capabilities.registration.policy import risk_tier
+
+    assert risk_tier("read") == "low"
+    assert risk_tier("write") == "low"
+    assert risk_tier("execute") == "medium"
+    assert risk_tier("network") == "medium"
+    assert risk_tier("destructive") == "high"
+
+
+def test_文件工具的审批按风险档位() -> None:
+    """deepAgents 的文件工具：低档自动放行，中档（执行命令）与高档（删除）要人批。"""
+    from app.capabilities.registration.tool_policy import approval_tool_names
+
+    balanced = approval_tool_names("balanced")
+    assert "execute" in balanced  # 中档
+    assert "delete" in balanced  # 高档
+    assert "write_file" not in balanced  # 低档：改错了能改回来
+    assert "read_file" not in balanced
+
+    permissive = approval_tool_names("permissive")
+    assert "execute" not in permissive  # 中档被放宽
+    assert "delete" in permissive  # 高档：不可逆，谁也不放过
+
+
+def test_出厂能力的风险档位() -> None:
+    """不可逆的 git 操作归高档，派子 agent 归中档。"""
+    from app.capabilities.registration.builtin import list_builtin_specs
+
+    specs = {spec.key: spec for spec in list_builtin_specs()}
+    assert specs["git_worktree_remove"].risk == "destructive"
+    assert specs["git_merge"].risk == "destructive"
+    assert specs["delegate_worker"].risk == "execute"
+    assert specs["git_commit"].risk == "write"
+    # 出厂能力的权限要求一律 none —— 档位说了算
+    assert all(spec.permission == "none" for spec in specs.values())
+
+
 def test_policy_note_lists_capabilities_needing_approval() -> None:
     """模型要提前知道哪些能力会要人批 —— 不知道就会反复触发审批、反复中断。"""
     specs = [
         _spec("read_file", permission="none", risk="read", origin="builtin"),
-        _spec("execute", permission="confirm", risk="execute", origin="builtin"),
+        _spec("execute", permission="none", risk="execute", origin="builtin"),
     ]
     middleware = CapabilityMiddleware(specs, trust_mode="balanced")
     note = middleware._policy_note()
@@ -226,12 +276,14 @@ def test_policy_note_lists_capabilities_needing_approval() -> None:
 
 def test_policy_note_respects_trust_mode() -> None:
     """信任模式决定哪些工具要人批 —— 提示词里的口径必须和实际拦截的一致。"""
-    # 文件工具的审批按映射表 + 信任模式算：permissive 只拦破坏性，strict 全拦。
+    # 文件工具的审批按映射表 + 信任模式算：permissive 只拦破坏性，strict 连中档都拦。
     permissive = CapabilityMiddleware([], trust_mode="permissive")._policy_note()
     assert "execute" not in permissive
+    assert "delete" in permissive  # 破坏性：permissive 也不放过
     strict = CapabilityMiddleware([], trust_mode="strict")._policy_note()
     assert "execute" in strict
-    assert "write_file" in strict
+    # 低档的写文件在 strict 下也自动放行 —— 只有中高档才要审批
+    assert "write_file" not in strict
 
 
 def test_policy_note_counts_exposed_capabilities() -> None:

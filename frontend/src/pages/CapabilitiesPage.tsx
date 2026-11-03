@@ -29,6 +29,7 @@ import {
 import Button from '../components/ui/Button'
 import Modal from '../components/ui/Modal'
 import MCPForm from '../features/capabilities/MCPForm'
+import { approvalSummary } from '../features/capabilities/risk'
 import SkillForm from '../features/capabilities/SkillForm'
 import ToolForm from '../features/capabilities/ToolForm'
 import type {
@@ -245,7 +246,8 @@ export default function CapabilitiesPage() {
                     </td>
                     <td className="px-4 py-2 text-xs text-ink-muted">{tool.type}</td>
                     <td className="px-4 py-2 text-xs text-ink-muted">
-                      {tool.permission} / {tool.risk}
+                      {tool.permission === 'confirm' ? '要人批 · ' : ''}
+                      {approvalSummary(tool.risk)}
                     </td>
                     <td className="px-4 py-2 text-xs">
                       {tool.enabled ? (

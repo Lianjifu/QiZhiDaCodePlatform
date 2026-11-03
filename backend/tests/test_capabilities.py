@@ -277,7 +277,8 @@ async def test_builtin_specs_carry_governance_declarations(client: AsyncClient) 
     assert resp.status_code == 200
     spec = resp.json()["data"]
     assert spec["risk"] == "execute"
-    assert spec["permission"] == "confirm"
+    # 审批按风险档位判，出厂能力的权限要求一律 none
+    assert spec["permission"] == "none"
     assert spec["timeout_s"] == 60
     assert spec["retry_policy"]["max_attempts"] == 2
     assert spec["annotations"]["destructive"] is True
@@ -934,7 +935,11 @@ async def test_timeout_on_non_idempotent_capability_is_not_retryable(tmp_path):
         annotations=Annotations(destructive=True, open_world=True),  # 不幂等
     )
     intent = CapabilityIntent(
-        capability_key="test_exec", arguments={"command": "sleep 5"}, spec=spec
+        capability_key="test_exec",
+        arguments={"command": "sleep 5"},
+        spec=spec,
+        # 这条用例测的是超时与重试，不是审批 —— 审批已经在 agent 路径上过了
+        pre_approved=True,
     )
     result = await execute(intent, context)
     assert result.ok is False

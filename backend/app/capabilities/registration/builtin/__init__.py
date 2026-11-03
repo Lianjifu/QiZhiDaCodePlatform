@@ -99,7 +99,7 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
         # ---------- 执行 ----------
         # run_python 的约定：
         #
-        # - 权限 confirm、风险 execute：``balanced`` 信任模式下每次都要人工确认；
+        # - 风险 execute（中档）、权限 none：执行命令按档位要人批；
         # - 一律进沙箱（docker 模式：断网、限资源、只挂载工作区）；
         # - 超时 60 秒，执行层还会再套一层兜底超时；
         # - 声明了超时重试，但**实际不会重试** —— 这个能力不幂等，
@@ -112,7 +112,7 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
             display_name="执行 Python",
             description="在工作区的沙箱里执行一段 Python 代码，返回退出码和输出。",
             tags=("代码", "执行"),
-            permission=PermissionLevel.CONFIRM,
+            permission=PermissionLevel.NONE,
             risk=RiskLevel.EXECUTE,
             timeout_s=60,
             retry=_RETRY_TIMEOUT,
@@ -134,7 +134,7 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
         # ---------- 网络 ----------
         # web_fetch / web_search 的共同约定：
         #
-        # - 权限 confirm、风险 network：联网在 balanced 模式下要人工确认；
+        # - 风险 network（中档）、权限 none：联网按档位要人批；
         # - 都是只读 GET，同一个请求重发结果不变 → 幂等，网络错误可安全重试；
         # - web_fetch 的 URL 会再过一遍参数级规则：指向内网地址就顶成
         #   destructive（SSRF 尝试），要管理员放行（见 execution/risk.py）。
@@ -144,7 +144,7 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
             display_name="抓取网页",
             description="抓取一个 http/https 链接的内容并转成纯文本返回。",
             tags=("网络", "抓取"),
-            permission=PermissionLevel.CONFIRM,
+            permission=PermissionLevel.NONE,
             risk=RiskLevel.NETWORK,
             timeout_s=20,
             retry=_RETRY_NETWORK,
@@ -169,7 +169,7 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
             display_name="联网搜索",
             description="在互联网上搜索，返回标题、链接与摘要。需要配置搜索服务商的 API Key。",
             tags=("网络", "搜索"),
-            permission=PermissionLevel.CONFIRM,
+            permission=PermissionLevel.NONE,
             risk=RiskLevel.NETWORK,
             timeout_s=20,
             retry=_RETRY_NETWORK,
@@ -210,8 +210,8 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
         #
         # - **只认当前工作目录**（会话绑定的那个环境）。没绑环境时它们不会
         #   出现在模型的工具列表里（见 app/agents/runner.py）；
-        # - 风险 write、权限 confirm：建 worktree、提交、合并都改仓库状态，
-        #   balanced 模式下自动放行，strict 模式下每次要人批；
+        # - 审批按**风险档位**判：建 worktree、提交是低档（自动放行），删 worktree、
+        #   合并分支是破坏性（高档，永远要人批）；
         # - **都不幂等** —— 重复执行会重复建目录 / 重复提交，所以超时不重试；
         # - 超时给得比一般能力长：worktree 检出大仓库要时间。
         BuiltinSpec(
@@ -244,7 +244,7 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
                 "用来把任务拆开并行做：每个分支一份互不干扰的工作目录。"
             ),
             tags=("git", "协作"),
-            permission=PermissionLevel.CONFIRM,
+            permission=PermissionLevel.NONE,
             risk=RiskLevel.WRITE,
             timeout_s=180,
             input_schema=_obj(
@@ -291,8 +291,10 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
             display_name="删除 worktree",
             description="删掉一个平台创建的 worktree 目录（不删分支，分支还在仓库里）。",
             tags=("git", "协作"),
-            permission=PermissionLevel.CONFIRM,
-            risk=RiskLevel.WRITE,
+            permission=PermissionLevel.NONE,
+            # 破坏性（高档）：目录连着里面的未提交改动一起没了 —— 不可逆，
+            # 永远要人批，permissive 也不放过。
+            risk=RiskLevel.DESTRUCTIVE,
             timeout_s=180,
             input_schema=_obj(
                 {
@@ -319,7 +321,7 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
             display_name="提交改动",
             description="把当前工作目录的全部改动提交一次（没有改动就不提交）。",
             tags=("git", "协作"),
-            permission=PermissionLevel.CONFIRM,
+            permission=PermissionLevel.NONE,
             risk=RiskLevel.WRITE,
             timeout_s=60,
             input_schema=_obj(
@@ -342,8 +344,10 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
             display_name="合并分支",
             description="把一个分支合进当前分支；出现冲突会列出冲突文件，不会直接失败。",
             tags=("git", "协作"),
-            permission=PermissionLevel.CONFIRM,
-            risk=RiskLevel.WRITE,
+            permission=PermissionLevel.NONE,
+            # 破坏性（高档）：合并会改写当前分支的历史，冲突了也没法一键回退 ——
+            # 永远要人批。
+            risk=RiskLevel.DESTRUCTIVE,
             timeout_s=120,
             input_schema=_obj(
                 {
@@ -367,8 +371,8 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
         # ---------- 多智能体 ----------
         # delegate_worker 的约定：
         #
-        # - 风险 write、权限 confirm：它会在仓库里建分支、开 worktree、跑一整轮
-        #   agent（写文件 + 执行命令），balanced 模式下自动放行，strict 模式要人批；
+        # - 风险 execute（中档）、权限 none：它会在仓库里建分支、开 worktree、跑一
+        #   整轮 agent（写文件 + 执行命令）—— 按档位，中档要人批；
         # - **不幂等** —— 每次调用都开一个新 worktree，重跑会多出一份；
         # - 超时给得很长（30 分钟）：worker 内部要跑一整轮 agent，
         #   外面那层能力执行的超时必须兜得住；
@@ -385,8 +389,10 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
                 "分支不会自动合回主线 —— 要合用 git_merge。"
             ),
             tags=("协作", "多智能体"),
-            permission=PermissionLevel.CONFIRM,
-            risk=RiskLevel.WRITE,
+            permission=PermissionLevel.NONE,
+            # 中档（execute）：worker 会在自己的 worktree 里跑一整轮 agent ——
+            # 写文件 + 执行命令。审批按档位判，所以它跟 execute 一样要人批。
+            risk=RiskLevel.EXECUTE,
             timeout_s=1800,
             input_schema=_obj(
                 {
@@ -425,8 +431,7 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
         # - **出口是固定的**：长期记忆的检索要打平台自己配的向量化端点，
         #   地址不是模型给的，所以 egress_target=fixed —— 不按 network 风险拦，
         #   否则 balanced 模式下每查一次记忆都要人工审批；
-        # - 写入是幂等的（同内容会合并成同一条），风险 write、权限 confirm：
-        #   balanced 模式自动放行，strict 模式每次要人批。
+        # - 写入是幂等的（同内容会合并成同一条），风险 write（低档，自动放行）。
         BuiltinSpec(
             key="memory_search",
             source="app.capabilities.registration.builtin.memory:make_memory_search",
@@ -505,7 +510,7 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
                 "指明覆盖哪一条。"
             ),
             tags=("记忆", "写入"),
-            permission=PermissionLevel.CONFIRM,
+            permission=PermissionLevel.NONE,
             risk=RiskLevel.WRITE,
             timeout_s=20,
             annotations=Annotations(

@@ -33,6 +33,47 @@ class RiskLevel(StrEnum):
     DESTRUCTIVE = "destructive"  # 不可逆的破坏性操作（删库、写裸设备、SSRF）
 
 
+class RiskTier(StrEnum):
+    """风险**档位**：低 / 中 / 高 —— 审批就是按档位判的。
+
+    五个风险等级归成三档：
+
+    - **低**：只读、写入 —— 改错了能改回来，不用打断人；
+    - **中**：执行命令、联网 —— 会在进程外产生副作用，要人看一眼；
+    - **高**：破坏性 —— 不可逆，永远要人批。
+
+    分档的规矩：**只有中档和高档才需要人工审批**，低档自动放行。
+    档位之外还有两个例外口子 —— ``permission=admin``（管理员放行）与
+    声明为破坏性的不可逆操作，它们不受信任模式放宽。
+    """
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+# 风险等级 → 档位。
+#
+# 归并口径：只读与写入是低档（改得回来）；执行命令与联网是中档（会在进程外
+# 产生副作用）；破坏性是高档（不可逆）。
+_RISK_TIERS: dict[str, str] = {
+    RiskLevel.READ: RiskTier.LOW,
+    RiskLevel.WRITE: RiskTier.LOW,
+    RiskLevel.EXECUTE: RiskTier.MEDIUM,
+    RiskLevel.NETWORK: RiskTier.MEDIUM,
+    RiskLevel.DESTRUCTIVE: RiskTier.HIGH,
+}
+
+
+def risk_tier(risk: str) -> str:
+    """风险等级 → 档位（低 / 中 / 高）。
+
+    未知等级按**低档**处理：脏数据不该让能力被当成高风险卡住 —— 宁可少拦
+    一次，也不要让整条链路因为一个错字瘫掉。
+    """
+    return _RISK_TIERS.get(str(risk), RiskTier.LOW)
+
+
 class PermissionLevel(StrEnum):
     """权限要求：谁能放行这次调用。
 
@@ -102,12 +143,25 @@ def approval_decision(
     trust_mode: str,
     *,
     require_admin: bool = False,
+    always: bool = False,
 ) -> str:
     """这次调用要不要人批。返回 ``approved`` / ``pending``。
 
     **单一事实来源**：执行层拿它做审批判定，意图层拿它提前告诉模型
     "哪些能力会要人批"。两处各写一套规则，迟早会对不上 ——
     模型被告知"直接放行"，实际却被拦下，就是这么来的。
+
+    **判定按风险档位走**（``risk_tier``）：低档自动放行，中档与高档要人批。
+
+    判定顺序是有意的：
+
+    1. ``permission=admin`` —— 谁也放宽不了；
+    2. ``require_admin`` / ``always`` —— 参数级规则命中不可逆操作、
+       或工具被显式标成"永远要人批"；
+    3. ``permission=confirm`` —— 运营显式要求人确认（strict / balanced 要批，
+       permissive 放宽）；
+    4. 风险档位 —— 高档永远要批；中档 strict / balanced 要批、permissive 放行；
+       低档自动放行。
 
     Args:
         permission: 能力声明的权限要求。
@@ -117,28 +171,26 @@ def approval_decision(
 
     Returns:
         ``approved``（直接放行）或 ``pending``（挂起等人工审批）。
-
-    判定顺序是有意的：先看声明的硬性要求（``admin`` 谁也放宽不了），
-    再看风险，最后才让信任模式插手 —— 信任模式只能**放宽** ``confirm``，
-    不能放宽 ``admin``，也不能放过 ``destructive``。
     """
     permission = permission or PermissionLevel.NONE
     if permission == PermissionLevel.ADMIN:
         return APPROVAL_PENDING
-    if permission != PermissionLevel.CONFIRM:
-        return APPROVAL_APPROVED
-    # 风险被顶到破坏性 —— 一律要人批
-    if require_admin or risk == RiskLevel.DESTRUCTIVE:
+    if always or require_admin:
         return APPROVAL_PENDING
 
     mode = (trust_mode or "balanced").lower()
-    if mode == "strict":
+    if permission == PermissionLevel.CONFIRM:
+        # 显式声明"要人确认"：信任模式只能放宽这一档
+        return APPROVAL_APPROVED if mode == "permissive" else APPROVAL_PENDING
+
+    tier = risk_tier(risk)
+    if tier == RiskTier.HIGH:
+        # 破坏性：不可逆，谁也不能自动放行
         return APPROVAL_PENDING
-    if mode == "permissive":
-        return APPROVAL_APPROVED
-    # balanced：read/write 自动放行；执行命令 / 联网抓取要确认
-    if risk in (RiskLevel.EXECUTE, RiskLevel.NETWORK):
-        return APPROVAL_PENDING
+    if tier == RiskTier.MEDIUM:
+        # 执行命令 / 联网：会在进程外产生副作用，要人看一眼
+        return APPROVAL_APPROVED if mode == "permissive" else APPROVAL_PENDING
+    # 低档：只读、写入 —— 改错了能改回来，不打断人
     return APPROVAL_APPROVED
 
 
@@ -370,7 +422,9 @@ __all__ = [
     "PermissionLevel",
     "RetryPolicy",
     "RiskLevel",
+    "RiskTier",
     "approval_decision",
     "max_risk",
     "risk_rank",
+    "risk_tier",
 ]

@@ -119,9 +119,11 @@ function fromHistory(
       role: item.role as ChatMessage['role'],
       content: item.content,
       sourceId: item.id ?? null,
+      // 先当"进行中"：结果消息到了才改成成功/失败。
+      // **没有结果的调用就是还没跑**（在等人工审批），显示绿勾是骗人。
       toolCalls: (item.tool_calls ?? []).map((call) => ({
         ...call,
-        state: 'succeeded' as ToolCallState,
+        state: 'running' as ToolCallState,
       })),
       pending: [],
     }

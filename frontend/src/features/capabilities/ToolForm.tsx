@@ -251,8 +251,8 @@ export default function ToolForm({
             value={form.permission}
             onChange={(event) => set('permission', event.target.value)}
             options={[
-              { value: 'none', label: '无需确认' },
-              { value: 'confirm', label: '要人确认' },
+              { value: 'none', label: '按风险档位判定' },
+              { value: 'confirm', label: '一定要人批' },
               { value: 'admin', label: '管理员放行' },
             ]}
           />
@@ -260,12 +260,13 @@ export default function ToolForm({
             label="风险等级"
             value={form.risk}
             onChange={(event) => set('risk', event.target.value)}
+            hint="审批按档位：低档自动放行，中档要人批，高档永远要人批。"
             options={[
-              { value: 'read', label: '只读' },
-              { value: 'write', label: '写入' },
-              { value: 'execute', label: '执行' },
-              { value: 'network', label: '联网' },
-              { value: 'destructive', label: '破坏性' },
+              { value: 'read', label: '只读（低档）' },
+              { value: 'write', label: '写入（低档）' },
+              { value: 'execute', label: '执行命令（中档）' },
+              { value: 'network', label: '联网（中档）' },
+              { value: 'destructive', label: '破坏性（高档）' },
             ]}
           />
           <TextInput
