@@ -8,6 +8,7 @@ import { Navigate, Route, Routes } from 'react-router'
 import AppShell from './components/layout/AppShell'
 import CapabilitiesPage from './pages/CapabilitiesPage'
 import ChatPage from './features/agent/ChatPage'
+import EnvironmentsPage from './pages/EnvironmentsPage'
 import FilesPage from './pages/FilesPage'
 import PlaceholderPage from './pages/PlaceholderPage'
 import ProvidersPage from './pages/ProvidersPage'
@@ -22,6 +23,7 @@ export default function App() {
         <Route path="chat" element={<ChatPage />} />
         <Route path="chat/:threadId" element={<ChatPage />} />
         <Route path="files" element={<FilesPage />} />
+        <Route path="environments" element={<EnvironmentsPage />} />
         <Route path="providers" element={<ProvidersPage />} />
         <Route path="capabilities" element={<CapabilitiesPage />} />
         <Route path="status" element={<StatusPage />} />

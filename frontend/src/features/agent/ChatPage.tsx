@@ -11,6 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate, useOutletContext, useParams } from 'react-router'
 
 import { clearConversation } from '../../api/resources'
+import EnvironmentBar from '../environments/EnvironmentBar'
 import Composer, { type ComposerHandle } from './Composer'
 import MessageList from './MessageList'
 import { useChat } from './useChat'
@@ -194,6 +195,15 @@ export default function ChatPage() {
               onCommandAction={(action) => void runCommandAction(action)}
               onOpenDetail={() => openStatusPanel(threadId)}
             />
+
+            {/* 工作目录条**只在初始状态**出现，放在对话框下方 ——
+                开新会话时选好目录，聊起来之后它就不占地方了
+                （要换目录去「工作目录」页）。 */}
+            <div className="relative mx-auto w-full max-w-4xl px-6">
+              <div className="mt-2">
+                <EnvironmentBar threadId={threadId} />
+              </div>
+            </div>
 
             <div className="relative flex max-w-4xl flex-wrap justify-center gap-2">
               {SUGGESTIONS.map((suggestion) => (

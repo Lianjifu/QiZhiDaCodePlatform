@@ -205,6 +205,219 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
                 ["content", "query", "results"],
             ),
         ),
+        # ---------- git 与协作 ----------
+        # git_* 这几个能力的共同约定：
+        #
+        # - **只认当前工作目录**（会话绑定的那个环境）。没绑环境时它们不会
+        #   出现在模型的工具列表里（见 app/agents/runner.py）；
+        # - 风险 write、权限 confirm：建 worktree、提交、合并都改仓库状态，
+        #   balanced 模式下自动放行，strict 模式下每次要人批；
+        # - **都不幂等** —— 重复执行会重复建目录 / 重复提交，所以超时不重试；
+        # - 超时给得比一般能力长：worktree 检出大仓库要时间。
+        BuiltinSpec(
+            key="git_status",
+            source="app.capabilities.registration.builtin.git:make_git_status",
+            display_name="查看 git 状态",
+            description="看当前工作目录的分支、未提交的改动与文件列表。",
+            tags=("git", "协作"),
+            permission=PermissionLevel.NONE,
+            risk=RiskLevel.READ,
+            timeout_s=30,
+            annotations=Annotations(read_only=True, idempotent=True),
+            input_schema=_obj({}),
+            output_schema=_obj(
+                {
+                    "content": {"type": "string"},
+                    "branch": {"type": "string"},
+                    "dirty": {"type": "boolean"},
+                    "files": {"type": "array", "items": {"type": "string"}},
+                },
+                ["content", "branch"],
+            ),
+        ),
+        BuiltinSpec(
+            key="git_worktree_add",
+            source="app.capabilities.registration.builtin.git:make_git_worktree_add",
+            display_name="创建 worktree",
+            description=(
+                "从当前仓库开一个新的 worktree（独立检出 + 新分支），"
+                "用来把任务拆开并行做：每个分支一份互不干扰的工作目录。"
+            ),
+            tags=("git", "协作"),
+            permission=PermissionLevel.CONFIRM,
+            risk=RiskLevel.WRITE,
+            timeout_s=180,
+            input_schema=_obj(
+                {
+                    "branch": {"type": "string", "description": "新分支名，如 feat/login"},
+                    "base": {
+                        "type": "string",
+                        "description": "基点分支或提交，不给就是当前 HEAD",
+                    },
+                },
+                ["branch"],
+            ),
+            output_schema=_obj(
+                {
+                    "content": {"type": "string"},
+                    "path": {"type": "string"},
+                    "branch": {"type": "string"},
+                },
+                ["content", "path", "branch"],
+            ),
+        ),
+        BuiltinSpec(
+            key="git_worktree_list",
+            source="app.capabilities.registration.builtin.git:make_git_worktree_list",
+            display_name="列出 worktree",
+            description="列出当前仓库的所有 worktree（独立检出）及其分支。",
+            tags=("git", "协作"),
+            permission=PermissionLevel.NONE,
+            risk=RiskLevel.READ,
+            timeout_s=30,
+            annotations=Annotations(read_only=True, idempotent=True),
+            input_schema=_obj({}),
+            output_schema=_obj(
+                {
+                    "content": {"type": "string"},
+                    "worktrees": {"type": "array", "items": {"type": "object"}},
+                },
+                ["content", "worktrees"],
+            ),
+        ),
+        BuiltinSpec(
+            key="git_worktree_remove",
+            source="app.capabilities.registration.builtin.git:make_git_worktree_remove",
+            display_name="删除 worktree",
+            description="删掉一个平台创建的 worktree 目录（不删分支，分支还在仓库里）。",
+            tags=("git", "协作"),
+            permission=PermissionLevel.CONFIRM,
+            risk=RiskLevel.WRITE,
+            timeout_s=180,
+            input_schema=_obj(
+                {
+                    "path": {"type": "string", "description": "worktree 目录的绝对路径"},
+                    "force": {
+                        "type": "boolean",
+                        "description": "有未提交改动时也删，默认 false",
+                    },
+                },
+                ["path"],
+            ),
+            output_schema=_obj(
+                {
+                    "content": {"type": "string"},
+                    "path": {"type": "string"},
+                    "removed": {"type": "boolean"},
+                },
+                ["content", "removed"],
+            ),
+        ),
+        BuiltinSpec(
+            key="git_commit",
+            source="app.capabilities.registration.builtin.git:make_git_commit",
+            display_name="提交改动",
+            description="把当前工作目录的全部改动提交一次（没有改动就不提交）。",
+            tags=("git", "协作"),
+            permission=PermissionLevel.CONFIRM,
+            risk=RiskLevel.WRITE,
+            timeout_s=60,
+            input_schema=_obj(
+                {"message": {"type": "string", "description": "提交信息，写清这次改了什么"}},
+                ["message"],
+            ),
+            output_schema=_obj(
+                {
+                    "content": {"type": "string"},
+                    "committed": {"type": "boolean"},
+                    "sha": {"type": "string"},
+                    "files": {"type": "array", "items": {"type": "string"}},
+                },
+                ["content", "committed"],
+            ),
+        ),
+        BuiltinSpec(
+            key="git_merge",
+            source="app.capabilities.registration.builtin.git:make_git_merge",
+            display_name="合并分支",
+            description="把一个分支合进当前分支；出现冲突会列出冲突文件，不会直接失败。",
+            tags=("git", "协作"),
+            permission=PermissionLevel.CONFIRM,
+            risk=RiskLevel.WRITE,
+            timeout_s=120,
+            input_schema=_obj(
+                {
+                    "branch": {"type": "string", "description": "要合进来的分支"},
+                    "target": {
+                        "type": "string",
+                        "description": "目标分支，不给就是当前分支",
+                    },
+                },
+                ["branch"],
+            ),
+            output_schema=_obj(
+                {
+                    "content": {"type": "string"},
+                    "merged": {"type": "boolean"},
+                    "conflicts": {"type": "array", "items": {"type": "string"}},
+                },
+                ["content", "merged"],
+            ),
+        ),
+        # ---------- 多智能体 ----------
+        # delegate_worker 的约定：
+        #
+        # - 风险 write、权限 confirm：它会在仓库里建分支、开 worktree、跑一整轮
+        #   agent（写文件 + 执行命令），balanced 模式下自动放行，strict 模式要人批；
+        # - **不幂等** —— 每次调用都开一个新 worktree，重跑会多出一份；
+        # - 超时给得很长（30 分钟）：worker 内部要跑一整轮 agent，
+        #   外面那层能力执行的超时必须兜得住；
+        # - worker 自己**不挂人工审批**（没有界面），防线是物理隔离 ——
+        #   独立 worktree + 断网沙箱容器。这条取舍在 app/agents/worker.py 里写清楚了。
+        BuiltinSpec(
+            key="delegate_worker",
+            source="app.capabilities.registration.builtin.delegate:make_delegate_worker",
+            display_name="派子 agent 干活",
+            description=(
+                "把一个子任务交给子 agent：它在独立的 git worktree（独立分支）里"
+                "完成并提交，你拿到分支与结论。适合互不相干的活并行做、"
+                "或者不想占主对话上下文的调研类任务。"
+                "分支不会自动合回主线 —— 要合用 git_merge。"
+            ),
+            tags=("协作", "多智能体"),
+            permission=PermissionLevel.CONFIRM,
+            risk=RiskLevel.WRITE,
+            timeout_s=1800,
+            input_schema=_obj(
+                {
+                    "task": {
+                        "type": "string",
+                        "description": "子任务描述，要自包含（子 agent 看不到你们的对话）",
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": "子 agent 的分支名，不给就自动起一个",
+                    },
+                    "base": {
+                        "type": "string",
+                        "description": "基点分支或提交，不给就是当前 HEAD",
+                    },
+                },
+                ["task"],
+            ),
+            output_schema=_obj(
+                {
+                    "content": {"type": "string"},
+                    "branch": {"type": "string"},
+                    "worktree": {"type": "string"},
+                    "committed": {"type": "boolean"},
+                    "sha": {"type": "string"},
+                    "files": {"type": "array", "items": {"type": "string"}},
+                    "summary": {"type": "string"},
+                },
+                ["content", "branch", "worktree"],
+            ),
+        ),
         # ---------- 记忆 ----------
         # memory_search / memory_read / memory_write 的共同约定：
         #

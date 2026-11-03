@@ -8,6 +8,7 @@ from app.api.v1 import (
     agent,
     capability,
     context,
+    environments,
     example,
     files,
     health,
@@ -34,3 +35,4 @@ api_router.include_router(rag.router)
 api_router.include_router(memory.router)
 api_router.include_router(context.router)
 api_router.include_router(files.router)
+api_router.include_router(environments.router)

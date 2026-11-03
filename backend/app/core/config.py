@@ -92,6 +92,23 @@ class Settings(BaseSettings):
     agent_docker_mount: str = "/workspace"
     agent_checkpointer_db: str = "./agent_checkpoints.db"
 
+    # ---- 工作目录（环境）----
+    #
+    # 允许作为 agent 工作目录的**根目录**，逗号分隔的绝对路径。
+    # 只有这些根目录下的目录/仓库能被绑成环境。
+    #
+    # **默认空 = 一个都不许绑** —— 平台没有鉴权，白名单是唯一的闸门：
+    # 留空意味着不配置就完全不能用这个功能，而不是"默认可用"。
+    repo_roots: str = ""
+    # 派生 worktree 的落点（绝对路径）。留空则用 ``<工作区根>/worktrees``。
+    #
+    # **为什么单独配**：worktree 是要挂进沙箱容器的目录，而容器运行时
+    # （Colima 只共享 ``$HOME``、Docker Desktop 默认共享 ``/Users``）
+    # 只能挂载被共享的路径。放在工作区根下面，默认就落在共享区里。
+    #
+    # 落点按仓库名分组：``<worktree_root>/<仓库名>/<分支>``
+    worktree_root: str = ""
+
     # ---- 文件 ----
     # 单个上传文件的上限（字节）
     max_upload_bytes: int = 50 * 1024 * 1024

@@ -230,12 +230,70 @@ export interface SessionStatus {
   outputs: OutputFile[]
   changes: SessionChanges
   connectors: Connector[]
+  /** 协作状态：绑在哪个目录、有哪些 worktree 与分支 */
+  collaboration: Collaboration
   /** 正在跑的工具调用 */
   tasks: RunningTask[]
   /** 这个会话跑完过多少个工具调用 */
   finished_tasks: number
   /** 这份状态是什么时候读的 */
   updated_at: string
+}
+
+// ---------- 工作目录（环境） ----------
+
+/** 一个可作为工作目录的环境（后端 `EnvironmentOut`）。 */
+export interface Environment {
+  path: string
+  name: string
+  /** folder（普通目录）/ worktree（独立检出） */
+  kind: string
+  is_repo: boolean
+  branch: string
+  repo: string | null
+  dirty: boolean
+}
+
+/** 环境清单（后端 `EnvironmentListOut`）。 */
+export interface EnvironmentList {
+  environments: Environment[]
+  /** 配置里允许的根目录 */
+  roots: string[]
+  /** 平台有没有配置可用的根目录 */
+  enabled: boolean
+}
+
+/** 会话当前绑定的环境（后端 `EnvironmentBindingOut`）。 */
+export interface EnvironmentBinding {
+  thread_id: string
+  path: string
+  kind: string
+  name: string
+  branch: string
+  repo: string | null
+  bound_at: string
+}
+
+/** 一个 worktree（后端 `WorktreeOut`）。 */
+export interface Worktree {
+  path: string
+  branch: string
+  head: string
+  /** repo（主仓库）/ worktree（独立检出） */
+  kind: string
+  repo: string | null
+}
+
+/** 协作状态（后端 `CollaborationOut`）。 */
+export interface Collaboration {
+  /** 有没有绑定工作目录 */
+  bound: boolean
+  path: string
+  kind: string
+  branch: string
+  repo: string | null
+  worktrees: Worktree[]
+  branches: string[]
 }
 
 // ---------- 模型接入配置 ----------

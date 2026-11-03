@@ -74,6 +74,7 @@ class CapabilityMiddleware(AgentMiddleware):
         context: ExecutionContext | None = None,
         thread_id: str = "",
         trust_mode: str = "balanced",
+        interrupt_enabled: bool = True,
     ) -> None:
         """构造中间件。
 
@@ -83,12 +84,19 @@ class CapabilityMiddleware(AgentMiddleware):
             context: 执行上下文（工作区、数据库会话）。
             thread_id: 会话 ID。
             trust_mode: 会话信任模式。
+            interrupt_enabled: 是否允许挂起等人批。
+
+                **关掉它的地方只有一处**：子 agent（worker）。worker 跑在
+                自己的 worktree 里、命令在断网容器中，没有前端交互界面 ——
+                挂起就永远等不到人批。改为不挂起，代价是 worker 里的破坏性
+                命令也无人拦，防线只剩"物理隔离"这一层。
         """
         self.specs = specs
         self.allowed_tool_keys = allowed_tool_keys
         self.context = context
         self.thread_id = thread_id
         self.trust_mode = trust_mode
+        self.interrupt_enabled = interrupt_enabled
 
     # ---------- 模型调用前 ----------
 
@@ -206,6 +214,9 @@ class CapabilityMiddleware(AgentMiddleware):
         Returns:
             人工拒绝时返回一条错误消息；批准或没命中时返回 ``None``（继续执行）。
         """
+        if not self.interrupt_enabled:
+            # worker：没有前端界面，挂起就永远等不到人批
+            return None
         if name in self._approval_tool_names():
             # 声明级已经批过这一次 —— 参数级不再重复问
             return None

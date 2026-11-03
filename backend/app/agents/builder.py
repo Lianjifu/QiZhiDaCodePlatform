@@ -83,6 +83,7 @@ async def build_agent(
     skills_dir: Path | None = None,
     memory: list[str] | None = None,
     subagents: list[Any] | None = None,
+    allow_interrupt: bool = True,
 ) -> Any:
     """组装 deep agent。
 
@@ -100,6 +101,12 @@ async def build_agent(
         skills_dir: 技能导出目录，backend 按 ``/skills/`` 路由挂它。
         memory: 记忆文件路径（AGENTS.md）。
         subagents: 子代理规格；不传就用我们自带的通用子代理。
+        allow_interrupt: 是否允许挂起等人批。
+
+            **关掉它的地方只有一处**：子 agent（worker）。worker 没有前端
+            交互界面，挂起就永远等不到人批。关掉之后 worker 里的破坏性命令
+            也无人拦 —— 防线只剩"自己的 worktree + 断网沙箱"这一层物理隔离。
+            同时 worker 也不带 checkpointer（挂起要靠它才能恢复）。
 
     Returns:
         编译好的图（``CompiledStateGraph``），用法与 ``create_agent`` 一致：
@@ -131,6 +138,7 @@ async def build_agent(
         context=context,
         thread_id=thread_id,
         trust_mode=trust_mode,
+        interrupt_enabled=allow_interrupt,
     )
     # TodoListMiddleware 提供 write_todos —— deepAgents 的规划能力。
     middleware: list[Any] = [governance, TodoListMiddleware()]
@@ -163,7 +171,8 @@ async def build_agent(
         )
 
     # 声明级审批闸：哪些工具在执行**之前**就要人批。
-    interrupt_on = _interrupt_on(specs, trust_mode, allowed_tool_keys)
+    # worker（allow_interrupt=False）不挂闸 —— 它没有界面，挂起就等不到人批。
+    interrupt_on = _interrupt_on(specs, trust_mode, allowed_tool_keys) if allow_interrupt else {}
     if subagents is None:
         subagents = _general_subagent(
             governance=governance,
@@ -173,7 +182,7 @@ async def build_agent(
 
     # 记忆文件必须先存在，记忆中间件才读得到内容
     if memory:
-        _ensure_memory_files(context.workspace, memory)
+        _ensure_memory_files(context.session_workspace or context.workspace, memory)
 
     return create_deep_agent(
         model=resolved_model,
@@ -213,10 +222,14 @@ def _ensure_memory_files(workspace: Path, sources: list[str]) -> None:
 
     记忆是"**这个文件**"而不是数据库里的某条记录 —— agent 自己就能改它，
     改完下一轮就生效。文件不存在时要先建一个空壳，否则记忆中间件读不到内容。
+
+    文件名取来源路径的**最后一段** —— 来源可能是 ``/AGENTS.md``（没绑工作目录）
+    也可能是 ``/.memory/AGENTS.md``（绑了工作目录，挂在会话目录上），
+    两种都落到同一个宿主文件上。
     """
     root = Path(workspace)
     for source in sources:
-        name = source.strip("/")
+        name = Path(source.strip("/")).name
         if not name:
             continue
         target = root / name

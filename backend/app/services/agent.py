@@ -10,8 +10,8 @@ import logging
 import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
-from uuid import uuid4
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +19,7 @@ from app.agents.checkpointer import open_checkpointer
 from app.agents.llm import build_model_for_provider
 from app.agents.runner import MEMORY_FILE, STATUS_FAILED, AgentRunner, AgentRunResult, model_window
 from app.agents.status import (
+    build_collaboration,
     build_connectors,
     build_context_usage,
     build_environment,
@@ -35,6 +36,9 @@ from app.context.compaction import TRIGGER_FRACTION
 from app.core.config import settings
 from app.core.exceptions import AgentError, AppError, NotFoundError, ValidationError
 from app.core.workspace import resolve_workspace
+from app.environments.service import EnvironmentService
+from app.environments.store import save_binding
+from app.git.service import GitService
 from app.repositories.invocation import InvocationRepository
 from app.repositories.llm_provider import LLMProviderRepository
 from app.repositories.mcp_server import MCPServerRepository
@@ -42,8 +46,10 @@ from app.schemas.agent import (
     AgentForkOut,
     AgentHistoryOut,
     AgentStreamChunk,
+    CollaborationOut,
     RunningTaskOut,
     SessionStatusOut,
+    WorktreeOut,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,6 +66,17 @@ def _copy_workspace(source: Path, target: Path) -> None:
         shutil.copytree(source, target, dirs_exist_ok=True)
     except OSError as exc:
         logger.warning("复制工作区失败 %s → %s: %s", source, target, exc)
+
+
+def _inherit_binding(source_thread_id: str, target_thread_id: str) -> None:
+    """把工作目录的绑定也带进新会话。
+
+    分支出来的会话跟原会话是同一件事的两条线 —— 得在同一个目录里干活。
+    """
+    binding = EnvironmentService().current(source_thread_id)
+    if binding is None:
+        return
+    save_binding(target_thread_id, binding)
 
 
 def _readable_error(exc: Exception) -> str:
@@ -185,6 +202,46 @@ class AgentService:
         """
         return resolve_workspace(thread_id)
 
+    def resolve_agent_workspace(self, thread_id: str) -> tuple[Path, Path]:
+        """这个会话的（agent 工作目录, 会话工作区）。
+
+        **绑了工作目录之后两者不是一个地方**：
+
+        - agent 工作目录 = 用户绑的环境（可能是真实的代码仓库）——
+          agent 的文件工具与命令执行都在这里；
+        - 会话工作区 = 平台自己的目录 —— 上传件、技能导出、产物、文件页
+          看的东西都在这里。**上传件不能落进用户的仓库里。**
+
+        没绑环境时两者相同（原有行为不变）。
+        """
+        session_workspace = self.resolve_workspace(thread_id)
+        binding = EnvironmentService().current(thread_id)
+        if binding is None:
+            return session_workspace, session_workspace
+        target = Path(binding.path)
+        if not target.is_dir():
+            # 绑定的目录没了（被人删了、仓库被移走）—— 退回会话工作区，
+            # 别让整个会话因为一个失效的绑定瘫掉。
+            logger.warning("会话 %s 绑定的环境已不存在：%s", thread_id, target)
+            return session_workspace, session_workspace
+        return target, session_workspace
+
+    def _visible_specs(
+        self, specs: list[CapabilitySpec], agent_workspace: Path, session_workspace: Path
+    ) -> list[CapabilitySpec]:
+        """本次给模型看的能力清单。
+
+        **没绑工作目录时不给 git 与派活的能力** —— 那些能力只在 git 仓库里
+        才有意义，给模型一批用不了的工具，它会试了再报错，浪费轮次。
+        """
+        if Path(agent_workspace).resolve() == Path(session_workspace).resolve():
+            return [
+                spec
+                for spec in specs
+                if spec.key != "delegate_worker" and not spec.key.startswith("git_")
+            ]
+        return specs
+
     async def _resolve_model(self, provider_id: int | None):
         """按供应商配置构造模型；没有可用配置时返回 None（退回环境变量配置）。"""
         if self.session is None:
@@ -209,9 +266,18 @@ class AgentService:
         return await CapabilityRegistry.load(self.session)
 
     async def _build_context(
-        self, workspace: Path, specs: list[CapabilitySpec], thread_id: str = ""
+        self,
+        workspace: Path,
+        specs: list[CapabilitySpec],
+        thread_id: str = "",
+        model: Any = None,
+        session_workspace: Path | None = None,
     ) -> ExecutionContext:
-        """执行上下文：带上本次要用到的 MCP 供给通道。"""
+        """执行上下文：带上本次要用到的 MCP 供给通道。
+
+        顺带把**能力清单**与**模型对象**也放进去 —— 派子 agent 的能力
+        需要它们（worker 要有一份自己的工具清单，用同一个模型）。
+        """
         mcp_servers = {}
         if self.session is not None:
             repo = MCPServerRepository(self.session)
@@ -222,9 +288,15 @@ class AgentService:
                 server = await repo.get_by_name(name)
                 if server is not None and server.enabled:
                     mcp_servers[server.name] = server
-        context = ExecutionContext.build(workspace, mcp_servers)
+        context = ExecutionContext.build(
+            workspace,
+            mcp_servers,
+            session_workspace=session_workspace,
+        )
         context.session = self.session
         context.thread_id = thread_id
+        context.specs = list(specs)
+        context.model = model
         return context
 
     def _make_runner(self, checkpointer: Any, model: Any) -> AgentRunner:
@@ -258,21 +330,30 @@ class AgentService:
         图片会内联进用户消息 —— 模型能不能看图取决于模型本身（供应商配置上
         的 ``vision_enabled``），不能看就只把路径告诉 agent。
         """
-        workspace = self.resolve_workspace(thread_id)
+        agent_workspace, session_workspace = self.resolve_agent_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(provider_id)
-                specs = await self.load_capabilities()
-                context = await self._build_context(workspace, specs, thread_id)
+                specs = self._visible_specs(
+                    await self.load_capabilities(), agent_workspace, session_workspace
+                )
+                context = await self._build_context(
+                    agent_workspace,
+                    specs,
+                    thread_id,
+                    model=model,
+                    session_workspace=session_workspace,
+                )
                 runner = self._make_runner(checkpointer, model)
                 result = await runner.run(
                     message,
                     thread_id,
-                    workspace,
+                    agent_workspace,
                     specs=specs,
                     context=context,
                     skill_ids=skill_ids,
                     attachments=attachments,
+                    session_workspace=session_workspace,
                 )
                 # 执行层写的调用记录要落库
                 if self.session is not None:
@@ -292,18 +373,27 @@ class AgentService:
         审批状态在 LangGraph 的 checkpoint 里（图挂在哪儿只有它知道），
         不在调用记录表里。
         """
-        workspace = self.resolve_workspace(thread_id)
+        agent_workspace, session_workspace = self.resolve_agent_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
             try:
-                specs = await self.load_capabilities()
-                context = await self._build_context(workspace, specs, thread_id)
-                # **把数据库里配的模型传进去** —— 只读接口也要建图才能读 checkpoint，
+                specs = self._visible_specs(
+                    await self.load_capabilities(), agent_workspace, session_workspace
+                )
+                # **把数据库里配的模型取出来** —— 只读接口也要建图才能读 checkpoint，
                 # 而建图必须有模型。不传的话它退回环境变量，`.env` 里没配
                 # LLM_API_KEY 时这两个接口就整片 500。
-                runner = self._make_runner(checkpointer, await self._resolve_model(None))
+                model = await self._resolve_model(None)
+                context = await self._build_context(
+                    agent_workspace,
+                    specs,
+                    thread_id,
+                    model=model,
+                    session_workspace=session_workspace,
+                )
+                runner = self._make_runner(checkpointer, model)
                 return await runner.pending_approvals(
                     thread_id,
-                    workspace,
+                    agent_workspace,
                     specs=specs,
                     context=context,
                 )
@@ -332,16 +422,24 @@ class AgentService:
             thread_id: 会话 ID。
             decision: ``accept``（批准）或 ``reject``（拒绝）。
         """
-        workspace = self.resolve_workspace(thread_id)
+        agent_workspace, session_workspace = self.resolve_agent_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(None)
-                specs = await self.load_capabilities()
-                context = await self._build_context(workspace, specs, thread_id)
+                specs = self._visible_specs(
+                    await self.load_capabilities(), agent_workspace, session_workspace
+                )
+                context = await self._build_context(
+                    agent_workspace,
+                    specs,
+                    thread_id,
+                    model=model,
+                    session_workspace=session_workspace,
+                )
                 runner = self._make_runner(checkpointer, model)
                 result = await runner.resume(
                     thread_id,
-                    workspace,
+                    agent_workspace,
                     decision=decision,
                     specs=specs,
                     context=context,
@@ -361,16 +459,25 @@ class AgentService:
         前端刷新页面后靠它把对话还原出来 —— 消息在 checkpoint 里，
         不在前端的 localStorage 里。
         """
-        workspace = self.resolve_workspace(thread_id)
+        agent_workspace, session_workspace = self.resolve_agent_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
             try:
-                specs = await self.load_capabilities()
-                context = await self._build_context(workspace, specs, thread_id)
+                specs = self._visible_specs(
+                    await self.load_capabilities(), agent_workspace, session_workspace
+                )
                 # 同 pending_approvals：把数据库里配的模型传进去，别退回环境变量
-                runner = self._make_runner(checkpointer, await self._resolve_model(None))
+                model = await self._resolve_model(None)
+                context = await self._build_context(
+                    agent_workspace,
+                    specs,
+                    thread_id,
+                    model=model,
+                    session_workspace=session_workspace,
+                )
+                runner = self._make_runner(checkpointer, model)
                 messages = await runner.history(
                     thread_id,
-                    workspace,
+                    agent_workspace,
                     specs=specs,
                     context=context,
                 )
@@ -404,16 +511,24 @@ class AgentService:
 
         事件格式与 :meth:`stream` 完全一致 —— 前端那边不用为它单开一条路。
         """
-        workspace = self.resolve_workspace(thread_id)
+        agent_workspace, session_workspace = self.resolve_agent_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(provider_id)
-                specs = await self.load_capabilities()
-                context = await self._build_context(workspace, specs, thread_id)
+                specs = self._visible_specs(
+                    await self.load_capabilities(), agent_workspace, session_workspace
+                )
+                context = await self._build_context(
+                    agent_workspace,
+                    specs,
+                    thread_id,
+                    model=model,
+                    session_workspace=session_workspace,
+                )
                 runner = self._make_runner(checkpointer, model)
                 async for event in runner.regenerate(
                     thread_id,
-                    workspace,
+                    agent_workspace,
                     specs=specs,
                     context=context,
                     skill_ids=skill_ids,
@@ -436,18 +551,30 @@ class AgentService:
         agent 看不见之前的代码。
         """
         new_thread_id = f"t_{uuid4().hex[:16]}"
-        workspace = self.resolve_workspace(thread_id)
-        _copy_workspace(workspace, self.resolve_workspace(new_thread_id))
+        agent_workspace, session_workspace = self.resolve_agent_workspace(thread_id)
+        _copy_workspace(session_workspace, self.resolve_workspace(new_thread_id))
+        # 绑定了工作目录的话，新会话**继承同一个环境** —— 分支出来的会话
+        # 还得在同一个仓库里干活，不然它跟原会话就不是一回事了。
+        _inherit_binding(thread_id, new_thread_id)
         async with open_checkpointer() as checkpointer:
             try:
-                specs = await self.load_capabilities()
-                context = await self._build_context(workspace, specs, thread_id)
-                runner = self._make_runner(checkpointer, await self._resolve_model(None))
+                specs = self._visible_specs(
+                    await self.load_capabilities(), agent_workspace, session_workspace
+                )
+                model = await self._resolve_model(None)
+                context = await self._build_context(
+                    agent_workspace,
+                    specs,
+                    thread_id,
+                    model=model,
+                    session_workspace=session_workspace,
+                )
+                runner = self._make_runner(checkpointer, model)
                 kept = await runner.fork(
                     thread_id,
                     message_id,
                     new_thread_id,
-                    workspace,
+                    agent_workspace,
                     specs=specs,
                     context=context,
                 )
@@ -472,13 +599,22 @@ class AgentService:
 
         上下文占用是**估算**（4 字符约 1 token）—— 见 :mod:`app.agents.status`。
         """
-        workspace = self.resolve_workspace(thread_id)
+        agent_workspace, session_workspace = self.resolve_agent_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
             try:
-                specs = await self.load_capabilities()
-                context = await self._build_context(workspace, specs, thread_id)
+                specs = self._visible_specs(
+                    await self.load_capabilities(), agent_workspace, session_workspace
+                )
                 # 同 history：把数据库里配的模型传进去
-                runner = self._make_runner(checkpointer, await self._resolve_model(None))
+                model = await self._resolve_model(None)
+                context = await self._build_context(
+                    agent_workspace,
+                    specs,
+                    thread_id,
+                    model=model,
+                    session_workspace=session_workspace,
+                )
+                runner = self._make_runner(checkpointer, model)
 
                 provider = await self._default_provider()
                 model_name = provider.default_model if provider else settings.llm_model
@@ -491,22 +627,23 @@ class AgentService:
                     else settings.llm_provider
                 )
                 # 窗口：模型 profile 里的最准（供应商配置可能没填）
-                model = await self._resolve_model(None)
                 limit = model_window(model) or int(getattr(provider, "context_window", 0) or 0)
 
-                history = await self._history_for_status(runner, thread_id, workspace, specs, context)
+                history = await self._history_for_status(
+                    runner, thread_id, agent_workspace, specs, context
+                )
                 messages_text = "\n".join(item.content for item in history)
 
                 tools_text, mcp_text, mcp_items = _specs_text(specs)
-                memory_text, memory_items = _memory_text(workspace)
+                memory_text, memory_items = _memory_text(session_workspace)
                 window = limit or FALLBACK_CONTEXT_WINDOW
                 usage = build_context_usage(
                     limit=window,
                     messages_text=messages_text,
-                    system_prompt=_status_system_prompt(workspace, specs),
+                    system_prompt=_status_system_prompt(session_workspace, specs),
                     tools_text=tools_text,
                     mcp_text=mcp_text,
-                    skills_text=_skills_text(workspace),
+                    skills_text=_skills_text(session_workspace),
                     memory_text=memory_text,
                     mcp_items=mcp_items,
                     memory_items=memory_items,
@@ -532,15 +669,16 @@ class AgentService:
                     thread_id=thread_id,
                     environment=build_environment(
                         thread_id=thread_id,
-                        workspace=workspace,
+                        workspace=agent_workspace,
                         model=model_name,
                         provider=provider_name,
                         trust_mode=settings.capability_trust_mode,
                     ),
                     context=usage,
-                    outputs=collect_outputs(workspace),
+                    outputs=collect_outputs(session_workspace),
                     changes=sum_changes(records),
                     connectors=build_connectors(providers=providers, mcp_servers=servers),
+                    collaboration=self._collaboration(thread_id, agent_workspace),
                     tasks=[
                         RunningTaskOut(
                             tool=item.tool,
@@ -562,6 +700,44 @@ class AgentService:
         if self.session is None:
             return None
         return await LLMProviderRepository(self.session).get_default()
+
+    def _collaboration(self, thread_id: str, agent_workspace: Path) -> CollaborationOut:
+        """协作状态：仓库里的 worktree 与分支。
+
+        **派出去的子 agent 留下的分支不会自动合回主线** —— 这一段就是给
+        用户看"还剩哪些分支没收"的。
+        """
+        binding = EnvironmentService().current(thread_id)
+        if binding is None:
+            return build_collaboration()
+        git = GitService(agent_workspace)
+        if not git.is_repo():
+            return build_collaboration(
+                bound_path=Path(binding.path),
+                bound_kind=binding.kind,
+                bound_branch=binding.branch,
+                bound_repo=binding.repo,
+            )
+        root = git.repo_root()
+        worktrees = [
+            WorktreeOut(
+                path=item.path,
+                branch=item.branch,
+                head=item.head[:8],
+                kind="repo" if item.path == str(root) else "worktree",
+                repo=str(root) if root else None,
+            )
+            for item in git.worktree_list()
+        ]
+        return build_collaboration(
+            bound_path=Path(binding.path),
+            bound_kind=binding.kind,
+            bound_branch=binding.branch or git.current_branch(),
+            bound_repo=binding.repo,
+            worktrees=worktrees,
+            branches=git.branch_list(),
+        )
+
 
     async def _history_for_status(
         self,
@@ -596,17 +772,25 @@ class AgentService:
 
         事件有五种：文本增量 / 工具调用 / 工具结果 / 待审批 / 收尾。
         """
-        workspace = self.resolve_workspace(thread_id)
+        agent_workspace, session_workspace = self.resolve_agent_workspace(thread_id)
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(provider_id)
-                specs = await self.load_capabilities()
-                context = await self._build_context(workspace, specs, thread_id)
+                specs = self._visible_specs(
+                    await self.load_capabilities(), agent_workspace, session_workspace
+                )
+                context = await self._build_context(
+                    agent_workspace,
+                    specs,
+                    thread_id,
+                    model=model,
+                    session_workspace=session_workspace,
+                )
                 runner = self._make_runner(checkpointer, model)
                 async for event in runner.stream(
                     message,
                     thread_id,
-                    workspace,
+                    agent_workspace,
                     specs=specs,
                     context=context,
                     skill_ids=skill_ids,

@@ -69,6 +69,9 @@ src/
       MentionPicker.tsx     @ 提及面板
     capabilities/
       ToolForm.tsx  SkillForm.tsx  MCPForm.tsx   三个管理页的表单
+    environments/
+      EnvironmentBar.tsx  工作目录条（初始状态，挂在对话框下方）
+      format.ts           显示规则（纯函数，可单测）
     commands/
       CommandPalette.tsx  ⌘K 命令面板
       filter.ts           命令过滤（纯函数，可单测）
@@ -83,6 +86,7 @@ src/
       title.ts      从消息里取会话标题（纯函数，可单测）
   pages/
     StatusPage.tsx  FilesPage.tsx  ProvidersPage.tsx  CapabilitiesPage.tsx
+    EnvironmentsPage.tsx  工作目录（仓库 / worktree）
   lib/          工具函数
 ```
 
@@ -234,6 +238,7 @@ token 数看。后端在 `app/agents/status.py`；在跑的任务在 `app/agents
 | --- | --- |
 | `/chat` `/chat/:threadId` | **编码助手** —— 唯一支持多轮对话的页面 |
 | `/files` | 工作区文件（上传件与产物）。**看的是当前会话的工作区**（`?thread=`，侧栏点进来会带上）；能上传、预览、改内容、改名、删除，也能「打包下载」整个工作区 |
+| `/environments` | **工作目录** —— 白名单下的仓库与目录、平台派生的 worktree；能建 worktree、删 worktree |
 | `/providers` | 模型接入配置 —— 新增 / 编辑 / 删除 / 看详情 / 测连通性 |
 | `/capabilities` | 能力清单 —— 四个标签页：清单（只读）、工具、技能、MCP，各带增删改查 |
 | `/status` | 前后端联通检查（真实调接口并显示响应体） |
@@ -260,6 +265,39 @@ token 数看。后端在 `app/agents/status.py`；在跑的任务在 `app/agents
 - **入参 schema 只有 http 类型才要填** —— builtin / mcp 传空字典是正常的。
 - **改文件内容只处理文本** —— 二进制走上传。
 - 删除一律要确认（`window.confirm`）；删工具会连带清掉技能里对它的引用。
+
+## 工作目录（环境）
+
+会话默认在平台自带的空白工作区里干活。绑一个**真实的代码仓库**当工作目录，
+agent 就在那个目录里读写文件、跑命令。
+
+### 初始状态的那一条
+
+新会话（**初始状态**）的对话框**下方**有一行：
+
+```text
+[📁 会话工作区]  [⑂ Worktree]
+```
+
+- **左边那截**：点开是环境清单 —— 换一个目录，或解绑（回到会话自带的工作区）；
+- **右边「Worktree」**：从当前仓库派生一个独立检出（新的分支 + 新的目录），
+  建完直接绑上。这就是"把活儿切一条分支出去做"的那一步。
+
+**只在初始状态出现** —— 聊起来之后它就不占地方了（要换目录去「工作目录」页）。
+
+### 协作状态
+
+右侧状态面板有一段「协作」：当前绑在哪个目录、哪个分支、仓库里还有哪些
+worktree。
+
+派出去的子 agent（`delegate_worker`）会留下分支 —— **分支不会自动合回主线**，
+那一段就是给人看"还剩哪些分支没收"的。要合由人来合（页面上的合并入口，
+或者自己在仓库里合）。
+
+### 白名单
+
+平台没有鉴权，后端的白名单（`REPO_ROOTS`）是唯一的闸门 —— **没配就一个目录都
+不能绑**，前端会明确显示这一点，而不是给一个空列表让人猜。
 
 ## 对话区的操作
 

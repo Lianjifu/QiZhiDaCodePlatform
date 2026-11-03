@@ -51,6 +51,7 @@ from langgraph.graph.message import RemoveMessage
 from app.agents.builder import build_agent
 from app.agents.llm import get_chat_model, supports_vision
 from app.agents.prompts import CODE_AGENT_PROMPT
+from app.capabilities.backends.assembly import MEMORY_ROUTE
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.intent.middleware import build_policy_note
 from app.capabilities.registration.spec import KIND_SKILL, CapabilitySpec
@@ -139,6 +140,7 @@ class AgentRunner:
         context: ExecutionContext | None = None,
         skill_ids: list[int] | None = None,
         attachments: list[str] | None = None,
+        session_workspace: Path | None = None,
     ) -> AgentRunResult:
         """跑完一轮，返回最终回复与过程中的工具调用。
 
@@ -146,10 +148,15 @@ class AgentRunner:
 
         ``attachments`` 是本轮带的附件（虚拟路径）。图片会被内联进用户消息，
         模型这一轮就能看见；能不能内联取决于模型本身支不支持看图。
+
+        ``workspace`` 是 agent 的工作根目录（绑了工作目录就是那个环境）；
+        ``session_workspace`` 是会话自己的目录（上传件在这儿）。两者不同时，
+        上传件以 ``/uploads`` 路由挂给 agent —— **不能落进用户的仓库里**。
         """
         model = self._resolve_model()
+        session_root = Path(session_workspace) if session_workspace else Path(workspace)
         blocks, parsed = build_attachments(
-            workspace,
+            session_root,
             attachments or [],
             vision_enabled=supports_vision(model),
             max_inline_bytes=settings.max_inline_image_bytes,
@@ -340,6 +347,7 @@ class AgentRunner:
         context: ExecutionContext | None = None,
         skill_ids: list[int] | None = None,
         attachments: list[str] | None = None,
+        session_workspace: Path | None = None,
     ) -> AsyncIterator[AgentStreamChunk]:
         """流式产出**事件**，供 SSE 推送。
 
@@ -352,8 +360,9 @@ class AgentRunner:
         既看到打字机、又看到工具块。
         """
         model = self._resolve_model()
+        session_root = Path(session_workspace) if session_workspace else Path(workspace)
         blocks, parsed = build_attachments(
-            workspace,
+            session_root,
             attachments or [],
             vision_enabled=supports_vision(model),
             max_inline_bytes=settings.max_inline_image_bytes,
@@ -613,7 +622,17 @@ class AgentRunner:
         context.thread_id = context.thread_id or thread_id
         model = self._resolve_model()
 
-        skills_dir = _skills_dir(workspace)
+        # 上传件、技能导出、产物都按**会话目录**算 —— 绑了工作目录之后
+        # agent 的根是用户的仓库，这些东西不能落进仓库里。
+        session_root = Path(context.session_workspace or workspace)
+
+        # 记忆文件（工作区说明 AGENTS.md）：绑了工作目录之后它挂在
+        # ``/.memory`` 路由上（落在会话目录里）；没绑就是根目录下的 AGENTS.md。
+        memory_source = f"/{MEMORY_FILE}"
+        if session_root.resolve() != Path(context.workspace).resolve():
+            memory_source = f"{MEMORY_ROUTE}/{MEMORY_FILE}"
+
+        skills_dir = _skills_dir(session_root)
         skill_sources = export_skills(specs, skills_dir, skill_ids)
         skill_specs = [spec for spec in specs if spec.kind == KIND_SKILL and spec.enabled]
 
@@ -632,7 +651,7 @@ class AgentRunner:
         # 上传件清单反过来：用户传了文件，agent 得知道在哪。图片本身已经
         # 内联进用户消息了，这里只是告诉 agent 还有哪些**只能读文件**的材料。
         uploads_note = build_uploads_note(
-            workspace,
+            session_root,
             attachments=attachments,
             max_entries=settings.uploads_block_max_entries,
         )
@@ -656,7 +675,7 @@ class AgentRunner:
             trust_mode=settings.capability_trust_mode,
             skills=skill_sources or None,
             skills_dir=skills_dir if skill_sources else None,
-            memory=[f"/{MEMORY_FILE}"],
+            memory=[memory_source],
         )
         return agent, skill_specs
 

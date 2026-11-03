@@ -288,6 +288,32 @@ class RunningTaskOut(BaseModel):
     elapsed_ms: int = Field(default=0, description="已经跑了多久（毫秒）")
 
 
+class WorktreeOut(BaseModel):
+    """一个 worktree（独立检出）。"""
+
+    path: str = Field(description="worktree 目录")
+    branch: str = Field(default="", description="分支")
+    head: str = Field(default="", description="HEAD 的短 sha")
+    kind: str = Field(default="worktree", description="repo（主仓库）/ worktree（独立检出）")
+    repo: str | None = Field(default=None, description="所属的主仓库")
+    dirty: bool = Field(default=False, description="有没有未提交的改动")
+
+
+class CollaborationOut(BaseModel):
+    """协作状态：会话绑在哪个目录、有哪些 worktree 与分支。
+
+    派出去的子 agent 会留下分支 —— 它们**不会自动合回主线**，由人决定。
+    """
+
+    bound: bool = Field(default=False, description="有没有绑定工作目录")
+    path: str = Field(default="", description="绑定的目录")
+    kind: str = Field(default="", description="folder / worktree")
+    branch: str = Field(default="", description="绑定的目录当前分支")
+    repo: str | None = Field(default=None, description="所属的主仓库")
+    worktrees: list[WorktreeOut] = Field(default_factory=list, description="仓库里的 worktree")
+    branches: list[str] = Field(default_factory=list, description="仓库里的分支")
+
+
 class SessionStatusOut(BaseModel):
     """一个会话的当前状态。
 
@@ -300,6 +326,7 @@ class SessionStatusOut(BaseModel):
     outputs: list[OutputFileOut] = Field(default_factory=list, description="产出与上传件")
     changes: ChangesOut = Field(default_factory=ChangesOut)
     connectors: list[ConnectorOut] = Field(default_factory=list, description="接进来的东西")
+    collaboration: CollaborationOut = Field(default_factory=CollaborationOut, description="协作状态")
     tasks: list[RunningTaskOut] = Field(default_factory=list, description="正在跑的工具调用")
     finished_tasks: int = Field(default=0, description="这个会话跑完过多少个工具调用")
     updated_at: str = Field(default="", description="这份状态是什么时候读的")

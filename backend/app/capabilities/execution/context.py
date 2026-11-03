@@ -11,13 +11,12 @@ tool schema 里**。
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.core.config import settings
 from app.core.locking import TaskLock
@@ -39,6 +38,14 @@ class ExecutionContext:
     """
 
     workspace: Path  # 工作区根目录，所有路径的边界
+    # 会话自己的目录（上传件、技能导出、产物、文件页看的东西）。
+    #
+    # **绑了工作目录之后它和 ``workspace`` 不是同一个地方**：``workspace``
+    # 变成用户绑的环境（可能是真实的代码仓库），上传件不能落进仓库里 ——
+    # 所以上传件留在这里，并作为 ``/uploads`` 路由挂给 agent。
+    #
+    # 不给时等同于 ``workspace``（也就是没绑环境的原有行为）。
+    session_workspace: Path | None = None
     mcp_servers: dict[str, MCPServer] = field(default_factory=dict)  # 本次可用的 MCP 供给通道
     max_file_bytes: int = 200000  # 单个文件读入的上限
     sandbox_type: str = "docker"  # 沙箱模式：docker / local
@@ -49,6 +56,16 @@ class ExecutionContext:
     session: AsyncSession | None = None
     # 会话 ID：调用记录按它归集，幂等键也带上它
     thread_id: str = ""
+    # 本次可用的能力清单。
+    #
+    # **给派子 agent 用**（见 app/agents/worker.py）：worker 要有一份自己的
+    # 工具清单，而能力实现只拿得到 ExecutionContext —— 清单就放在这儿。
+    specs: list[Any] = field(default_factory=list)
+    # 本次用的模型对象。
+    #
+    # 同样是为了 worker：worker 用**同一个模型**（用户在界面上选的那个
+    # 供应商），不能退回环境变量里的默认配置。
+    model: Any = None
     # **审批已经由上层处理过了** —— 执行层不要再问一遍。
     #
     # agent 路径：审批走 deepAgents 的 HITL，工具能跑到执行层就说明人已经批过了
@@ -86,24 +103,33 @@ class ExecutionContext:
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace)
+        if self.session_workspace is None:
+            self.session_workspace = self.workspace
+        else:
+            self.session_workspace = Path(self.session_workspace)
 
     @classmethod
     def build(
         cls,
         workspace: str | Path | None = None,
         mcp_servers: dict[str, MCPServer] | None = None,
+        session_workspace: str | Path | None = None,
     ) -> ExecutionContext:
         """按配置构造上下文。
 
         Args:
-            workspace: 工作区根目录，不传则用配置里的 ``workspace_root``。
+            workspace: agent 的工作根目录（绑了环境就是环境目录）。
             mcp_servers: 本次可用的 MCP server。
+            session_workspace: 会话自己的目录；不给就等同于 ``workspace``。
 
         Returns:
             构造好的执行上下文。
         """
         return cls(
             workspace=Path(workspace or settings.workspace_root),
+            session_workspace=(
+                Path(session_workspace) if session_workspace is not None else None
+            ),
             mcp_servers=dict(mcp_servers or {}),
             max_file_bytes=settings.agent_max_file_bytes,
             sandbox_type=settings.sandbox_type,

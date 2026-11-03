@@ -181,6 +181,38 @@ export default function SessionStatusPanel({ threadId }: { threadId: string }) {
         ) : null}
       </Section>
 
+      <Section title="协作">
+        {status.collaboration.bound ? (
+          <>
+            <dl className="space-y-1 text-xs">
+              <Row label="工作目录" value={status.collaboration.path} mono />
+              <Row label="分支" value={status.collaboration.branch || '—'} mono />
+            </dl>
+            {status.collaboration.worktrees.length > 1 ? (
+              <ul className="mt-2 space-y-1 border-t border-line pt-2">
+                {status.collaboration.worktrees
+                  .filter((item) => item.kind === 'worktree')
+                  .map((item) => (
+                    <li key={item.path} className="flex items-center gap-2 text-xs">
+                      <span className="min-w-0 flex-1 truncate font-mono text-ink-muted">
+                        {item.branch || item.path}
+                      </span>
+                      <span className="shrink-0 text-[10px] text-ink-faint">{item.head}</span>
+                    </li>
+                  ))}
+              </ul>
+            ) : null}
+            <div className="mt-2 text-[11px] leading-relaxed text-ink-faint">
+              派出去的子 agent 会留下分支 —— 分支不会自动合回主线，要合由你来合。
+            </div>
+          </>
+        ) : (
+          <div className="text-xs text-ink-faint">
+            没绑工作目录（会话用自己的工作区）。到「工作目录」页可以绑一个仓库。
+          </div>
+        )}
+      </Section>
+
       <Section title="改动">
         {changes.added || changes.removed ? (
           <div className="font-mono text-sm">

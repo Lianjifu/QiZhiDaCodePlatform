@@ -24,9 +24,20 @@ from app.capabilities.backends.platform_backend import PlatformBackend
 from app.capabilities.backends.sandbox_backend import DockerSandbox
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.skills_export import SKILLS_ROUTE
+from app.files.storage import UPLOADS_DIRNAME
 
 # 产物目录的路由前缀（对话历史外置等）。挂在工作区**外面**。
 ARTIFACTS_ROUTE = "/.artifacts/"
+
+# 上传件的路由前缀。绑了工作目录之后，上传件留在会话目录里，
+# 以这个前缀挂给 agent —— 模型看到的路径跟从前一样（/uploads/xxx.png）。
+UPLOADS_ROUTE = "/uploads"
+
+# 记忆文件（工作区说明 AGENTS.md）的路由前缀。
+#
+# 绑了工作目录之后 agent 的根是用户的仓库，记忆文件不能落进仓库里 ——
+# 所以它留在会话目录，以这个前缀挂给 agent。
+MEMORY_ROUTE = "/.memory"
 
 
 def build_backend(context: ExecutionContext, skills_dir: Path | None = None) -> PlatformBackend:
@@ -54,6 +65,17 @@ def build_backend(context: ExecutionContext, skills_dir: Path | None = None) -> 
         # 技能目录挂在工作区外面：agent 的文件工具只看得见工作区里的东西，
         # 改不到这些导出文件。
         routes[SKILLS_ROUTE] = FilesystemBackend(root_dir=skills_dir)
+    # 上传件：绑了工作目录之后，agent 的根目录是**用户的仓库** ——
+    # 上传件绝不能落进仓库里。所以它们留在会话自己的目录，以 ``/uploads``
+    # 路由挂给 agent（模型看到的路径跟从前一样）。
+    uploads = _uploads_route(context)
+    if uploads is not None:
+        routes[UPLOADS_ROUTE] = FilesystemBackend(root_dir=uploads)
+    # 记忆文件同理：留在会话目录，以 /.memory 挂给 agent
+    if uploads is not None:
+        routes[MEMORY_ROUTE] = FilesystemBackend(
+            root_dir=Path(context.session_workspace or context.workspace)
+        )
     # 产物目录（对话历史外置）同样挂在工作区外面 —— 见 _artifacts_root。
     routes[ARTIFACTS_ROUTE] = FilesystemBackend(root_dir=_artifacts_dir(context))
     # 包一层：补上 `ls("/")` 看不到子路由的问题（见 platform_backend.py）
@@ -67,9 +89,22 @@ def build_backend(context: ExecutionContext, skills_dir: Path | None = None) -> 
     )
 
 
+def _uploads_route(context: ExecutionContext) -> Path | None:
+    """上传件目录（只在 agent 根与会话目录不同时才需要单独挂路由）。"""
+    session = context.session_workspace or context.workspace
+    if Path(session).resolve() == Path(context.workspace).resolve():
+        return None
+    return Path(session) / UPLOADS_DIRNAME
+
+
 def _artifacts_dir(context: ExecutionContext) -> Path:
-    """产物目录在宿主上的位置（工作区外面）。"""
-    return Path(context.workspace).parent / ".artifacts" / Path(context.workspace).name
+    """产物目录在宿主上的位置（工作区外面）。
+
+    按**会话目录**算，不按 agent 根目录 —— 绑了工作目录之后 agent 根是用户的
+    仓库，产物不能落进仓库旁边。
+    """
+    session = Path(context.session_workspace or context.workspace)
+    return session.parent / ".artifacts" / session.name
 
 
 def _artifacts_root(context: ExecutionContext) -> str:

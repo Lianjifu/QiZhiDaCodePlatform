@@ -13,6 +13,9 @@ import type {
   AgentHistory,
   BuiltinTool,
   CapabilityList,
+  Environment,
+  EnvironmentBinding,
+  EnvironmentList,
   FileList,
   LLMProvider,
   MCPServer,
@@ -226,6 +229,51 @@ export function forkConversation(
   messageId: string,
 ): Promise<AgentForkResult> {
   return api.post<AgentForkResult>(`/agent/${threadId}/fork`, { message_id: messageId })
+}
+
+// ---------- 工作目录（环境） ----------
+
+/** 列出可作为工作目录的环境。 */
+export function listEnvironments(): Promise<EnvironmentList> {
+  return api.get<EnvironmentList>('/environments')
+}
+
+/** 从一个仓库派生新的 worktree（独立检出 + 新分支）。 */
+export function createWorktree(payload: {
+  repo_path: string
+  branch: string
+  base?: string | null
+}): Promise<Environment> {
+  return api.post<Environment>('/environments', payload)
+}
+
+/** 删掉一个平台创建的 worktree。 */
+export function deleteWorktree(path: string): Promise<{ path: string; status: string }> {
+  return api.delete<{ path: string; status: string }>(
+    `/environments?path=${encodeURIComponent(path)}`,
+  )
+}
+
+/** 看会话当前绑在工作目录上。 */
+export function getEnvironmentBinding(threadId: string): Promise<EnvironmentBinding> {
+  return api.get<EnvironmentBinding>(`/environments/binding/${encodeURIComponent(threadId)}`)
+}
+
+/** 把会话绑到某个工作目录。 */
+export function bindEnvironment(
+  threadId: string,
+  path: string,
+): Promise<EnvironmentBinding> {
+  return api.post<EnvironmentBinding>(`/environments/binding/${encodeURIComponent(threadId)}`, {
+    path,
+  })
+}
+
+/** 解绑（回到平台自带的会话工作区）。 */
+export function unbindEnvironment(threadId: string): Promise<{ thread_id: string; status: string }> {
+  return api.delete<{ thread_id: string; status: string }>(
+    `/environments/binding/${encodeURIComponent(threadId)}`,
+  )
 }
 
 // ---------- 文件 ----------

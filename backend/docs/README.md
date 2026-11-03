@@ -22,6 +22,7 @@
 | [context-module.md](implementation/context-module.md) | 上下文模块：块抽象 / 配额装配 / 压缩接管（deepAgents 摘要中间件） | ✅ 已实现（2026-11-02） |
 | [backend-strategy.md](implementation/backend-strategy.md) | 后端存储：deepAgents 六种 backend 的选型 + 容器按会话复用 | ✅ 已实现（2026-11-02） |
 | [file-module.md](implementation/file-module.md) | 文件模块：上传 / 列表 / 下载 / 删除 + 对话里的图片内联与上传件上下文 | ✅ 已实现（2026-11-02） |
+| [workspace-module.md](implementation/workspace-module.md) | 工作目录（环境）：白名单与绑定、git worktree、多智能体派活 | ✅ 已实现（2026-11-03） |
 
 ## 计划文档
 

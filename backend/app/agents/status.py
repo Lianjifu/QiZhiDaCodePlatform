@@ -37,6 +37,7 @@ from typing import Any
 
 from app.schemas.agent import (
     ChangesOut,
+    CollaborationOut,
     ConnectorOut,
     ContextPartOut,
     ContextUsageOut,
@@ -44,6 +45,7 @@ from app.schemas.agent import (
     OutputFileOut,
     RunningTaskOut,
     SessionStatusOut,
+    WorktreeOut,
 )
 
 logger = logging.getLogger(__name__)
@@ -228,6 +230,30 @@ def build_environment(
     )
 
 
+def build_collaboration(
+    *,
+    bound_path: Path | None = None,
+    bound_kind: str = "",
+    bound_branch: str = "",
+    bound_repo: str | None = None,
+    worktrees: list[WorktreeOut] | None = None,
+    branches: list[str] | None = None,
+) -> CollaborationOut:
+    """协作状态：绑在哪个目录、有哪些 worktree 与分支。
+
+    派出去的子 agent 会留下分支 —— **它们不会自动合回主线**，由人决定。
+    """
+    return CollaborationOut(
+        bound=bound_path is not None,
+        path=str(bound_path or ""),
+        kind=bound_kind,
+        branch=bound_branch,
+        repo=bound_repo,
+        worktrees=list(worktrees or []),
+        branches=list(branches or []),
+    )
+
+
 def build_connectors(
     *,
     providers: list[Any],
@@ -264,6 +290,7 @@ def build_status(
     outputs: list[OutputFileOut],
     changes: ChangesOut,
     connectors: list[ConnectorOut],
+    collaboration: CollaborationOut | None = None,
     tasks: list[RunningTaskOut] | None = None,
     finished_tasks: int = 0,
 ) -> SessionStatusOut:
@@ -275,6 +302,7 @@ def build_status(
         outputs=outputs,
         changes=changes,
         connectors=connectors,
+        collaboration=collaboration or CollaborationOut(),
         tasks=list(tasks or []),
         finished_tasks=finished_tasks,
         updated_at=datetime.now(UTC).isoformat(),
@@ -283,6 +311,7 @@ def build_status(
 
 __all__ = [
     "CHARS_PER_TOKEN",
+    "build_collaboration",
     "build_connectors",
     "build_context_usage",
     "build_environment",

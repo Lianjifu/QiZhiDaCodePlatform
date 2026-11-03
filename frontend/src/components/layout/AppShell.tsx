@@ -9,6 +9,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 
 import {
   AutoIcon,
+  BranchIcon,
   ChatIcon,
   FolderIcon,
   LayersIcon,
@@ -43,6 +44,12 @@ const MODULES: NavItem[] = [
     label: '文件',
     hint: '工作区文件与上传件',
     icon: <FolderIcon className="h-4 w-4" />,
+  },
+  {
+    to: '/environments',
+    label: '工作目录',
+    hint: '仓库与 worktree',
+    icon: <BranchIcon className="h-4 w-4" />,
   },
   {
     to: '/capabilities',
@@ -147,6 +154,13 @@ export default function AppShell() {
         hint: '文件与上传件',
         icon: <FolderIcon className="h-3.5 w-3.5" />,
         action: () => navigate(activeThread ? `/files?thread=${activeThread}` : '/files'),
+      },
+      {
+        id: 'go-environments',
+        title: '工作目录',
+        hint: '仓库 / worktree',
+        icon: <BranchIcon className="h-3.5 w-3.5" />,
+        action: () => navigate('/environments'),
       },
       {
         id: 'go-capabilities',

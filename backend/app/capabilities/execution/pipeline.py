@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 # 外层只是兜底，避免两边同时到点时误报。
 _TIMEOUT_GRACE = 5
 
+# 长任务能力：内部要跑很久（派子 agent 会跑一整轮 agent），
+# 不占用会话的并发名额 —— 理由见 execute() 里第 ⑤ 步的注释。
+LONG_RUNNING_KEYS = frozenset({"delegate_worker"})
+
 
 async def execute(intent: CapabilityIntent, context: ExecutionContext) -> ExecutionResult:
     """执行一次能力调用 —— 能力模块的**唯一执行入口**。
@@ -154,26 +158,36 @@ async def execute(intent: CapabilityIntent, context: ExecutionContext) -> Execut
     # **并发闸门**：模型一次回复里可以带多个工具调用，它们是并行跑的 ——
     # 一次回复里来十个并行执行命令，就是十个沙箱同时跑。
     # 拿不到名额就排队等，超时了按"执行层繁忙"失败（可重试）。
-    acquired = await LIMITER.acquire(intent.thread_id)
-    if not acquired:
-        error = CapabilityError(
-            f"执行层繁忙：并发已满（上限 {LIMITER.limit}），等不到名额，稍后重试",
-            code=ErrorCode.EXECUTION_ERROR,
-        )
-        stages.append(_stage("invoke", error))
-        return await _finish(
-            intent, context, stages, error, started, assessment=assessment, task=task
-        )
-    try:
+    #
+    # **长任务（派子 agent）不过闸门**：它要占住名额好几分钟，而它内部
+    # 自己有一套闸门。再占着父会话的名额，父会话里并行的其它工具调用
+    # 就会排队等着，最后报"执行层繁忙" —— 主 agent 派三个活，反而把
+    # 自己的工具全堵死了。
+    if spec.key in LONG_RUNNING_KEYS:
+        stages.append({"stage": "invoke", "ok": True, "skipped_limiter": True})
         result = await _invoke(intent, context)
-    except CapabilityError as exc:
-        stages.append(_stage("invoke", exc))
-        return await _finish(
-            intent, context, stages, exc, started, assessment=assessment, task=task
-        )
-    finally:
-        LIMITER.release(intent.thread_id)
-    stages.append({"stage": "invoke", "ok": True, "duration_ms": result.duration_ms})
+        stages.append({"stage": "invoke", "ok": True, "duration_ms": result.duration_ms})
+    else:
+        acquired = await LIMITER.acquire(intent.thread_id)
+        if not acquired:
+            error = CapabilityError(
+                f"执行层繁忙：并发已满（上限 {LIMITER.limit}），等不到名额，稍后重试",
+                code=ErrorCode.EXECUTION_ERROR,
+            )
+            stages.append(_stage("invoke", error))
+            return await _finish(
+                intent, context, stages, error, started, assessment=assessment, task=task
+            )
+        try:
+            result = await _invoke(intent, context)
+        except CapabilityError as exc:
+            stages.append(_stage("invoke", exc))
+            return await _finish(
+                intent, context, stages, exc, started, assessment=assessment, task=task
+            )
+        finally:
+            LIMITER.release(intent.thread_id)
+        stages.append({"stage": "invoke", "ok": True, "duration_ms": result.duration_ms})
 
     # ---------- ⑥ 结果验证 ----------
     error = _verify_output(spec, result)

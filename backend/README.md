@@ -68,6 +68,7 @@ backend/
 │   │       ├── example.py
 │   │       ├── agent.py        # 编码助手（deepAgents + 审批）
 │   │       ├── files.py        # 文件（上传 / 列表 / 下载 / 删除）
+│   │       ├── environments.py # 工作目录（仓库 / worktree / 绑定）
 │   │       └── llm_provider.py # 模型接入配置（供应商 CRUD）
 │   ├── agents/              # Agent 层：模型 + 工具 + 循环
 │   │   ├── llm.py           # 模型工厂（环境变量 / 数据库供应商配置两种来源）
@@ -75,7 +76,13 @@ backend/
 │   │   ├── prompts.py       # 系统提示词
 │   │   ├── builder.py       # create_deep_agent 组装（含子代理规格）
 │   │   ├── runner.py        # 执行器（同步一轮 / 流式）
+│   │   ├── worker.py        # 子 agent（在自己的 worktree 里干活，免审批）
 │   │   └── checkpointer.py  # 多轮对话上下文持久化
+│   ├── environments/        # 工作目录（环境）：白名单、绑定、worktree
+│   │   ├── paths.py         # 路径规则（谁能当工作目录 / worktree 落哪）
+│   │   ├── store.py         # 会话 ↔ 环境的绑定（文件，跨进程可见）
+│   │   └── service.py       # 环境的发现、绑定、worktree 的建与删
+│   ├── git/                 # 宿主侧的 git 操作（worktree / 提交 / 合并）
 │   ├── capabilities/         # 能力层：tool / mcp / skill 的统一体系
 │   │   ├── errors.py          # 错误码与 CapabilityError（三层共用）
 │   │   ├── prompt.py          # 提示词组装器
@@ -95,6 +102,8 @@ backend/
 │   │   │       ├── __init__.py# 出厂规格清单（白名单）
 │   │   │       ├── sandbox.py # 执行类能力（run_python，沙箱隔离）
 │   │   │       ├── web.py     # 网络类能力（抓取 / 搜索）
+│   │   │       ├── git.py     # git 能力（状态 / worktree / 提交 / 合并）
+│   │   │       ├── delegate.py# 派子 agent（多智能体协作）
 │   │   │       └── memory.py  # 记忆类能力（召回 / 读取 / 写入）
 │   │   ├── intent/            # 意图层：模型的一次 tool call → 一条意图
 │   │   │   ├── intent.py      # CapabilityIntent（与执行层的唯一契约）
@@ -879,7 +888,109 @@ curl 'http://127.0.0.1:8000/api/v1/context/preview?query=pnpm&workspace=/tmp/ws'
 
 实现细节见 [`docs/implementation/context-module.md`](docs/implementation/context-module.md)。
 
-## 文件与多模态输入
+## 工作目录与多智能体协作
+
+会话默认在平台自带的**会话工作区**（一个空白目录）里干活。这套能力让会话可以
+绑一个**真实的代码仓库**当工作目录，还能把任务拆开、派子 agent 并行做。
+
+```text
+GET    /api/v1/environments                    白名单下的目录、仓库、已有 worktree
+POST   /api/v1/environments                    从仓库派生 worktree（独立检出 + 新分支）
+DELETE /api/v1/environments?path=...           删掉平台创建的 worktree
+GET    /api/v1/environments/worktrees          列出 worktree
+GET    /api/v1/environments/binding/{thread_id}  会话当前绑的工作目录
+POST   /api/v1/environments/binding/{thread_id}  绑定（body: path）
+DELETE /api/v1/environments/binding/{thread_id}  解绑
+```
+
+### 两个根目录
+
+| 配置 | 是什么 |
+| --- | --- |
+| `REPO_ROOTS` | 允许作为工作目录的根目录，逗号分隔。**默认空 = 一个都不许** |
+| `WORKTREE_ROOT` | 平台派生 worktree 的落点。默认 `<工作区根>/worktrees` |
+
+`REPO_ROOTS` 默认留空是刻意的：平台没有鉴权，白名单是唯一的闸门 —— 不配置就
+完全不能用这个功能，而不是"默认什么都能用"。
+
+`WORKTREE_ROOT` 单独配，是因为 **worktree 要挂进沙箱容器**：容器运行时
+（Colima 只共享 `$HOME`、Docker Desktop 默认共享 `/Users`）只能挂载被共享的
+路径。放在工作区根下面，默认就落在共享区里；放在仓库旁边则大概率挂不进去。
+
+### 绑定之后，两个"根"分开了
+
+```text
+agent 的工作目录  = 绑定的环境（可能是真实仓库）
+会话工作区        = 平台自己的目录（上传件、技能导出、产物、文件页）
+```
+
+**上传件不会落进用户的仓库里** —— 它们留在会话工作区，以 `/uploads` 路由挂给
+agent；记忆文件同理走 `/.memory` 路由。见 `app/capabilities/backends/assembly.py`。
+
+### git 是平台能力，不是 agent 自己敲的命令
+
+沙箱镜像里没有 git，而且 worktree 里的 `.git` 是个指向主仓库的**指针文件**，
+容器里解析不了。所以 git 一律是**宿主侧**的能力（`app/git/service.py`）：
+
+| 能力 | 做什么 |
+| --- | --- |
+| `git_status` | 当前分支、未提交的改动 |
+| `git_worktree_add` | 开一个新的独立检出（独立分支） |
+| `git_worktree_list` | 列 worktree |
+| `git_worktree_remove` | 删平台创建的 worktree |
+| `git_commit` | 提交当前目录的改动 |
+| `git_merge` | 把分支合进来（有冲突就报告冲突文件） |
+
+**会话没绑工作目录时，这些能力根本不会出现在模型的工具列表里** —— 给模型一批
+用不了的工具，它会试了再报错，白烧轮次。
+
+### 多智能体：派子 agent（`delegate_worker`）
+
+任务能拆成互不相干的几块时，主 agent 可以调 `delegate_worker` 把一块交给子
+agent：它在**自己的 worktree**（独立检出 + 独立分支）里干活，干完提交。
+
+```text
+主 agent（工作区 A）
+   │  delegate_worker(任务)
+   ▼
+worker（worktree B，分支 qzd/xxx）  ← 独立目录、独立分支、独立沙箱容器
+   │  做完提交
+   ▼
+主 agent 拿到分支与结论 → 分支不会自动合回主线，由人手动合
+```
+
+worker 与主 agent 的三处不同（`app/agents/worker.py`）：
+
+| | 主 agent | worker |
+| --- | --- | --- |
+| 工作目录 | 会话绑定的环境 | 自己的 worktree |
+| 人工审批 | 有（前端点批准） | **无**（没有界面，挂起就等不到人批） |
+| 历史 | 有 checkpointer，多轮 | 无，一次性执行 |
+
+> ⚠️ **worker 里不挂人工审批**是明确的安全取舍：worker 的写操作与命令执行
+> 没人批。唯一的防线是**物理隔离** —— 它只在自己的 worktree 里干活，命令在
+> 断网容器里跑、只挂载那个 worktree。主仓库碰不到。
+
+递归到此为止：worker 的能力清单里**没有** `delegate_worker` 本身，深度封顶两层。
+
+派 worker 有三处容易踩的坑，实现里都处理了（细节见 `app/agents/worker.py`）：
+
+- **checkpoint 隔离**：worker 显式用自己的 `thread_id`，不继承外层图的 ambient
+  config —— 否则 worker 的状态会写进主会话的 checkpoint 谱系里，**把主会话冲掉
+  而且不报错**；
+- **并发闸**：worker 用自己的执行标识，不跟外层抢名额（抢就是自己堵死）；
+- **幂等**：同一个分支再建 worktree 会复用，不会多出一份。
+
+> ⚠️ **这组接口同样没有鉴权** —— 知道 `thread_id` 就能把会话绑到白名单内的任意
+> 目录、让平台在宿主机上建分支跑 git、派子 agent 在仓库里写代码执行命令。
+> 涉及的是**源码仓库**，比现有的文件接口更严重。白名单是唯一的闸门，上线前
+> 必须补鉴权。
+
+### 触发方式
+
+**由模型自己判断**（提示词准则 10）：能不能拆、拆成几块、什么时候切分支，都是
+模型的判断。平台不提供"并行派 N 个"的控件 —— 拆任务本来就是模型擅长的部分。
+
 
 用户在对话里上传文件、给图片提问；agent 做出来的东西用户下载得走。
 
