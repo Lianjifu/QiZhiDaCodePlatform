@@ -65,6 +65,7 @@ src/
     agent/         编码助手（唯一支持多轮对话的页面）
       ChatPage.tsx  MessageList.tsx  ToolCallBlock.tsx
       ApprovalCard.tsx  Composer.tsx  useChat.ts
+      toolSummary.ts  工具名/参数的摘要规则（纯函数，可单测）
       SlashCommandMenu.tsx  斜杠命令面板
       MentionPicker.tsx     @ 提及面板
     capabilities/
@@ -365,6 +366,31 @@ worktree。
 **删会话只删侧栏的记录** —— 后端的 checkpoint 与工作区文件都还在。
 `/clear` 斜杠命令才是真删（`DELETE /agent/{thread_id}`，删 checkpoint，
 工作区文件留着）。
+
+## 工具调用卡片
+
+每次工具调用渲染成一张卡片（`features/agent/ToolCallBlock.tsx`）：
+
+**折叠时一行** —— 图标 + 人话标签 + 目标 + 改动量 + 耗时 + 状态点。
+标签是中文的（`read_file` → 「读取文件」），目标取参数里最能说明问题的那一项
+（路径 → 模式 → 命令 → 代码首行）。**这一行是给人扫的**，不是给人读的。
+
+**展开才给细节** —— 参数逐行列出（不是一坨 JSON），结果是一个带边框的代码面板。
+
+失败时图标块、状态点、结果面板一起转成危险色。
+
+摘要规则都在 `features/agent/toolSummary.ts`（纯函数，`npm test` 能跑）：
+
+| 函数 | 做什么 |
+| --- | --- |
+| `toolLabel(name)` | 工具名 → 人话；不认识就原样返回 |
+| `toolTarget(args)` | 参数里最能说明"做了什么"的那一项 |
+| `toolArgRows(args)` | 参数 → 逐行展示（对象/数组标成结构化） |
+| `isFailedResult(text)` | 认得出 `Error: ...` 的结果 |
+
+**历史消息里的失败怎么认的**：deepAgents 的文件工具失败时**不抛异常**，而是把
+`Error: ...` 写进结果里；历史接口没有 ok 字段，所以前端认这个前缀（`isFailedResult`）。
+不认的话，刷新之后失败的卡片会显示成绿勾。
 
 ## 约定
 

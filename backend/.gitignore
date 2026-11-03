@@ -5,6 +5,9 @@ __pycache__/
 venv/
 .env
 *.db
+# sqlite 的伴生文件（wal / shm）
+*.db-wal
+*.db-shm
 # Agent 会话工作区（运行时产物）
 workspace/
 .pytest_cache/

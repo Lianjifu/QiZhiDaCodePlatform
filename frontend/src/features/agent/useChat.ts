@@ -25,6 +25,7 @@ import {
   streamChat,
 } from '../../api/resources'
 import type { AgentStreamChunk, PendingApproval, ToolCall } from '../../types/api'
+import { isFailedResult } from './toolSummary'
 
 /** 工具块在前端的状态。 */
 export type ToolCallState = 'running' | 'succeeded' | 'failed'
@@ -93,7 +94,7 @@ function fromHistory(
         const call = target.message.toolCalls[target.index]
         target.message.toolCalls[target.index] = {
           ...call,
-          state: 'succeeded',
+          state: isFailedResult(item.content) ? 'failed' : 'succeeded',
           summary: item.content.slice(0, 400),
           added: item.added,
           removed: item.removed,
