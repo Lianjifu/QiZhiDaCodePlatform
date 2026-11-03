@@ -95,7 +95,12 @@ async function toApiError(response: Response): Promise<ApiError> {
 
 /** 发一次请求，成功返回 data。 */
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const body = await requestRaw<ResponseModel<T>>(path, init)
+  const response = await send(path, init)
+  // **204 没有 body** —— 删除接口就是 204，没有 data 可取
+  if (response.status === 204) {
+    return undefined as T
+  }
+  const body = (await response.json()) as ResponseModel<T>
   return body.data as T
 }
 
@@ -106,6 +111,15 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
  * ``{"status": "ok", ...}``，没有 ``data`` 那一层。
  */
 export async function requestRaw<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await send(path, init)
+  if (response.status === 204) {
+    return undefined as T
+  }
+  return (await response.json()) as T
+}
+
+/** 发请求并把失败翻译成 {@link ApiError}；成功就把 Response 交回去。 */
+async function send(path: string, init: RequestInit): Promise<Response> {
   let response: Response
   try {
     response = await fetch(`${API_BASE}${path}`, buildInit(init))
@@ -116,7 +130,7 @@ export async function requestRaw<T>(path: string, init: RequestInit = {}): Promi
   if (!response.ok) {
     throw await toApiError(response)
   }
-  return (await response.json()) as T
+  return response
 }
 
 export const api = {
@@ -132,6 +146,12 @@ export const api = {
     request<T>(path, {
       ...init,
       method: 'PUT',
+      body: body instanceof FormData ? body : JSON.stringify(body ?? {}),
+    }),
+  patch: <T>(path: string, body?: unknown, init?: RequestInit) =>
+    request<T>(path, {
+      ...init,
+      method: 'PATCH',
       body: body instanceof FormData ? body : JSON.stringify(body ?? {}),
     }),
   delete: <T>(path: string, init?: RequestInit) => request<T>(path, { ...init, method: 'DELETE' }),

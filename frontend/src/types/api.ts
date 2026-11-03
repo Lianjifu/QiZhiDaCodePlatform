@@ -254,6 +254,120 @@ export interface LLMProvider {
   updated_at: string
 }
 
+/** 供应商预设（后端 `ProviderPresetOut`）。 */
+export interface ProviderPreset {
+  key: string
+  display_name: string
+  langchain_provider: string
+  default_base_url: string
+  api_key_env: string
+  api_key_required: boolean
+  openai_compatible: boolean
+  docs_url: string
+  context_window: number
+  vision_enabled: boolean
+}
+
+/** 连通性测试结果（后端 `ProviderTestOut`）。 */
+export interface ProviderTestResult {
+  ok: boolean
+  provider_id: number
+  model: string
+  latency_ms: number
+  message: string
+}
+
+// ---------- 能力管理 ----------
+
+/** 一个工具定义（后端 `ToolOut`）。 */
+export interface Tool {
+  id: number
+  name: string
+  display_name: string
+  description: string
+  type: 'builtin' | 'http' | 'mcp'
+  source: string | null
+  config: Record<string, unknown>
+  parameters: Record<string, unknown>
+  tags: string[]
+  permission: string
+  risk: string
+  output_schema: Record<string, unknown> | null
+  timeout_s: number
+  retry_policy: Record<string, unknown>
+  annotations: Record<string, unknown>
+  origin: string
+  version: number
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+/** 工具可用性测试结果（后端 `ToolTestOut`）。 */
+export interface ToolTestResult {
+  ok: boolean
+  tool_id: number
+  name: string
+  message: string
+}
+
+/** 内置能力白名单里的一项（后端 `BuiltinToolOut`）。 */
+export interface BuiltinTool {
+  key: string
+  source: string
+  display_name: string
+  description: string
+  tags: string[]
+  permission: string
+  risk: string
+  timeout_s: number
+  parameters: Record<string, unknown>
+}
+
+/** 一个技能（后端 `SkillOut`）。 */
+export interface Skill {
+  id: number
+  name: string
+  description: string | null
+  knowledge: string
+  checklist: string[]
+  examples: string[]
+  constraints: string
+  tags: string[]
+  enabled: boolean
+  builtin: boolean
+  version: number
+  tool_ids: number[]
+  tool_names: string[]
+  created_at: string
+  updated_at: string
+}
+
+/** 一个 MCP 服务器（后端 `MCPServerOut`）。 */
+export interface MCPServer {
+  id: number
+  name: string
+  description: string | null
+  transport: 'stdio' | 'sse' | 'streamable_http'
+  command: string | null
+  args: string[]
+  env: Record<string, string>
+  url: string | null
+  headers: Record<string, string>
+  enabled: boolean
+  timeout: number
+  tags: string[]
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+/** MCP 服务器上的一个工具（后端 `MCPServerToolOut`）。 */
+export interface MCPServerTool {
+  name: string
+  description: string
+}
+
 // ---------- 能力 ----------
 
 /** 能力清单里的一项（后端 `CapabilityOut`）。 */

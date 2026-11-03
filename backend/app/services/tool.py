@@ -6,14 +6,14 @@ from sqlalchemy.exc import IntegrityError
 
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.tooling import build_tools
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.models.mcp_server import MCPServer
 from app.models.tool import Tool
 from app.repositories.mcp_server import MCPServerRepository
 from app.repositories.skill import SkillRepository
 from app.repositories.tool import ToolRepository
 from app.schemas.common import PageMeta
-from app.schemas.tool import ToolCreate, ToolTestOut, ToolUpdate
+from app.schemas.tool import ToolCreate, ToolTestOut, ToolUpdate, validate_parameters
 from app.services.base import BaseService, PageResult
 
 
@@ -77,6 +77,13 @@ class ToolService(BaseService[ToolRepository]):
         merged_type = data.get("type", tool.type)
         merged_source = data.get("source", tool.source)
         await self._check_mcp_source(merged_source, merged_type)
+        # **入参 schema 只有 http 类型才要求** —— 合并后的类型说了算
+        # （改的只是名字、类型还是 builtin 的，不该被入参 schema 拦下）。
+        if merged_type == "http":
+            try:
+                validate_parameters(data.get("parameters", tool.parameters) or {})
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
         tool = await self.repo.update(tool, **data)
         await self.session.commit()
         return tool

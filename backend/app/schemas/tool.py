@@ -32,7 +32,7 @@ Risk = Literal["read", "write", "execute", "network", "destructive"]
 _NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
 
-def _validate_parameters(parameters: dict[str, Any]) -> None:
+def validate_parameters(parameters: dict[str, Any]) -> None:
     if not isinstance(parameters, dict):
         raise ValueError("parameters 必须是 JSON Schema 对象")
     if "type" not in parameters and "properties" not in parameters:
@@ -89,7 +89,7 @@ class ToolBase(BaseModel):
         elif self.type == "http":
             if not (self.config or {}).get("url"):
                 raise ValueError("http 类型必须在 config.url 提供接口地址")
-            _validate_parameters(self.parameters)
+            validate_parameters(self.parameters)
         elif self.type == "mcp":
             if not self.source:
                 raise ValueError("mcp 类型必须提供 source（MCP 服务器名）")
@@ -137,8 +137,10 @@ class ToolUpdate(BaseModel):
 
     @model_validator(mode="after")
     def _check_parameters(self) -> ToolUpdate:
-        if self.parameters is not None:
-            _validate_parameters(self.parameters)
+        # **只有 http 类型才需要入参 schema** —— builtin / mcp 传空字典是正常的。
+        # 合并之后是什么类型，由 service 按合并结果再判一次。
+        if self.parameters is not None and self.type == "http":
+            validate_parameters(self.parameters)
         return self
 
 

@@ -873,8 +873,17 @@ GET    /api/v1/files              列出工作区文件
 GET    /api/v1/files/tree         列出工作区的文件**与目录**（@ 提及面板用）
 GET    /api/v1/files/archive      打包下载（整个工作区打成一个 zip）
 GET    /api/v1/files/download     按虚拟路径下载
+PUT    /api/v1/files              保存文件内容（覆盖写，只处理文本）
+PATCH  /api/v1/files              重命名 / 移动
 DELETE /api/v1/files              删除
 ```
+
+写入与重命名的路径安全比读更严：除了词法挡 `..`，还把路径 `resolve` 之后
+跟工作区比一遍（中间某段是软链接指向外面就拒掉），写文件时最后一段是软链接
+也不跟（`O_NOFOLLOW`）。
+
+> **这些接口仍然没有鉴权** —— 知道 `thread_id` 就能读、**改**、删别人工作区里
+> 的文件。上线前必须补鉴权。
 
 上传件落**工作区里** —— agent 用现成的 `read_file` / `grep` / `glob` 就能处理，
 不需要新增任何 agent 能力。

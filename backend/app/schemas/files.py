@@ -37,4 +37,16 @@ class FileListOut(BaseModel):
     total: int = Field(default=0, description="文件总数")
 
 
-__all__ = ["FileListOut", "FileOut", "UploadOut"]
+class FileWriteIn(BaseModel):
+    """保存文件内容（覆盖写）。"""
+
+    content: str = Field(default="", description="新的文件内容（UTF-8 文本）")
+
+
+class FileRenameIn(BaseModel):
+    """重命名 / 移动。"""
+
+    new_path: str = Field(min_length=1, max_length=512, description="新的虚拟路径")
+
+
+__all__ = ["FileListOut", "FileOut", "FileRenameIn", "FileWriteIn", "UploadOut"]

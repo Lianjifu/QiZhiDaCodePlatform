@@ -377,7 +377,81 @@ class FileService:
         if result.error:
             raise _map_error(result.error, virtual_path)
 
+    # ---------- 写入与改名 ----------
+
+    def write_text(self, virtual_path: str, content: str) -> int:
+        """写入（覆盖）一个文本文件。
+
+        **只写文本** —— 二进制内容由上传接口负责，在界面上编辑二进制没有意义。
+
+        写文件时用 ``O_NOFOLLOW``：路径最后一段是软链接就拒掉，
+        免得把工作区外面的文件改了。
+
+        Args:
+            virtual_path: 虚拟路径。
+            content: 新的内容（UTF-8）。
+
+        Returns:
+            写进去的字节数。
+
+        Raises:
+            ValidationError: 路径非法、越界或内容太大。
+        """
+        data = content.encode("utf-8")
+        if len(data) > self.max_upload_bytes:
+            raise ValidationError(f"内容超过上限（{human_size(self.max_upload_bytes)}）")
+        path = self._safe_write_path(virtual_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+            0o644,
+        )
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        return len(data)
+
+    def rename(self, virtual_path: str, new_path: str) -> str:
+        """重命名（也可以是移动到别的目录）。
+
+        Args:
+            virtual_path: 原虚拟路径。
+            new_path: 新虚拟路径。
+
+        Returns:
+            新路径。
+
+        Raises:
+            ValidationError: 路径非法、越界或目标已存在。
+            NotFoundError: 原文件不存在。
+        """
+        source = self._safe_write_path(virtual_path)
+        if not source.exists():
+            raise NotFoundError(f"文件不存在：{virtual_path}")
+        target = self._safe_write_path(new_path)
+        if target.exists():
+            raise ValidationError(f"目标已存在：{new_path}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(target)
+        return new_path
+
     # ---------- 内部 ----------
+
+    def _safe_write_path(self, virtual_path: str) -> Path:
+        """写操作用的路径解析 —— 比读更严。
+
+        除了词法挡 ``..``，还把路径**解析后**比一下，确保落在工作区里 ——
+        中间某一段是软链接指向外面的话，``resolve`` 之后就看出来了。
+
+        Raises:
+            ValidationError: 路径越界。
+        """
+        path = self._host_path(virtual_path)
+        root = self.workspace.resolve()
+        resolved = path.resolve()
+        if resolved != root and root not in resolved.parents:
+            raise ValidationError("路径越界")
+        return path
 
     def _host_path(self, virtual_path: str) -> Path:
         """虚拟路径 → 宿主路径。

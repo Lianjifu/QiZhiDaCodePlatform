@@ -57,12 +57,20 @@ src/
   components/
     layout/AppShell.tsx    左侧栏 + 主区
     layout/ThemeToggle.tsx
+    ui/            通用控件（三个管理页共用）
+      Modal.tsx    弹窗：点遮罩 / Esc 关闭，内容区自己滚
+      Button.tsx   四档按钮：默认 / 主操作 / 危险 / 文字
+      Fields.tsx   表单控件：输入 / 多行 / 下拉 / 开关 / 标签 / JSON
   features/
     agent/         编码助手（唯一支持多轮对话的页面）
       ChatPage.tsx  MessageList.tsx  ToolCallBlock.tsx
       ApprovalCard.tsx  Composer.tsx  useChat.ts
       SlashCommandMenu.tsx  斜杠命令面板
       MentionPicker.tsx     @ 提及面板
+    capabilities/
+      ToolForm.tsx  SkillForm.tsx  MCPForm.tsx   三个管理页的表单
+    providers/
+      ProviderForm.tsx    供应商配置的表单
     markdown/
       Markdown.tsx  Markdown 渲染（react-markdown + remark-gfm）
       CodeBlock.tsx 代码块（语言标签 + 复制按钮）
@@ -202,10 +210,33 @@ token 数看。后端在 `app/agents/status.py`；在跑的任务在 `app/agents
 | 路由 | 内容 |
 | --- | --- |
 | `/chat` `/chat/:threadId` | **编码助手** —— 唯一支持多轮对话的页面 |
-| `/files` | 工作区文件（上传件与产物）。**看的是当前会话的工作区**（`?thread=`，侧栏点进来会带上）；右上角有「打包下载」，整个工作区打成一个 zip |
-| `/providers` | 模型接入配置 |
-| `/capabilities` | 统一能力清单 |
+| `/files` | 工作区文件（上传件与产物）。**看的是当前会话的工作区**（`?thread=`，侧栏点进来会带上）；能上传、预览、改内容、改名、删除，也能「打包下载」整个工作区 |
+| `/providers` | 模型接入配置 —— 新增 / 编辑 / 删除 / 看详情 / 测连通性 |
+| `/capabilities` | 能力清单 —— 四个标签页：清单（只读）、工具、技能、MCP，各带增删改查 |
 | `/status` | 前后端联通检查（真实调接口并显示响应体） |
+
+### 三个管理页的增删改查
+
+| | 新增 | 查看 | 更改 | 删除 |
+| --- | --- | --- | --- | --- |
+| **模型接入** | 新增配置 | 详情弹窗 | 编辑表单 | 删除（要确认） |
+| **能力清单 · 工具** | 新增工具 | 详情弹窗 | 编辑表单 | 删除（会清掉技能里的引用） |
+| **能力清单 · 技能** | 新增技能 | 详情弹窗 | 编辑表单 | 删除 |
+| **能力清单 · MCP** | 新增服务器 | 详情弹窗 + 探测工具 | 编辑表单 | 删除 |
+| **文件** | 上传 | 预览（文本看内容、图片看图） | 改内容、改名 | 删除（要确认） |
+
+弹窗与表单控件在 `components/ui/`（`Modal` / `Button` / `Fields`）—— 一套框，三个
+页面共用，别再各写各的。
+
+**几个要注意的地方**：
+
+- **API Key 只有写没有读** —— 后端只回脱敏串（`sk-***1b5d`）。编辑时留空就是
+  "不修改"，填了才换。
+- **builtin 工具的来源是下拉** —— 只能从内置白名单里选（`GET /tools/builtins`），
+  平台不允许自建任意入口；mcp 类型的来源是已配置的 MCP 服务器名。
+- **入参 schema 只有 http 类型才要填** —— builtin / mcp 传空字典是正常的。
+- **改文件内容只处理文本** —— 二进制走上传。
+- 删除一律要确认（`window.confirm`）；删工具会连带清掉技能里对它的引用。
 
 ## 聊天页的事件流
 

@@ -479,3 +479,68 @@ async def test_archive_of_empty_workspace_is_404(app, client) -> None:
     """工作区是空的 —— 没有可打包的东西就明说，别给一个空包。"""
     resp = await client.get("/api/v1/files/archive", params={"thread_id": "t-empty-archive"})
     assert resp.status_code == 404, resp.text
+
+
+# ---------- 写入与重命名 ----------
+
+
+def test_write_text_creates_file(workspace: Path) -> None:
+    service = FileService(workspace)
+    size = service.write_text("/notes.md", "# 标题\n\n正文")
+    assert size == len("# 标题\n\n正文".encode("utf-8"))
+    assert (workspace / "notes.md").read_text(encoding="utf-8") == "# 标题\n\n正文"
+
+
+def test_write_text_overwrites(workspace: Path) -> None:
+    service = FileService(workspace)
+    service.write_text("/a.txt", "旧")
+    service.write_text("/a.txt", "新")
+    assert (workspace / "a.txt").read_text(encoding="utf-8") == "新"
+
+
+def test_write_rejects_traversal(workspace: Path) -> None:
+    service = FileService(workspace)
+    with pytest.raises(ValidationError):
+        service.write_text("/../outside.txt", "越界")
+
+
+def test_write_rejects_symlink_escape(workspace: Path, tmp_path: Path) -> None:
+    """最后一段是软链接就拒掉 —— 免得把工作区外面的文件改了。"""
+    outside = tmp_path / "outside.txt"
+    outside.write_text("不能动", encoding="utf-8")
+    (workspace / "link.txt").symlink_to(outside)
+
+    service = FileService(workspace)
+    with pytest.raises((ValidationError, OSError)):
+        service.write_text("/link.txt", "改了")
+    assert outside.read_text(encoding="utf-8") == "不能动"
+
+
+def test_rename_moves_file(workspace: Path) -> None:
+    service = FileService(workspace)
+    service.write_text("/old.txt", "内容")
+    new_path = service.rename("/old.txt", "/sub/new.txt")
+    assert new_path == "/sub/new.txt"
+    assert (workspace / "sub" / "new.txt").read_text(encoding="utf-8") == "内容"
+    assert not (workspace / "old.txt").exists()
+
+
+def test_rename_missing_file(workspace: Path) -> None:
+    service = FileService(workspace)
+    with pytest.raises(NotFoundError):
+        service.rename("/nope.txt", "/other.txt")
+
+
+def test_rename_existing_target(workspace: Path) -> None:
+    service = FileService(workspace)
+    service.write_text("/a.txt", "A")
+    service.write_text("/b.txt", "B")
+    with pytest.raises(ValidationError):
+        service.rename("/a.txt", "/b.txt")
+
+
+def test_rename_rejects_traversal(workspace: Path) -> None:
+    service = FileService(workspace)
+    service.write_text("/a.txt", "A")
+    with pytest.raises(ValidationError):
+        service.rename("/a.txt", "/../escaped.txt")

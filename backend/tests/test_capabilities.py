@@ -1175,3 +1175,53 @@ def test_execution_result_text_truncates_long_output():
     result = ExecutionResult(ok=True, content="x" * 30000)
     assert len(result.to_text()) < 30000
     assert "已截断" in result.to_text()
+
+
+# ---------- 工具更新：入参 schema 只对 http 类型有意义 ----------
+
+
+@pytest.mark.asyncio
+async def test_update_builtin_tool_without_parameters_is_allowed(client: AsyncClient) -> None:
+    """改 builtin 工具的名字，不该被入参 schema 拦下。
+
+    builtin / mcp 不需要入参 schema —— 空字典是正常的。之前更新接口一律校验
+    parameters，改个名字都改不了。
+    """
+    created = await client.post(
+        TOOLS,
+        json={
+            "name": "demo_builtin_tool",
+            "type": "builtin",
+            "source": "app.capabilities.registration.builtin.sandbox:make_run_python",
+            "description": "测试用",
+            "parameters": {},
+        },
+    )
+    assert created.status_code == 201
+    tool_id = created.json()["data"]["id"]
+
+    updated = await client.put(
+        f"{TOOLS}/{tool_id}",
+        json={"name": "demo_builtin_tool_2", "parameters": {}},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["data"]["name"] == "demo_builtin_tool_2"
+
+
+@pytest.mark.asyncio
+async def test_update_http_tool_still_requires_parameters_schema(client: AsyncClient) -> None:
+    """http 类型还是要入参 schema —— 校验没被放松掉。"""
+    created = await client.post(
+        TOOLS,
+        json={
+            "name": "demo_http_tool",
+            "type": "http",
+            "config": {"url": "https://example.com/api"},
+            "parameters": {"type": "object", "properties": {}},
+        },
+    )
+    assert created.status_code == 201
+    tool_id = created.json()["data"]["id"]
+
+    bad = await client.put(f"{TOOLS}/{tool_id}", json={"parameters": {}})
+    assert bad.status_code == 422

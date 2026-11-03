@@ -1,4 +1,4 @@
-"""文件接口：上传 / 列表 / 下载 / 删除。
+"""文件接口：上传 / 列表 / 下载 / 删除 / 写入 / 重命名。
 
 用户要给 agent 材料（需求文档、报错截图、代码片段），也要把 agent 做出来的
 东西拿走 —— 这组接口是两头。
@@ -9,6 +9,8 @@
 
 - 知道 ``thread_id`` 就能下载这个会话里的**所有文件**（含用户的需求文档）；
 - 也能往别人的会话里塞文件；
+- **还能改** —— 写入与重命名同样是裸接口，知道 ``thread_id`` 就能覆盖别人
+  工作区里的文件；
 - ``thread_id`` 由客户端生成，泄露即等于交出整个工作区。
 
 这是"记忆接口无鉴权"那条风险的更严重版本 —— 那里泄露的是用户偏好，这里是
@@ -33,7 +35,7 @@ from app.core.workspace import resolve_workspace
 from app.files.service import FileService
 from app.files.storage import sanitize_filename
 from app.schemas.common import ResponseModel
-from app.schemas.files import FileListOut, FileOut, UploadOut
+from app.schemas.files import FileListOut, FileOut, FileRenameIn, FileWriteIn, UploadOut
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +220,37 @@ async def delete_file(
     service = _service(thread_id)
     service.delete(path)
     return ResponseModel[dict[str, str]](data={"path": path, "status": "deleted"})
+
+
+@router.put("", summary="保存工作区文件内容")
+async def write_file(
+    thread_id: Annotated[str, Query(description="会话 ID")],
+    path: Annotated[str, Query(description="虚拟路径")],
+    payload: FileWriteIn,
+) -> ResponseModel[dict[str, str]]:
+    """写入（覆盖）一个文本文件。
+
+    只处理文本 —— 二进制内容走上传接口。界面上"改文件"就是这条。
+
+    路径越界（软链接指向工作区外面）会被挡掉。
+    """
+    service = _service(thread_id)
+    size = service.write_text(path, payload.content)
+    return ResponseModel[dict[str, str]](
+        data={"path": path, "status": "saved", "size": str(size)}
+    )
+
+
+@router.patch("", summary="重命名工作区文件")
+async def rename_file(
+    thread_id: Annotated[str, Query(description="会话 ID")],
+    path: Annotated[str, Query(description="虚拟路径")],
+    payload: FileRenameIn,
+) -> ResponseModel[dict[str, str]]:
+    """重命名（或移动）一个文件。"""
+    service = _service(thread_id)
+    new_path = service.rename(path, payload.new_path)
+    return ResponseModel[dict[str, str]](data={"path": new_path, "status": "renamed"})
 
 
 def _disposition(filename: str) -> str:

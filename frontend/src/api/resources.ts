@@ -10,12 +10,20 @@ import type {
   AgentChatRequest,
   AgentChatResult,
   AgentHistory,
+  BuiltinTool,
   CapabilityList,
   FileList,
   LLMProvider,
+  MCPServer,
+  MCPServerTool,
   PagedList,
+  ProviderPreset,
+  ProviderTestResult,
   SessionStatus,
+  Skill,
   SlashCommand,
+  Tool,
+  ToolTestResult,
   UploadedFile,
 } from '../types/api'
 
@@ -30,6 +38,104 @@ export function health(): Promise<{ status: string; version: string }> {
 
 export function listProviders(): Promise<PagedList<LLMProvider>> {
   return api.get<PagedList<LLMProvider>>('/llm-providers')
+}
+
+export function getProvider(id: number): Promise<LLMProvider> {
+  return api.get<LLMProvider>(`/llm-providers/${id}`)
+}
+
+/** 供应商预设（新建时厂商下拉用）。 */
+export function listProviderPresets(): Promise<ProviderPreset[]> {
+  return api.get<ProviderPreset[]>('/llm-providers/presets')
+}
+
+/** 新建供应商配置。 */
+export function createProvider(payload: Record<string, unknown>): Promise<LLMProvider> {
+  return api.post<LLMProvider>('/llm-providers', payload)
+}
+
+/** 改供应商配置。 */
+export function updateProvider(id: number, payload: Record<string, unknown>): Promise<LLMProvider> {
+  return api.put<LLMProvider>(`/llm-providers/${id}`, payload)
+}
+
+/** 删供应商配置。 */
+export function deleteProvider(id: number): Promise<void> {
+  return api.delete<void>(`/llm-providers/${id}`)
+}
+
+/** 测试连通性。 */
+export function testProvider(id: number): Promise<ProviderTestResult> {
+  return api.post<ProviderTestResult>(`/llm-providers/${id}/test`)
+}
+
+// ---------- 工具 ----------
+
+export function listTools(): Promise<PagedList<Tool>> {
+  return api.get<PagedList<Tool>>('/tools')
+}
+
+/** 内置能力白名单 —— builtin 类型工具的来源从这里选。 */
+export function listBuiltinTools(): Promise<BuiltinTool[]> {
+  return api.get<BuiltinTool[]>('/tools/builtins')
+}
+
+export function createTool(payload: Record<string, unknown>): Promise<Tool> {
+  return api.post<Tool>('/tools', payload)
+}
+
+export function updateTool(id: number, payload: Record<string, unknown>): Promise<Tool> {
+  return api.put<Tool>(`/tools/${id}`, payload)
+}
+
+export function deleteTool(id: number): Promise<void> {
+  return api.delete<void>(`/tools/${id}`)
+}
+
+/** 测试工具配置能不能跑通。 */
+export function testTool(id: number): Promise<ToolTestResult> {
+  return api.post<ToolTestResult>(`/tools/${id}/test`)
+}
+
+// ---------- 技能 ----------
+
+export function listSkills(): Promise<PagedList<Skill>> {
+  return api.get<PagedList<Skill>>('/skills')
+}
+
+export function createSkill(payload: Record<string, unknown>): Promise<Skill> {
+  return api.post<Skill>('/skills', payload)
+}
+
+export function updateSkill(id: number, payload: Record<string, unknown>): Promise<Skill> {
+  return api.put<Skill>(`/skills/${id}`, payload)
+}
+
+export function deleteSkill(id: number): Promise<void> {
+  return api.delete<void>(`/skills/${id}`)
+}
+
+// ---------- MCP 服务器 ----------
+
+export function listMCPServers(): Promise<MCPServer[]> {
+  return api.get<MCPServer[]>('/mcp-servers')
+}
+
+export function createMCPServer(payload: Record<string, unknown>): Promise<MCPServer> {
+  return api.post<MCPServer>('/mcp-servers', payload)
+}
+
+export function updateMCPServer(id: number, payload: Record<string, unknown>): Promise<MCPServer> {
+  return api.put<MCPServer>(`/mcp-servers/${id}`, payload)
+}
+
+export function deleteMCPServer(id: number): Promise<void> {
+  return api.delete<void>(`/mcp-servers/${id}`)
+}
+
+/** 探测 MCP 服务器上有哪些工具。 */
+export function probeMCPServer(id: number): Promise<MCPServerTool[]> {
+  return api.get<MCPServerTool[]>(`/mcp-servers/${id}/tools`)
 }
 
 // ---------- 能力 ----------
@@ -132,4 +238,48 @@ export function deleteFile(threadId: string, path: string): Promise<{ path: stri
   return api.delete<{ path: string; status: string }>(
     `/files?thread_id=${encodeURIComponent(threadId)}&path=${encodeURIComponent(path)}`,
   )
+}
+
+/**
+ * 保存文件内容（覆盖）。
+ *
+ * 只处理文本 —— 二进制走上传。
+ */
+export function saveFile(
+  threadId: string,
+  path: string,
+  content: string,
+): Promise<{ path: string; status: string; size: string }> {
+  return api.put<{ path: string; status: string; size: string }>(
+    `/files?thread_id=${encodeURIComponent(threadId)}&path=${encodeURIComponent(path)}`,
+    { content },
+  )
+}
+
+/** 重命名（或移动）文件。 */
+export function renameFile(
+  threadId: string,
+  path: string,
+  newPath: string,
+): Promise<{ path: string; status: string }> {
+  return api.patch<{ path: string; status: string }>(
+    `/files?thread_id=${encodeURIComponent(threadId)}&path=${encodeURIComponent(path)}`,
+    { new_path: newPath },
+  )
+}
+
+/**
+ * 读一个文件的文本内容。
+ *
+ * 下载接口是给浏览器直接取文件的（带 attachment 头），这里自己 fetch 一份
+ * 回来当文本用 —— 预览与编辑都要。
+ */
+export async function readFileText(threadId: string, path: string): Promise<string> {
+  const response = await fetch(
+    `${API_BASE}/files/download?thread_id=${encodeURIComponent(threadId)}&path=${encodeURIComponent(path)}`,
+  )
+  if (!response.ok) {
+    throw new Error(`读不到文件（HTTP ${response.status}）`)
+  }
+  return response.text()
 }
