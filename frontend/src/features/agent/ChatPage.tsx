@@ -11,7 +11,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate, useOutletContext, useParams } from 'react-router'
 
 import { clearConversation } from '../../api/resources'
-import ContextUsageBar from '../sessions/ContextUsageBar'
 import Composer, { type ComposerHandle } from './Composer'
 import MessageList from './MessageList'
 import { useChat } from './useChat'
@@ -32,7 +31,7 @@ export default function ChatPage() {
   const { touch, rename, sessions } = useSessions()
   const chat = useChat()
   // 外壳把"打开右侧状态面板"的动作传下来（AppShell → Outlet context）
-  const { openStatusPanel } = useOutletContext<{ openStatusPanel: () => void }>()
+  const { openStatusPanel } = useOutletContext<{ openStatusPanel: (threadId?: string) => void }>()
 
   // 没有 URL 里的会话就临时开一个 —— 发出第一条消息时才落到路由上
   const [draftThreadId, setDraftThreadId] = useState(() => newThreadId())
@@ -172,8 +171,6 @@ export default function ChatPage() {
               </p>
             </div>
 
-            <ContextUsageBar threadId={threadId} onOpenDetail={openStatusPanel} />
-
             <Composer
               ref={composerRef}
               threadId={threadId}
@@ -182,6 +179,7 @@ export default function ChatPage() {
               onSend={(text, attachments, providerId) => void send(text, attachments, providerId)}
               onStop={chat.abort}
               onCommandAction={(action) => void runCommandAction(action)}
+              onOpenDetail={() => openStatusPanel(threadId)}
             />
 
             <div className="relative flex max-w-4xl flex-wrap justify-center gap-2">
@@ -212,13 +210,13 @@ export default function ChatPage() {
           {statusHint ? (
             <div className="mx-auto max-w-4xl px-6 pb-1 text-xs text-ink-faint">{statusHint}</div>
           ) : null}
-          <ContextUsageBar threadId={threadId} onOpenDetail={openStatusPanel} />
           <Composer
             threadId={threadId}
             busy={chat.busy}
             onSend={(text, attachments, providerId) => void send(text, attachments, providerId)}
             onStop={chat.abort}
             onCommandAction={(action) => void runCommandAction(action)}
+            onOpenDetail={() => openStatusPanel(threadId)}
           />
         </div>
       )}

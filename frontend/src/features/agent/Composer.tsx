@@ -22,6 +22,7 @@ import { listCommands, listProviders, listWorkspaceTree, uploadFile } from '../.
 import { ArrowUpIcon, AtIcon, PaperclipIcon, PlusIcon, SlashIcon, StopIcon } from '../../components/icons'
 import { humanSize } from '../../lib/format'
 import type { LLMProvider, SlashCommand, WorkspaceFile } from '../../types/api'
+import ContextUsageIndicator from '../sessions/ContextUsageIndicator'
 import MentionPicker from './MentionPicker'
 import SlashCommandMenu from './SlashCommandMenu'
 import { detectTrigger, mentionedPaths, orderEntries, type Trigger } from './triggers'
@@ -48,6 +49,8 @@ export default forwardRef<ComposerHandle, {
   onStop: () => void
   /** 本地动作（开新会话 / 清空 / 改名）交给外层处理 */
   onCommandAction?: (action: string) => void
+  /** 打开右侧的完整状态面板 */
+  onOpenDetail?: () => void
 }>(function Composer(
   {
     threadId,
@@ -57,6 +60,7 @@ export default forwardRef<ComposerHandle, {
     onSend,
     onStop,
     onCommandAction,
+    onOpenDetail,
   },
   ref,
 ) {
@@ -78,6 +82,7 @@ export default forwardRef<ComposerHandle, {
   const [providerId, setProviderId] = useState<number | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [plusOpen, setPlusOpen] = useState(false)
+  const [contextOpen, setContextOpen] = useState(false)
   const [commands, setCommands] = useState<SlashCommand[]>([])
   const [tree, setTree] = useState<WorkspaceFile[]>([])
   const [treeLoading, setTreeLoading] = useState(false)
@@ -129,11 +134,12 @@ export default forwardRef<ComposerHandle, {
       const target = event.target as Node
       if (pickerOpen && !pickerRef.current?.contains(target)) setPickerOpen(false)
       if (plusOpen && !plusMenuRef.current?.contains(target)) setPlusOpen(false)
+      if (contextOpen && !shellRef.current?.contains(target)) setContextOpen(false)
       if (trigger && !shellRef.current?.contains(target)) setTrigger(null)
     }
     document.addEventListener('mousedown', onPointerDown)
     return () => document.removeEventListener('mousedown', onPointerDown)
-  }, [pickerOpen, plusOpen, trigger])
+  }, [pickerOpen, plusOpen, contextOpen, trigger])
 
   // 输入框随内容长高
   useEffect(() => {
@@ -467,6 +473,7 @@ export default forwardRef<ComposerHandle, {
                 disabled={disabled || uploading}
                 onClick={() => {
                   setPlusOpen((value) => !value)
+                  setContextOpen(false)
                   setTrigger(null)
                 }}
                 className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-hover hover:text-ink disabled:opacity-50"
@@ -517,11 +524,25 @@ export default forwardRef<ComposerHandle, {
 
             <div className="flex-1" />
 
+            {/* 上下文占用：在模型选择的左边，点开看明细 */}
+            <ContextUsageIndicator
+              threadId={threadId}
+              open={contextOpen}
+              onToggle={() => {
+                setContextOpen((value) => !value)
+                setPickerOpen(false)
+              }}
+              onOpenDetail={onOpenDetail}
+            />
+
             {/* 模型选择 */}
             <div ref={pickerRef} className="relative">
               <button
                 type="button"
-                onClick={() => setPickerOpen((value) => !value)}
+                onClick={() => {
+                  setPickerOpen((value) => !value)
+                  setContextOpen(false)
+                }}
                 className="rounded-lg px-2.5 py-1.5 text-xs text-ink-muted transition-colors hover:bg-hover hover:text-ink"
               >
                 {currentProvider?.default_model ?? '选择模型'} ▾

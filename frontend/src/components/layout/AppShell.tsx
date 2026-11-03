@@ -52,6 +52,13 @@ export default function AppShell() {
   const { pinned, others, create, remove, togglePin } = useSessions()
   const [searchOpen, setSearchOpen] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
+  /**
+   * 状态面板看哪个会话。
+   *
+   * 一般就是路由上的那个会话；但空会话页（`/chat`）还没落到路由上，
+   * 那个"草稿会话"也得能看 —— 所以允许显式指定。
+   */
+  const [statusThread, setStatusThread] = useState<string | null>(null)
   const [query, setQuery] = useState('')
 
   // 当前会话：从路由里认出来
@@ -77,6 +84,9 @@ export default function AppShell() {
     keyword ? items.filter((item) => item.title.toLowerCase().includes(keyword)) : items
   const pinnedShown = match(pinned)
   const othersShown = match(others)
+
+  // 面板看哪个会话：显式指定过的优先，否则就是路由上的那个
+  const panelThread = statusThread ?? activeThread
 
   return (
     <div className="flex h-screen overflow-hidden bg-base">
@@ -187,7 +197,14 @@ export default function AppShell() {
       </aside>
 
       <main className="min-w-0 flex-1 overflow-hidden bg-base">
-        <Outlet context={{ openStatusPanel: () => setStatusOpen(true) }} />
+        <Outlet
+          context={{
+            openStatusPanel: (threadId?: string) => {
+              setStatusThread(threadId ?? null)
+              setStatusOpen(true)
+            },
+          }}
+        />
       </main>
 
       {/*
@@ -207,8 +224,8 @@ export default function AppShell() {
               ×
             </button>
           </div>
-          {activeThread ? (
-            <SessionStatusPanel threadId={activeThread} />
+          {panelThread ? (
+            <SessionStatusPanel threadId={panelThread} />
           ) : (
             <div className="rounded-xl border border-line bg-raised px-3 py-2.5 text-xs text-ink-faint">
               还没有会话 —— 进一个会话才能看它的状态。
