@@ -8,13 +8,14 @@
  *
  * - **白名单根目录**：平台允许作为工作目录的地方（没配就是全禁）；
  * - **环境清单**：白名单下的目录、仓库，以及平台派生出来的 worktree；
- * - **新建 worktree**：从仓库切一条新分支 + 一个新目录出来。
+ * - **新建 worktree**：选一个仓库就自动开一份独立检出（分支自动生成）。
  */
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 
-import { deleteWorktree, listEnvironments } from '../api/resources'
+import { createWorktree, deleteWorktree, listEnvironments } from '../api/resources'
 import Button from '../components/ui/Button'
-import { WorktreeDialog } from '../features/environments/EnvironmentBar'
+import { Select } from '../components/ui/Fields'
+import Modal from '../components/ui/Modal'
 import { bindableEnvironments } from '../features/environments/format'
 import type { Environment, EnvironmentList } from '../types/api'
 
@@ -157,15 +158,10 @@ export default function EnvironmentsPage() {
       ) : null}
 
       {creating ? (
-        <WorktreeDialog
+        <NewWorktreeDialog
           repos={repos}
-          folders={folders}
           onClose={() => setCreating(false)}
           onCreated={async () => {
-            setCreating(false)
-            await load()
-          }}
-          onWorktree={async () => {
             setCreating(false)
             setNote('已创建 worktree')
             await load()
@@ -173,6 +169,74 @@ export default function EnvironmentsPage() {
         />
       ) : null}
     </div>
+  )
+}
+
+/**
+ * 新建 worktree：选一个仓库，分支由平台自动生成。
+ *
+ * **没有分支名这一栏** —— 选中仓库就该直接能用，独立检出不是一个需要
+ * 单独配置的动作（跟聊天页那个选择器一致）。
+ */
+function NewWorktreeDialog({
+  repos,
+  onClose,
+  onCreated,
+}: {
+  repos: Environment[]
+  onClose: () => void
+  onCreated: () => void | Promise<void>
+}) {
+  const [repoPath, setRepoPath] = useState(repos[0]?.path ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const submit = async () => {
+    setSaving(true)
+    setError('')
+    try {
+      await createWorktree({ repo_path: repoPath })
+      await onCreated()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      title="新建 worktree"
+      onClose={onClose}
+      footer={
+        <>
+          <Button size="sm" onClick={onClose}>
+            取消
+          </Button>
+          <Button size="sm" variant="primary" onClick={() => void submit()} disabled={saving}>
+            {saving ? '创建中…' : '创建'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <Select
+          label="仓库"
+          value={repoPath}
+          onChange={(event) => setRepoPath(event.target.value)}
+          options={repos.map((repo) => ({
+            value: repo.path,
+            label: `${repo.name || repo.path}${repo.branch ? `（${repo.branch}）` : ''}`,
+          }))}
+          hint="自动开一个新分支 + 一份独立检出，分支名由平台生成"
+        />
+        {error ? (
+          <div className="rounded-lg border border-danger bg-danger-soft px-3 py-2 text-xs text-danger">
+            {error}
+          </div>
+        ) : null}
+      </div>
+    </Modal>
   )
 }
 

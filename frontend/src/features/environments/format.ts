@@ -32,6 +32,24 @@ export function bindableEnvironments<T extends { path: string; name: string }>(
   })
 }
 
+/**
+ * 按关键词过滤环境（名字或路径里有就留下）。
+ *
+ * 白名单下的目录可能有几十个 —— 没有搜索框就得一路滚。
+ */
+export function filterEnvironments<T extends { path: string; name: string }>(
+  environments: T[],
+  query: string,
+): T[] {
+  const text = query.trim().toLowerCase()
+  if (!text) return environments
+  return environments.filter((item) => {
+    const name = (item.name || '').toLowerCase()
+    const path = item.path.toLowerCase()
+    return name.includes(text) || path.includes(text)
+  })
+}
+
 /** 分支名里的平台标记 —— 派出去的子 agent 都用这个前缀。 */
 export const WORKER_BRANCH_PREFIX = 'qzd/'
 

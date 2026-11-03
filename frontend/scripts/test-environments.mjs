@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 
 import {
   bindableEnvironments,
+  filterEnvironments,
   isWorkerBranch,
   kindLabel,
 } from '../src/features/environments/format.ts'
@@ -49,6 +50,18 @@ check('隐藏目录不能绑成工作目录', () => {
 check('没有名字就用路径的最后一段', () => {
   const result = bindableEnvironments([{ path: '/a/b/xyz', name: '' }])
   assert.equal(result.length, 1)
+})
+
+check('按名字或路径过滤', () => {
+  assert.deepEqual(
+    filterEnvironments(ENVIRONMENTS, 'demo').map((item) => item.name),
+    ['demo'],
+  )
+  // 路径里命中也算
+  assert.equal(filterEnvironments(ENVIRONMENTS, '/ops/demo').length, 1)
+  // 空搜索词返回全部
+  assert.equal(filterEnvironments(ENVIRONMENTS, '  ').length, 4)
+  assert.equal(filterEnvironments(ENVIRONMENTS, '没有的').length, 0)
 })
 
 check('认得出平台派出去的分支', () => {

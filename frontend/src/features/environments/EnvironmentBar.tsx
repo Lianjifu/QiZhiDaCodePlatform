@@ -1,18 +1,21 @@
 /**
- * 工作目录条：当前会话在哪个目录里干活，以及换目录 / 建 worktree 的入口。
+ * 工作目录条：当前会话在哪个目录里干活，以及换目录的入口。
  *
  * 放在聊天页**对话框下方**，而且**只在初始状态**出现 —— 开新会话时选好目录，
  * 聊起来之后它就不占地方了（要换目录去「工作目录」页）。
  *
- * 左边那截点开是环境清单：
+ * 左边那截点开是环境清单，三段：
  *
  * | 选什么 | 会发生什么 |
  * | --- | --- |
- * | 仓库 | **自动派生一个 worktree**（分支自动生成）并绑上 —— 不用先填分支 |
+ * | 仓库 | **自动分配一份独立检出**（分支自动生成）并绑上 —— 不用先填分支 |
  * | 本地目录 | 直接绑上，agent 就在那个目录里干活 |
  * | 已有的 worktree | 直接绑上 |
  *
  * 「新建工作区」= 起个名字 + 选一个本地目录。
+ *
+ * **没有「新建 worktree」那一档** —— 选中仓库就会自动分配，独立检出不是
+ * 一个需要单独配置的动作。
  */
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 
@@ -23,12 +26,12 @@ import {
   listEnvironments,
   unbindEnvironment,
 } from '../../api/resources'
-import { BranchIcon, FolderIcon } from '../../components/icons'
+import { BranchIcon, FolderIcon, SearchIcon } from '../../components/icons'
 import Button from '../../components/ui/Button'
 import { Select, TextInput } from '../../components/ui/Fields'
 import Modal from '../../components/ui/Modal'
 import type { Environment, EnvironmentList } from '../../types/api'
-import { bindableEnvironments, kindLabel } from './format'
+import { bindableEnvironments, filterEnvironments } from './format'
 
 export default function EnvironmentBar({
   threadId,
@@ -104,7 +107,7 @@ export default function EnvironmentBar({
   }
 
   /**
-   * 选中一个仓库 —— **自动派生一个 worktree** 并绑上。
+   * 选中一个仓库 —— **自动分配一份独立检出**并绑上。
    *
    * 不用先填分支名：分支由平台生成（``qzd/<仓库>-<随机>``）。
    */
@@ -139,9 +142,6 @@ export default function EnvironmentBar({
 
   const enabled = list?.enabled ?? false
   const environments = useMemo(() => bindableEnvironments(list?.environments ?? []), [list])
-  const repos = environments.filter((item) => item.is_repo && item.kind !== 'worktree')
-  const worktrees = environments.filter((item) => item.kind === 'worktree')
-  const folders = environments.filter((item) => item.kind !== 'worktree' && !item.is_repo)
 
   return (
     <div className="flex items-center gap-2 px-1">
@@ -159,18 +159,6 @@ export default function EnvironmentBar({
         ) : null}
       </button>
 
-      <Button
-        size="sm"
-        variant="ghost"
-        onClick={() => setCreating(true)}
-        disabled={!enabled || (repos.length === 0 && folders.length === 0)}
-        title={repos.length === 0 ? '白名单下还没有 git 仓库' : '从仓库派生一个独立检出'}
-        className="flex items-center gap-1"
-      >
-        <BranchIcon className="h-3.5 w-3.5" />
-        Worktree
-      </Button>
-
       {error ? (
         <span className="truncate text-[11px] text-danger" title={error}>
           {error}
@@ -180,84 +168,28 @@ export default function EnvironmentBar({
       ) : null}
 
       {picking ? (
-        <Modal title="选择工作目录" onClose={() => setPicking(false)}>
-          <p className="mb-3 text-xs text-ink-muted">
-            选一个目录，agent 的文件读写与命令执行就在那里。只能选白名单内的目录。
-          </p>
-
-          <Section title="仓库">
-            <p className="mb-1.5 text-[11px] text-ink-faint">
-              选中就自动开一个新分支 + 一份独立检出，不用另外配置。
-            </p>
-            {repos.length === 0 ? (
-              <Empty text="白名单下还没有 git 仓库" />
-            ) : (
-              <ul className="space-y-1">
-                {repos.map((item) => (
-                  <PickRow
-                    key={item.path}
-                    item={item}
-                    hint={item.branch ? `当前 ${item.branch}` : ''}
-                    disabled={busy}
-                    onClick={() => void chooseRepo(item)}
-                  />
-                ))}
-              </ul>
-            )}
-          </Section>
-
-          <Section title="本地目录">
-            {folders.length === 0 ? (
-              <Empty text="白名单下没有可选的目录" />
-            ) : (
-              <ul className="space-y-1">
-                {folders.map((item) => (
-                  <PickRow key={item.path} item={item} onClick={() => void bind(item.path)} />
-                ))}
-              </ul>
-            )}
-          </Section>
-
-          {worktrees.length > 0 ? (
-            <Section title="Worktree">
-              <ul className="space-y-1">
-                {worktrees.map((item) => (
-                  <PickRow
-                    key={item.path}
-                    item={item}
-                    hint={item.branch}
-                    onClick={() => void bind(item.path)}
-                  />
-                ))}
-              </ul>
-            </Section>
-          ) : null}
-
-          <div className="mt-4 flex items-center justify-between gap-2 border-t border-line pt-3">
-            <Button size="sm" onClick={() => setCreating(true)}>
-              新建工作区
-            </Button>
-            {binding ? (
-              <Button size="sm" variant="ghost" onClick={() => void unbind()}>
-                解绑，回到会话自带的工作区
-              </Button>
-            ) : null}
-          </div>
-        </Modal>
+        <EnvironmentPicker
+          environments={environments}
+          busy={busy}
+          onClose={() => setPicking(false)}
+          onPickFolder={(item) => void bind(item.path)}
+          onPickRepo={(item) => void chooseRepo(item)}
+          onCreate={() => {
+            // **先把选择器关掉** —— 两个弹窗叠在一起会串
+            setPicking(false)
+            setCreating(true)
+          }}
+          onUnbind={binding ? () => void unbind() : undefined}
+        />
       ) : null}
 
       {creating ? (
-        <WorktreeDialog
-          repos={repos}
-          folders={folders}
+        <CreateWorkspaceDialog
+          folders={environments.filter((item) => item.kind !== 'worktree' && !item.is_repo)}
           onClose={() => setCreating(false)}
           onCreated={async (path, label) => {
             setCreating(false)
             await bind(path, label)
-          }}
-          onWorktree={async (path) => {
-            setCreating(false)
-            await bind(path)
           }}
         />
       ) : null}
@@ -285,30 +217,160 @@ function toEnvironment(current: {
   }
 }
 
-/** 一组可选目录。 */
-function Section({ title, children }: { title: string; children: ReactNode }) {
+/**
+ * 选择工作目录。
+ *
+ * 三段：**仓库**（选中就自动分配独立检出）/ **本地目录** / **已有的
+ * worktree**。白名单下的目录可能有几十个，所以带一个搜索框。
+ */
+function EnvironmentPicker({
+  environments,
+  busy,
+  onClose,
+  onPickFolder,
+  onPickRepo,
+  onCreate,
+  onUnbind,
+}: {
+  environments: Environment[]
+  busy: boolean
+  onClose: () => void
+  onPickFolder: (item: Environment) => void
+  onPickRepo: (item: Environment) => void
+  onCreate: () => void
+  onUnbind?: () => void
+}) {
+  const [query, setQuery] = useState('')
+
+  const matched = useMemo(() => filterEnvironments(environments, query), [environments, query])
+  const repos = matched.filter((item) => item.is_repo && item.kind !== 'worktree')
+  const worktrees = matched.filter((item) => item.kind === 'worktree')
+  const folders = matched.filter((item) => item.kind !== 'worktree' && !item.is_repo)
+
   return (
-    <section className="mb-3 last:mb-0">
-      <h3 className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-faint">
-        {title}
-      </h3>
+    <Modal title="选择工作目录" onClose={onClose} wide>
+      <div className="space-y-4">
+        <div className="relative">
+          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-faint" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜名字或路径…"
+            className="w-full rounded-lg border border-line bg-base py-1.5 pl-8 pr-2.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent focus:shadow-[0_0_0_3px_var(--ring)]"
+          />
+        </div>
+
+        <Group title="仓库" hint="选中就自动开一个新分支 + 一份独立检出">
+          {repos.length === 0 ? (
+            <Empty text="没有匹配的仓库" />
+          ) : (
+            <ul className="divide-y divide-line overflow-hidden rounded-lg border border-line">
+              {repos.map((item) => (
+                <Row
+                  key={item.path}
+                  item={item}
+                  icon={<BranchIcon className="h-3.5 w-3.5" />}
+                  badge="仓库"
+                  hint={item.branch ? `当前 ${item.branch}` : ''}
+                  disabled={busy}
+                  onClick={() => onPickRepo(item)}
+                />
+              ))}
+            </ul>
+          )}
+        </Group>
+
+        <Group title="本地目录" hint="agent 就在这个目录里读写文件、跑命令">
+          {folders.length === 0 ? (
+            <Empty text="没有匹配的目录" />
+          ) : (
+            <ul className="divide-y divide-line overflow-hidden rounded-lg border border-line">
+              {folders.map((item) => (
+                <Row
+                  key={item.path}
+                  item={item}
+                  icon={<FolderIcon className="h-3.5 w-3.5" />}
+                  badge="目录"
+                  onClick={() => onPickFolder(item)}
+                />
+              ))}
+            </ul>
+          )}
+        </Group>
+
+        {worktrees.length > 0 ? (
+          <Group title="Worktree" hint="已经开好的独立检出">
+            <ul className="divide-y divide-line overflow-hidden rounded-lg border border-line">
+              {worktrees.map((item) => (
+                <Row
+                  key={item.path}
+                  item={item}
+                  icon={<BranchIcon className="h-3.5 w-3.5" />}
+                  badge="Worktree"
+                  hint={item.branch}
+                  onClick={() => onPickFolder(item)}
+                />
+              ))}
+            </ul>
+          </Group>
+        ) : null}
+
+        <div className="flex items-center justify-between gap-2 border-t border-line pt-3">
+          <Button size="sm" onClick={onCreate}>
+            新建工作区
+          </Button>
+          {onUnbind ? (
+            <Button size="sm" variant="ghost" onClick={onUnbind}>
+              解绑，回到会话自带的工作区
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/** 一组可选目录。 */
+function Group({
+  title,
+  hint,
+  children,
+}: {
+  title: string
+  hint?: string
+  children: ReactNode
+}) {
+  return (
+    <section>
+      <div className="mb-1.5 flex items-baseline gap-2">
+        <h3 className="text-[11px] font-medium uppercase tracking-wide text-ink-faint">{title}</h3>
+        {hint ? <span className="truncate text-[11px] text-ink-faint">{hint}</span> : null}
+      </div>
       {children}
     </section>
   )
 }
 
 function Empty({ text }: { text: string }) {
-  return <div className="py-2 text-xs text-ink-faint">{text}</div>
+  return (
+    <div className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-xs text-ink-faint">
+      {text}
+    </div>
+  )
 }
 
 /** 清单里的一行。 */
-function PickRow({
+function Row({
   item,
+  icon,
+  badge,
   hint,
   disabled,
   onClick,
 }: {
   item: Environment
+  icon: ReactNode
+  badge: string
   hint?: string
   disabled?: boolean
   onClick: () => void
@@ -319,71 +381,52 @@ function PickRow({
         type="button"
         onClick={onClick}
         disabled={disabled}
-        className="flex w-full items-center gap-2 rounded-lg border border-line bg-base px-3 py-2 text-left transition-colors hover:bg-hover disabled:opacity-60"
+        className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-hover disabled:opacity-60"
       >
+        <span className="shrink-0 text-ink-faint">{icon}</span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm text-ink">{item.name || item.path}</span>
           <span className="block truncate font-mono text-[11px] text-ink-faint">{item.path}</span>
         </span>
-        <span className="shrink-0 text-[11px] text-ink-muted">
-          {kindLabel(item.kind, item.is_repo)}
-        </span>
         {hint ? (
           <span className="shrink-0 font-mono text-[11px] text-ink-faint">{hint}</span>
         ) : null}
+        <span className="shrink-0 rounded bg-sunken px-1.5 py-0.5 text-[10px] text-ink-muted">
+          {badge}
+        </span>
       </button>
     </li>
   )
 }
 
 /**
- * 新建工作区 / 新建 worktree。
+ * 新建工作区：起个名字 + 选一个本地目录。
  *
- * 两个动作在一处：
- *
- * - **本地目录**：起个名字 + 选一个目录 —— 就是"创建会话工作区"；
- * - **Worktree**：从仓库派生一份独立检出，分支名留空就自动生成。
+ * **只有这一种** —— 独立检出不是"新建"出来的，选中仓库就会自动分配。
  */
-export function WorktreeDialog({
-  repos,
+export function CreateWorkspaceDialog({
   folders,
   onClose,
   onCreated,
-  onWorktree,
 }: {
-  repos: Environment[]
   folders: Environment[]
   onClose: () => void
   onCreated: (path: string, label: string) => void | Promise<void>
-  onWorktree: (path: string) => void | Promise<void>
 }) {
-  const [mode, setMode] = useState<'folder' | 'worktree'>(
-    folders.length > 0 ? 'folder' : 'worktree',
-  )
   const [name, setName] = useState('')
   const [folderPath, setFolderPath] = useState(folders[0]?.path ?? '')
-  const [repoPath, setRepoPath] = useState(repos[0]?.path ?? '')
-  const [branch, setBranch] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
   const submit = async () => {
+    if (!folderPath.trim()) {
+      setError('选一个目录')
+      return
+    }
     setSaving(true)
     setError('')
     try {
-      if (mode === 'folder') {
-        if (!folderPath.trim()) {
-          setError('选一个目录')
-          return
-        }
-        await onCreated(folderPath.trim(), name.trim())
-        return
-      }
-      const env = await createWorktree({
-        repo_path: repoPath,
-        branch: branch.trim() || undefined,
-      })
-      await onWorktree(env.path)
+      await onCreated(folderPath.trim(), name.trim())
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -393,7 +436,7 @@ export function WorktreeDialog({
 
   return (
     <Modal
-      title={mode === 'folder' ? '新建工作区' : '新建 worktree'}
+      title="新建工作区"
       onClose={onClose}
       footer={
         <>
@@ -407,72 +450,23 @@ export function WorktreeDialog({
       }
     >
       <div className="space-y-3">
-        {folders.length > 0 && repos.length > 0 ? (
-          <div className="flex gap-1 border-b border-line">
-            {(
-              [
-                { key: 'folder', label: '本地目录' },
-                { key: 'worktree', label: 'Worktree' },
-              ] as const
-            ).map((tab) => (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setMode(tab.key)}
-                className={[
-                  '-mb-px border-b-2 px-3 py-1.5 text-sm transition-colors',
-                  mode === tab.key
-                    ? 'border-accent text-ink'
-                    : 'border-transparent text-ink-muted hover:text-ink',
-                ].join(' ')}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
-
-        {mode === 'folder' ? (
-          <>
-            <TextInput
-              label="名称"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="我的应用"
-              hint="给这个工作区起个名字，之后好认"
-            />
-            <Select
-              label="目录"
-              value={folderPath}
-              onChange={(event) => setFolderPath(event.target.value)}
-              options={folders.map((item) => ({
-                value: item.path,
-                label: item.name || item.path,
-              }))}
-              hint="agent 的文件读写与命令执行都在这个目录里"
-            />
-          </>
-        ) : (
-          <>
-            <Select
-              label="仓库"
-              value={repoPath}
-              onChange={(event) => setRepoPath(event.target.value)}
-              options={repos.map((repo) => ({
-                value: repo.path,
-                label: `${repo.name || repo.path}${repo.branch ? `（${repo.branch}）` : ''}`,
-              }))}
-            />
-            <TextInput
-              label="分支名"
-              value={branch}
-              onChange={(event) => setBranch(event.target.value)}
-              placeholder="留空就自动生成"
-              hint="worktree 落在平台配置的 WORKTREE_ROOT 下面，按仓库名分组"
-            />
-          </>
-        )}
-
+        <TextInput
+          label="名称"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          placeholder="我的应用"
+          hint="给这个工作区起个名字，之后好认"
+        />
+        <Select
+          label="目录"
+          value={folderPath}
+          onChange={(event) => setFolderPath(event.target.value)}
+          options={folders.map((item) => ({
+            value: item.path,
+            label: item.name || item.path,
+          }))}
+          hint="agent 的文件读写与命令执行都在这个目录里"
+        />
         {error ? (
           <div className="rounded-lg border border-danger bg-danger-soft px-3 py-2 text-xs text-danger">
             {error}
