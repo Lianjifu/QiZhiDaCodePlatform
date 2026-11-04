@@ -18,7 +18,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from app.environments.paths import repo_roots
-from app.environments.service import EnvironmentService
+from app.environments.service import EnvironmentService, environment_list_is_stale
 from app.environments.store import load_binding
 from app.git.service import GitService
 from app.schemas.common import ResponseModel
@@ -66,6 +66,9 @@ async def list_environments() -> ResponseModel[EnvironmentListOut]:
             environments=[EnvironmentOut(**env.to_dict()) for env in environments],
             roots=[str(root) for root in roots],
             enabled=True,
+            # **这次给的是不是旧数据** —— 旧数据就说明后台正在刷新，
+            # 前端可以告诉用户"正在更新"。
+            stale=environment_list_is_stale(),
         )
     )
 

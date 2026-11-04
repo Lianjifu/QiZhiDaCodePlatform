@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.core.exceptions import AppError
 from app.core.logging import setup_logging
 from app.db.session import close_db, init_db
+from app.environments.service import warm_environment_cache
 from app.schemas.common import ErrorDetail
 from app.services.invocation import expire_stale_approvals
 
@@ -33,6 +34,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging()
     await init_db()
     _cleanup_sandboxes()
+    # **把环境清单先扫好** —— 扫一遍要一秒多，放在启动后台做，
+    # 第一个打开「工作目录」的人就不用干等。
+    warm_environment_cache()
     logger.info("%s v%s 已启动", settings.app_name, settings.app_version)
     if not settings.llm_api_key and settings.llm_provider != "ollama":
         logger.warning("未配置 LLM_API_KEY，调用编码助手接口会失败（请在 .env 中设置）")

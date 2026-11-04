@@ -52,42 +52,120 @@ logger = logging.getLogger(__name__)
 
 # 环境清单的缓存时长（秒）。
 #
-# **扫一遍要好几秒** —— 白名单下每个候选目录都要问 git（是不是仓库、当前
+# **扫一遍要一秒多** —— 白名单下每个候选目录都要问 git（是不是仓库、当前
 # 分支、有没有未提交的改动）。而仓库状态不是秒秒变的东西。
 #
-# 十几秒足够 —— 用户新建/删掉 worktree 之后会立刻失效（见
+# 十几秒足够 —— 用户新建/删掉 worktree 之后会立刻标记过期（见
 # ``invalidate_environment_cache``），不会看到过期的东西。
 LIST_CACHE_TTL_SECONDS = 15.0
 
-# (缓存时刻, 环境列表)。模块级 —— 服务对象是每次请求新建的，缓存得活得久一点。
-_list_cache: tuple[float, list[Environment]] | None = None
+# 缓存里的环境列表。模块级 —— 服务对象是每次请求新建的，缓存得活得久一点。
+_list_cache: list[Environment] | None = None
+# 缓存是什么时候扫的 —— 超过 TTL 就当过期。
+_list_cache_at: float = 0.0
 
 # 扫目录时只允许一个线程在扫 —— 免得并发请求各扫一遍（白扫）。
 _scan_lock = threading.Lock()
 
+# 后台刷新只允许一个在跑。
+_refresh_lock = threading.Lock()
+_refreshing = False
+
 
 def invalidate_environment_cache() -> None:
-    """环境清单变了（新建/删掉 worktree）—— 缓存作废。"""
-    global _list_cache
+    """环境清单变了（新建/删掉 worktree）—— **标记为过期**。
+
+    **不直接丢掉** —— 丢掉的话下一次列清单就得同步等一次扫描（一秒多），
+    用户刚建完 worktree 回到列表页又要干等。留着旧数据、下次读的时候
+    后台刷新，用户马上就能看到列表。
+    """
+    global _list_cache_at
+    if _list_cache is not None:
+        _list_cache_at = 0.0
+
+
+def environment_list_is_stale() -> bool:
+    """缓存里的清单是不是过期的（后台正在刷新）。
+
+    前端拿它告诉用户"这是上一次的，正在更新"—— 别让人以为那就是最新的。
+    """
+    if _list_cache is None:
+        return True
+    return time.monotonic() - _list_cache_at >= LIST_CACHE_TTL_SECONDS
+
+
+def clear_environment_cache() -> None:
+    """把缓存整个丢掉（不只是标记过期）。
+
+    换了一套白名单的时候用 —— 旧数据一点都不能留。
+    """
+    global _list_cache, _list_cache_at
     _list_cache = None
+    _list_cache_at = 0.0
 
 
 def _cached_environments(scan: Callable[[], list[Environment]]) -> list[Environment]:
-    """带短缓存地扫环境清单。"""
-    global _list_cache
-    now = time.monotonic()
+    """扫环境清单 —— **先给旧数据，后台再刷**。
+
+    三种情况：
+
+    - **有新鲜的缓存** —— 直接给（微秒级）；
+    - **有过期的缓存** —— 先给旧的，同时后台重扫（用户不等）；
+    - **什么都没有**（服务刚起）—— 老老实实扫一遍。
+    """
+    global _list_cache, _list_cache_at
     cached = _list_cache
-    if cached is not None and now - cached[0] < LIST_CACHE_TTL_SECONDS:
-        return cached[1]
+    if cached is not None:
+        if time.monotonic() - _list_cache_at < LIST_CACHE_TTL_SECONDS:
+            return cached
+        _refresh_in_background(scan)
+        return cached
+    # 第一次：没有旧数据可给，只能扫
     with _scan_lock:
         # 等锁的时候可能已经有别人扫完了
-        cached = _list_cache
-        if cached is not None and time.monotonic() - cached[0] < LIST_CACHE_TTL_SECONDS:
-            return cached[1]
+        if _list_cache is not None:
+            return _list_cache
         items = scan()
-        _list_cache = (time.monotonic(), items)
+        _list_cache = items
+        _list_cache_at = time.monotonic()
         return items
 
+
+def _refresh_in_background(scan: Callable[[], list[Environment]]) -> None:
+    """后台重扫一遍环境清单。
+
+    不阻塞调用方 —— 调用方拿到的是旧数据，等刷新完了下一次读就是新的。
+    """
+    global _refreshing
+    with _refresh_lock:
+        if _refreshing:
+            return
+        _refreshing = True
+
+    def worker() -> None:
+        global _list_cache, _list_cache_at, _refreshing
+        try:
+            with _scan_lock:
+                items = scan()
+                _list_cache = items
+                _list_cache_at = time.monotonic()
+            logger.info("环境清单已刷新（%d 项）", len(items))
+        except Exception:  # pragma: no cover - 后台刷新失败不该影响服务
+            logger.warning("刷新环境清单失败", exc_info=True)
+        finally:
+            _refreshing = False
+
+    threading.Thread(target=worker, name="env-list-refresh", daemon=True).start()
+
+
+def warm_environment_cache() -> None:
+    """服务启动时先把清单扫好（后台）。
+
+    第一次读的人就不用等那一秒多了 —— 清单早就在那儿了。
+    """
+    if _list_cache is not None:
+        return
+    _refresh_in_background(EnvironmentService()._scan_environments)
 
 @dataclass
 class Environment:
@@ -423,5 +501,8 @@ class EnvironmentService:
 __all__ = [
     "Environment",
     "EnvironmentService",
+    "clear_environment_cache",
+    "environment_list_is_stale",
     "invalidate_environment_cache",
+    "warm_environment_cache",
 ]

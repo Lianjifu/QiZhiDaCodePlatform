@@ -6,6 +6,8 @@
 
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from app.environments.naming import slugify, validate_branch
 from app.environments.paths import is_allowed, repo_roots, require_allowed
 from app.environments.service import (
     EnvironmentService,
+    clear_environment_cache,
     invalidate_environment_cache,
 )
 from app.git.service import GitService
@@ -62,13 +65,13 @@ def roots(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _清环境缓存():
-    """环境清单的缓存是**模块级**的 —— 每个用例前后都清掉。
+    """环境清单的缓存是**模块级**的 —— 每个用例前后都**整个丢掉**。
 
     白名单每个用例都不一样（临时目录），缓存不清的话就会串。
     """
-    invalidate_environment_cache()
+    clear_environment_cache()
     yield
-    invalidate_environment_cache()
+    clear_environment_cache()
 
 
 # ---------- 一次问清楚 ----------
@@ -104,12 +107,8 @@ def test_只问脏不脏不用起三个进程(roots):
 
 
 @needs_git
-def test_清单有缓存_改动之后立刻失效(roots, monkeypatch):
-    """扫一遍要好几秒 —— 短时间内重复问不该再扫。
-
-    但改了环境（新建/删掉 worktree）必须立刻看到新的。
-    """
-    invalidate_environment_cache()
+def test_清单有缓存_短时间内不重扫(roots, monkeypatch):
+    """扫一遍要一秒多 —— 短时间内重复问不该再扫。"""
     service = EnvironmentService()
     calls: list[int] = []
     original = service._scan_environments
@@ -123,10 +122,44 @@ def test_清单有缓存_改动之后立刻失效(roots, monkeypatch):
     service.list_environments()
     assert len(calls) == 1, f"扫了 {len(calls)} 次，应该只扫一次"
 
-    invalidate_environment_cache()
+
+@needs_git
+def test_缓存过期后先给旧数据_后台再刷(roots, monkeypatch):
+    """过期了也别让用户干等 —— 先给旧的，后台重扫。
+
+    改了环境（新建/删掉 worktree）之后也是这条路：旧数据立刻到手，
+    后台刷完下一轮就是新的。
+    """
+    service = EnvironmentService()
+    calls: list[int] = []
+    scanned = threading.Event()
+    original = service._scan_environments
+
+    def counted() -> list:
+        calls.append(1)
+        # **扫得慢一点** —— 不然后台刷新可能一瞬间就完了，看不出"没等"
+        time.sleep(0.3)
+        try:
+            return original()
+        finally:
+            scanned.set()
+
+    monkeypatch.setattr(service, "_scan_environments", counted)
     service.list_environments()
-    assert len(calls) == 2, "缓存作废之后应该重扫"
+    assert len(calls) == 1
+
+    # 标记过期 → 下一次读应该立刻返回旧数据，并在后台重扫
     invalidate_environment_cache()
+    scanned.clear()
+    started = time.monotonic()
+    assert service.list_environments()  # 立刻就拿到了
+    elapsed = time.monotonic() - started
+    # **关键**：返回的时候后台那次扫描还在跑（它要睡 0.3 秒）——
+    # 说明调用方根本没等它。
+    assert elapsed < 0.2, f"等了 {elapsed:.2f}s 才返回 —— 那就等于没在后台刷"
+
+    assert scanned.wait(timeout=10), "后台刷新没跑"
+    assert len(calls) == 2, f"后台应该扫了一次，实际 {len(calls)} 次"
 
 
 # ---------- 白名单 ----------

@@ -272,6 +272,8 @@ export interface EnvironmentList {
   roots: string[]
   /** 平台有没有配置可用的根目录 */
   enabled: boolean
+  /** 这份清单是不是上一次的（后台正在刷新） */
+  stale: boolean
 }
 
 /** 白名单根目录（后端 `EnvironmentRootsOut`）—— **不扫目录**，很快。 */

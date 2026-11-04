@@ -108,6 +108,16 @@ export default function EnvironmentsPage() {
 
       {list?.enabled ? (
         <div className="mt-5 space-y-5">
+          {/*
+            **给的是上一次的清单** —— 后台正在重扫。先把旧数据摆出来，
+            别让人对着空白页等。
+          */}
+          {list.stale ? (
+            <div className="flex items-center gap-2 text-xs text-ink-faint">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning" />
+              正在更新工作目录…
+            </div>
+          ) : null}
           <Section title="允许的根目录" count={list.roots.length}>
             <ul className="divide-y divide-line">
               {list.roots.map((root) => (

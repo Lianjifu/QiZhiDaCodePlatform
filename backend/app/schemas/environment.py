@@ -21,6 +21,10 @@ class EnvironmentListOut(BaseModel):
     environments: list[EnvironmentOut] = Field(default_factory=list)
     roots: list[str] = Field(default_factory=list, description="配置里允许的根目录")
     enabled: bool = Field(default=False, description="平台有没有配置可用的根目录")
+    stale: bool = Field(
+        default=False,
+        description="这份清单是不是上一次的（后台正在刷新）",
+    )
 
 
 class EnvironmentRootsOut(BaseModel):
