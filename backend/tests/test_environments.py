@@ -14,7 +14,10 @@ from app.core.config import settings
 from app.core.exceptions import ValidationError
 from app.environments.naming import slugify, validate_branch
 from app.environments.paths import is_allowed, repo_roots, require_allowed
-from app.environments.service import EnvironmentService
+from app.environments.service import (
+    EnvironmentService,
+    invalidate_environment_cache,
+)
 from app.git.service import GitService
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="需要 git 才能测")
@@ -55,6 +58,75 @@ def roots(tmp_path, monkeypatch):
     # worktree 的落点也要挪进临时目录 —— 否则测试会动到真实的 worktree 根
     monkeypatch.setattr(settings, "worktree_root", str(tmp_path / "worktrees"))
     return root
+
+
+@pytest.fixture(autouse=True)
+def _清环境缓存():
+    """环境清单的缓存是**模块级**的 —— 每个用例前后都清掉。
+
+    白名单每个用例都不一样（临时目录），缓存不清的话就会串。
+    """
+    invalidate_environment_cache()
+    yield
+    invalidate_environment_cache()
+
+
+# ---------- 一次问清楚 ----------
+
+
+@needs_git
+def test_一次问出来仓库信息(roots):
+    """``repo_info`` 一次调用拿齐三件事 —— 扫目录时每个目录只问一次。"""
+    repo = roots / "demo"
+    info = GitService(repo).repo_info()
+    assert info is not None
+    assert info.is_inside_work_tree is True
+    assert info.branch == "main"
+    assert Path(info.common_dir).name == ".git"
+    # common dir 的父目录才是仓库根
+    assert Path(info.common_dir).parent == repo.resolve()
+
+
+@needs_git
+def test_不是仓库就没有信息(tmp_path):
+    assert GitService(tmp_path).repo_info() is None
+
+
+@needs_git
+def test_只问脏不脏不用起三个进程(roots):
+    repo = roots / "demo"
+    assert GitService(repo).is_dirty() is False
+    (repo / "README.md").write_text("# 改了\n", encoding="utf-8")
+    assert GitService(repo).is_dirty() is True
+
+
+# ---------- 清单的缓存 ----------
+
+
+@needs_git
+def test_清单有缓存_改动之后立刻失效(roots, monkeypatch):
+    """扫一遍要好几秒 —— 短时间内重复问不该再扫。
+
+    但改了环境（新建/删掉 worktree）必须立刻看到新的。
+    """
+    invalidate_environment_cache()
+    service = EnvironmentService()
+    calls: list[int] = []
+    original = service._scan_environments
+
+    def counted() -> list:
+        calls.append(1)
+        return original()
+
+    monkeypatch.setattr(service, "_scan_environments", counted)
+    service.list_environments()
+    service.list_environments()
+    assert len(calls) == 1, f"扫了 {len(calls)} 次，应该只扫一次"
+
+    invalidate_environment_cache()
+    service.list_environments()
+    assert len(calls) == 2, "缓存作废之后应该重扫"
+    invalidate_environment_cache()
 
 
 # ---------- 白名单 ----------

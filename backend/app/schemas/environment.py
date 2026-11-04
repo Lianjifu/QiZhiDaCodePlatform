@@ -23,6 +23,17 @@ class EnvironmentListOut(BaseModel):
     enabled: bool = Field(default=False, description="平台有没有配置可用的根目录")
 
 
+class EnvironmentRootsOut(BaseModel):
+    """白名单根目录（**不扫目录**）。
+
+    扫一遍要好几秒 —— 而"平台配没配根目录"只是读一下配置。页面开场
+    只需要知道这个，别为了一个开关把整个目录树问一遍。
+    """
+
+    roots: list[str] = Field(default_factory=list, description="配置里允许的根目录")
+    enabled: bool = Field(default=False, description="平台有没有配置可用的根目录")
+
+
 class BindEnvironmentIn(BaseModel):
     """把会话绑到某个环境。"""
 

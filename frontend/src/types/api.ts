@@ -274,6 +274,14 @@ export interface EnvironmentList {
   enabled: boolean
 }
 
+/** 白名单根目录（后端 `EnvironmentRootsOut`）—— **不扫目录**，很快。 */
+export interface EnvironmentRoots {
+  /** 配置里允许的根目录 */
+  roots: string[]
+  /** 平台有没有配置可用的根目录 */
+  enabled: boolean
+}
+
 /** 目录浏览时的一个子目录（后端 `BrowseEntryOut`）。 */
 export interface BrowseEntry {
   name: string

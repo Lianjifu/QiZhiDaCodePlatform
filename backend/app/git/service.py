@@ -66,6 +66,21 @@ class WorktreeInfo:
     locked: bool = False
 
 
+@dataclass
+class RepoInfo:
+    """一次问出来的仓库信息。
+
+    **为什么要合并成一个调用**：分开问（是不是仓库 / 当前分支 / 主仓库目录）
+    是三次进程启动，每次几十毫秒。扫一遍白名单要问十几个目录，攒起来就是
+    好几秒 —— 而页面在等。
+    """
+
+    branch: str = ""
+    """主仓库的 ``.git`` 目录（绝对路径）。"""
+    common_dir: str = ""
+    is_inside_work_tree: bool = False
+
+
 class GitService:
     """某个目录上的 git 操作。
 
@@ -84,6 +99,51 @@ class GitService:
         """这个目录是不是在一个 git 仓库里。"""
         code, _ = self._exec("rev-parse", "--is-inside-work-tree")
         return code == 0
+
+    def repo_info(self) -> RepoInfo | None:
+        """**一次**问出来：是不是仓库、当前分支、主仓库目录。
+
+        不是仓库就返回 ``None``。
+
+        命令的输出按选项顺序逐行来：
+
+        ```text
+        true
+        /path/to/repo/.git
+        main
+        ```
+
+        分开问是三次进程启动；扫一遍白名单十几个目录，攒起来好几秒。
+        """
+        code, output = self._exec(
+            "rev-parse",
+            "--is-inside-work-tree",
+            "--path-format=absolute",
+            "--git-common-dir",
+            "--abbrev-ref",
+            "HEAD",
+        )
+        if code != 0:
+            return None
+        lines = output.splitlines()
+        if len(lines) < 3:
+            return None
+        inside = lines[0].strip() == "true"
+        branch = lines[2].strip()
+        return RepoInfo(
+            branch="" if branch == "HEAD" else branch,
+            common_dir=lines[1].strip(),
+            is_inside_work_tree=inside,
+        )
+
+    def is_dirty(self) -> bool:
+        """工作目录有没有未提交的改动。
+
+        **只问这一件事** —— 完整的状态（ahead / behind / 文件清单）要再起
+        两三个进程，扫目录时用不上。
+        """
+        _, porcelain = self._exec("status", "--porcelain")
+        return any(line.strip() for line in porcelain.splitlines())
 
     def repo_root(self) -> Path | None:
         """仓库根目录；不在仓库里就是 ``None``。"""

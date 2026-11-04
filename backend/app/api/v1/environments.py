@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Annotated
 
@@ -29,6 +30,7 @@ from app.schemas.environment import (
     EnvironmentBindingOut,
     EnvironmentListOut,
     EnvironmentOut,
+    EnvironmentRootsOut,
     WorktreeListOut,
     WorktreeOut,
 )
@@ -47,6 +49,10 @@ async def list_environments() -> ResponseModel[EnvironmentListOut]:
     """列出白名单下的目录、仓库与已存在的 worktree。
 
     白名单没配置时 ``enabled=False``、列表为空 —— 平台不猜用户想开放什么。
+
+    **扫描丢到线程里跑** —— 它要问一圈 git，阻塞式跑会把**整个服务**卡住：
+    同一个页面上的其他接口（模型列表、权限模式…）全排在它后面，用户看到的是
+    "整个页面加载不出来"。
     """
     roots = repo_roots()
     if not roots:
@@ -54,12 +60,32 @@ async def list_environments() -> ResponseModel[EnvironmentListOut]:
             data=EnvironmentListOut(environments=[], roots=[], enabled=False)
         )
     service = _service()
-    environments = service.list_environments()
+    environments = await asyncio.to_thread(service.list_environments)
     return ResponseModel[EnvironmentListOut](
         data=EnvironmentListOut(
             environments=[EnvironmentOut(**env.to_dict()) for env in environments],
             roots=[str(root) for root in roots],
             enabled=True,
+        )
+    )
+
+
+@router.get(
+    "/roots",
+    response_model=ResponseModel[EnvironmentRootsOut],
+    summary="白名单根目录（不扫目录）",
+)
+async def environment_roots() -> ResponseModel[EnvironmentRootsOut]:
+    """平台配了哪些根目录。
+
+    **不扫目录** —— 扫一遍要好几秒（每个目录都要问一次 git），而"配没配"
+    只是读一下配置。页面开场问这个就够了。
+    """
+    roots = repo_roots()
+    return ResponseModel[EnvironmentRootsOut](
+        data=EnvironmentRootsOut(
+            roots=[str(root) for root in roots],
+            enabled=bool(roots),
         )
     )
 
@@ -115,7 +141,14 @@ async def list_worktrees(
     """列出 worktree。
 
     给了 ``repo_path`` 就只列那个仓库的；不给就把白名单下的仓库都扫一遍。
+
+    **扫描丢到线程里** —— 同 ``list_environments``，别把整个服务卡住。
     """
+    return await asyncio.to_thread(_list_worktrees_sync, repo_path)
+
+
+def _list_worktrees_sync(repo_path: str | None) -> ResponseModel[WorktreeListOut]:
+    """真正去列 worktree（阻塞的部分都在这儿）。"""
     service = _service()
     targets: list[str] = []
     if repo_path:

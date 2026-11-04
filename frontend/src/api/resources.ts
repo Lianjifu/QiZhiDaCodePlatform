@@ -17,6 +17,7 @@ import type {
   Environment,
   EnvironmentBinding,
   EnvironmentList,
+  EnvironmentRoots,
   FileList,
   LLMProvider,
   MCPServer,
@@ -269,9 +270,19 @@ export function browseEnvironments(path?: string): Promise<BrowseResult> {
   return api.get<BrowseResult>(`/environments/browse${query}`)
 }
 
-/** 列出可作为工作目录的环境。 */
+/** 列出可作为工作目录的环境（要扫目录，慢）。 */
 export function listEnvironments(): Promise<EnvironmentList> {
   return api.get<EnvironmentList>('/environments')
+}
+
+/**
+ * 白名单根目录 —— **不扫目录**，几毫秒就回。
+ *
+ * 页面开场只需要知道"平台配没配根目录"，别为了一个开关把目录树问一遍
+ * （扫一遍要好几秒）。
+ */
+export function environmentRoots(): Promise<EnvironmentRoots> {
+  return api.get<EnvironmentRoots>('/environments/roots')
 }
 
 /** 从一个仓库派生新的 worktree（独立检出 + 新分支）。 */

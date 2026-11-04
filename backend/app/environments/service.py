@@ -21,6 +21,9 @@ from __future__ import annotations
 
 import logging
 import shutil
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -46,6 +49,44 @@ from app.environments.store import (
 from app.git.service import GitService
 
 logger = logging.getLogger(__name__)
+
+# 环境清单的缓存时长（秒）。
+#
+# **扫一遍要好几秒** —— 白名单下每个候选目录都要问 git（是不是仓库、当前
+# 分支、有没有未提交的改动）。而仓库状态不是秒秒变的东西。
+#
+# 十几秒足够 —— 用户新建/删掉 worktree 之后会立刻失效（见
+# ``invalidate_environment_cache``），不会看到过期的东西。
+LIST_CACHE_TTL_SECONDS = 15.0
+
+# (缓存时刻, 环境列表)。模块级 —— 服务对象是每次请求新建的，缓存得活得久一点。
+_list_cache: tuple[float, list[Environment]] | None = None
+
+# 扫目录时只允许一个线程在扫 —— 免得并发请求各扫一遍（白扫）。
+_scan_lock = threading.Lock()
+
+
+def invalidate_environment_cache() -> None:
+    """环境清单变了（新建/删掉 worktree）—— 缓存作废。"""
+    global _list_cache
+    _list_cache = None
+
+
+def _cached_environments(scan: Callable[[], list[Environment]]) -> list[Environment]:
+    """带短缓存地扫环境清单。"""
+    global _list_cache
+    now = time.monotonic()
+    cached = _list_cache
+    if cached is not None and now - cached[0] < LIST_CACHE_TTL_SECONDS:
+        return cached[1]
+    with _scan_lock:
+        # 等锁的时候可能已经有别人扫完了
+        cached = _list_cache
+        if cached is not None and time.monotonic() - cached[0] < LIST_CACHE_TTL_SECONDS:
+            return cached[1]
+        items = scan()
+        _list_cache = (time.monotonic(), items)
+        return items
 
 
 @dataclass
@@ -83,9 +124,16 @@ class EnvironmentService:
         扫两层：根目录本身 + 它的一级子目录（更深的不扫 —— 仓库可能很大）。
         平台自己建的 worktree 单独列（它们在隐藏目录里，正常扫描看不到）。
 
+        **结果有短缓存** —— 扫一遍要好几秒（每个目录都要问 git），而仓库
+        状态不是秒秒变的东西。改了环境（新建/删掉 worktree）会立刻失效。
+
         Returns:
             环境列表，按路径排序。
         """
+        return _cached_environments(self._scan_environments)
+
+    def _scan_environments(self) -> list[Environment]:
+        """真正去扫一遍白名单。"""
         found: dict[str, Environment] = {}
 
         for root in repo_roots():
@@ -170,12 +218,15 @@ class EnvironmentService:
             kind=KIND_WORKTREE if self._is_platform_worktree(resolved) else KIND_FOLDER,
         )
         git = GitService(resolved)
-        if not git.is_repo():
+        # **一次 git 调用拿齐**（是不是仓库、当前分支、主仓库目录）——
+        # 分开问是三次进程启动，扫十几个目录就是好几秒。
+        info = git.repo_info()
+        if info is None or not info.is_inside_work_tree:
             return env
         env.is_repo = True
-        env.branch = git.current_branch()
-        env.repo = self._main_repo(resolved)
-        env.dirty = git.status().dirty
+        env.branch = info.branch
+        env.repo = self._main_repo(info.common_dir)
+        env.dirty = git.is_dirty()
         return env
 
     def _is_platform_worktree(self, path: Path) -> bool:
@@ -187,13 +238,14 @@ class EnvironmentService:
             return False
         return True
 
-    def _main_repo(self, path: Path) -> str | None:
-        """worktree 所属的主仓库目录。"""
-        common = GitService(path).common_dir()
-        if common is None:
+    def _main_repo(self, common_dir: str) -> str | None:
+        """worktree 所属的主仓库目录。
+
+        ``common_dir`` 是主仓库的 ``.git`` 目录，父目录才是仓库根。
+        """
+        if not common_dir:
             return None
-        # common dir 是主仓库的 .git 目录，父目录才是仓库根
-        return str(Path(common).parent)
+        return str(Path(common_dir).parent)
 
     # ---------- 绑定 ----------
 
@@ -334,6 +386,8 @@ class EnvironmentService:
             create_branch=name not in GitService(root).branch_list(),
         )
 
+        # 环境清单变了 —— 缓存作废，下一次列清单会重新扫
+        invalidate_environment_cache()
         env = self.describe(target)
         if env is None:  # pragma: no cover - 刚建出来必然合法
             raise NotFoundError(f"worktree 创建后找不到：{target}")
@@ -362,6 +416,12 @@ class EnvironmentService:
         # git 有时会留下空目录（worktree remove 失败但目录已空），清掉
         if resolved.exists():
             shutil.rmtree(resolved, ignore_errors=True)
+        # 环境清单变了 —— 缓存作废
+        invalidate_environment_cache()
 
 
-__all__ = ["Environment", "EnvironmentService"]
+__all__ = [
+    "Environment",
+    "EnvironmentService",
+    "invalidate_environment_cache",
+]

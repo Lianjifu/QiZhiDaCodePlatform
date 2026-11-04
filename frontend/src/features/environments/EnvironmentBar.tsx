@@ -22,6 +22,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import {
   bindEnvironment,
   createWorktree,
+  environmentRoots,
   getEnvironmentBinding,
   listEnvironments,
   unbindEnvironment,
@@ -44,29 +45,43 @@ export default function EnvironmentBar({
 }) {
   const [list, setList] = useState<EnvironmentList | null>(null)
   const [binding, setBinding] = useState<Environment | null>(null)
+  /** 平台配没配根目录 —— 只读配置，不扫目录（几毫秒）。 */
+  const [enabled, setEnabled] = useState(true)
   const [picking, setPicking] = useState(false)
+  /** 清单正在拉（扫目录要一秒多，先给个"正在读"） */
+  const [loadingList, setLoadingList] = useState(false)
   const [creating, setCreating] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
 
-  const load = useCallback(async () => listEnvironments(), [])
+  /**
+   * **清单是懒加载的** —— 打开选择器时才去拉。
+   *
+   * 列清单要扫一遍白名单（每个目录都要问一次 git），慢。开场只需要知道
+   * "平台配没配根目录"，那个读一下配置就行，几毫秒。
+   */
+  const loadList = useCallback(async () => {
+    const data = await listEnvironments()
+    setList(data)
+    setEnabled(data.enabled)
+    return data
+  }, [])
 
   useEffect(() => {
     let cancelled = false
-    void load()
+    void environmentRoots()
       .then((data) => {
         if (cancelled) return
-        setList(data)
-        setError('')
+        setEnabled(data.enabled)
       })
-      .catch((cause) => {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
+      .catch(() => {
+        // 读不到就当配了 —— 真没配的话，选择器里会看到
       })
     return () => {
       cancelled = true
     }
-  }, [load])
+  }, [])
 
   // 绑定状态从绑定接口拿 —— 与清单分开，清单里没有"当前是哪个"这层意思
   const loadBinding = useCallback(async () => getEnvironmentBinding(threadId), [threadId])
@@ -141,14 +156,28 @@ export default function EnvironmentBar({
     }
   }
 
-  const enabled = list?.enabled ?? false
   const environments = useMemo(() => bindableEnvironments(list?.environments ?? []), [list])
+
+  /** 打开选择器 —— 清单现在才去拉。 */
+  const openPicker = async () => {
+    setError('')
+    setPicking(true)
+    setLoadingList(true)
+    try {
+      await loadList()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+      setPicking(false)
+    } finally {
+      setLoadingList(false)
+    }
+  }
 
   return (
     <div className="flex items-center gap-2 px-1">
       <button
         type="button"
-        onClick={() => setPicking(true)}
+        onClick={() => void openPicker()}
         disabled={!enabled}
         className="flex min-w-0 items-center gap-1.5 rounded-lg border border-line bg-base px-2 py-1 text-xs text-ink-muted transition-colors hover:bg-hover hover:text-ink disabled:opacity-60"
         title={enabled ? '选择工作目录' : '平台还没配置可用的仓库目录'}
@@ -168,7 +197,15 @@ export default function EnvironmentBar({
         <span className="truncate text-[11px] text-success">{note}</span>
       ) : null}
 
-      {picking ? (
+      {picking && loadingList ? (
+        <Modal title="选择工作目录" onClose={() => setPicking(false)}>
+          <div className="py-12 text-center text-sm text-ink-faint">
+            正在读工作目录…（要挨个问一遍是不是仓库）
+          </div>
+        </Modal>
+      ) : null}
+
+      {picking && !loadingList ? (
         <EnvironmentPicker
           environments={environments}
           busy={busy}
