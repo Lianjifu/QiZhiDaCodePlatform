@@ -25,6 +25,10 @@ run()  ──→ completed            模型给了最终回复，这一轮结束
 Command(resume={"decisions": [{"type": "approve"}]})   # 或 "reject"
 ```
 
+**决定数 = 挂起的调用数**：模型一轮里并行发好几个工具调用时，它们会一起挂起，
+HITL 会校验决定数对不对得上 —— 少给一个就报 "Number of human decisions (1)
+does not match number of hanging tool calls (2)"，整轮直接失败。
+
 **恢复时不用再传用户输入**：图从挂起处继续，模型能接着上一次的上下文往下想。
 传空字符串只是为了满足 ``ainvoke`` 的签名。
 
@@ -243,7 +247,7 @@ class AgentRunner:
         )
         state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
         interrupts = getattr(state, "interrupts", ()) or ()
-        return [_pending_entry(item, specs) for item in interrupts]
+        return [entry for item in interrupts for entry in _pending_entries(item, specs)]
 
     async def resume(
         self,
@@ -287,8 +291,13 @@ class AgentRunner:
                 skill_ids=skill_ids,
                 memory_query=query,
             )
+        # 挂着的调用有几个就给几个决定 —— HITL 校验的是"决定数 = 挂起数"，
+        # 少给一个就报 "Number of human decisions (1) does not match number of
+        # hanging tool calls (2)"，整轮直接失败。
+        interrupts = await self._interrupts_of(agent, thread_id)
+        decisions = [{"type": decision} for _ in range(_required_decisions(interrupts))]
         result = await agent.ainvoke(
-            Command(resume={"decisions": [{"type": decision}]}),
+            Command(resume={"decisions": decisions}),
             config={"configurable": {"thread_id": thread_id}},
         )
         return await self._result_from(result, skills, thread_id, context, specs)
@@ -324,7 +333,7 @@ class AgentRunner:
                 tool_calls=_collect_tool_calls(turn_messages),
                 skills=[skill.key for skill in skills],
                 status=STATUS_PENDING_APPROVAL,
-                pending=[_pending_entry(item, specs) for item in interrupts],
+                pending=[entry for item in interrupts for entry in _pending_entries(item, specs)],
             )
 
         tool_calls = _collect_tool_calls(turn_messages)
@@ -516,6 +525,15 @@ class AgentRunner:
         )
         return len(kept)
 
+    async def _interrupts_of(self, agent: Any, thread_id: str) -> list[Any]:
+        """当前这一轮挂在哪儿等人批。"""
+        try:
+            state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
+        except Exception:  # pragma: no cover - 读状态失败不该让恢复崩掉
+            logger.debug("读会话状态失败，无法确定挂起的调用数")
+            return []
+        return list(getattr(state, "interrupts", ()) or ())
+
     async def _pending_from_state(
         self,
         agent: Any,
@@ -529,7 +547,7 @@ class AgentRunner:
             logger.debug("读会话状态失败，无法判断是否挂起审批")
             return []
         interrupts = getattr(state, "interrupts", ()) or ()
-        return [_pending_entry(item, specs) for item in interrupts]
+        return [entry for item in interrupts for entry in _pending_entries(item, specs)]
 
     async def _memory_block(
         self,
@@ -915,41 +933,68 @@ def _interrupts(result: dict[str, Any]) -> list[Any]:
     return [raw]
 
 
-def _pending_entry(
+def _pending_entries(
     interrupt_obj: Any,
     specs: list[CapabilitySpec] | None = None,
-) -> dict[str, Any]:
-    """把一个中断整理成待审批条目。
+) -> list[dict[str, Any]]:
+    """把一个中断整理成待审批条目（**一个挂起的调用一条**）。
 
     两种中断（deepAgents HITL 的声明级、我们自己的参数级）载荷形状不同，
     这里归一成同一种，给前端一个统一的列表。
+
+    **为什么一条挂起的调用要一条**：模型一轮里可以并行发好几个工具调用，
+    它们会一起挂起等人批。HITL 的恢复载荷要求"决定数 = 挂起数"，只给一个
+    决定就会报 "Number of human decisions (1) does not match number of
+    hanging tool calls (2)"。所以这里按条列出来，恢复时也按条给决定。
     """
     payload = getattr(interrupt_obj, "value", interrupt_obj)
     if not isinstance(payload, dict):
-        return {"kind": "unknown", "message": str(payload)}
-    # deepAgents HITL：{"action_requests": [{...}]}
+        return [{"kind": "unknown", "message": str(payload)}]
+    # deepAgents HITL：{"action_requests": [{...}, {...}]}
     requests = payload.get("action_requests")
     if isinstance(requests, list) and requests:
-        first = requests[0]
-        name = first.get("name", "") if isinstance(first, dict) else ""
-        args = first.get("args", {}) if isinstance(first, dict) else {}
-        return {
-            "kind": "declared",
-            "tool": name,
-            "arguments": args,
-            # 带上风险等级：前端要按档位（低/中/高）告诉人"这次为什么危险"
-            "risk": _risk_for(name, specs),
-            "message": f"工具 {name} 需要人工批准后才能执行",
-        }
+        entries: list[dict[str, Any]] = []
+        for item in requests:
+            name = item.get("name", "") if isinstance(item, dict) else ""
+            args = item.get("args", {}) if isinstance(item, dict) else {}
+            entries.append(
+                {
+                    "kind": "declared",
+                    "tool": name,
+                    "arguments": args,
+                    # 带上风险等级：前端要按档位（低/中/高）告诉人"这次为什么危险"
+                    "risk": _risk_for(name, specs),
+                    "message": f"工具 {name} 需要人工批准后才能执行",
+                }
+            )
+        return entries
     # 我们自己的参数级中断
-    return {
-        "kind": str(payload.get("kind", "param_risk")),
-        "tool": str(payload.get("tool", "")),
-        "arguments": payload.get("arguments", {}),
-        "risk": payload.get("risk", ""),
-        "reasons": payload.get("reasons", []),
-        "message": str(payload.get("message", "")),
-    }
+    return [
+        {
+            "kind": str(payload.get("kind", "param_risk")),
+            "tool": str(payload.get("tool", "")),
+            "arguments": payload.get("arguments", {}),
+            "risk": payload.get("risk", ""),
+            "reasons": payload.get("reasons", []),
+            "message": str(payload.get("message", "")),
+        }
+    ]
+
+
+def _required_decisions(interrupts: list[Any]) -> int:
+    """恢复这一轮要给几个决定。
+
+    HITL 要求"决定数 = 挂起的调用数"，给少了报 mismatch，给多了也一样。
+    多个中断时取**最大的那个**：每个 HITL 中断各自按自己的挂起数校验，
+    取最大值刚好让它们都过。
+    """
+    count = 1
+    for interrupt_obj in interrupts:
+        payload = getattr(interrupt_obj, "value", interrupt_obj)
+        requests = payload.get("action_requests") if isinstance(payload, dict) else None
+        if isinstance(requests, list) and requests:
+            count = max(count, len(requests))
+    return count
 
 
 def _collect_tool_calls(messages: list[Any]) -> list[dict[str, Any]]:

@@ -71,7 +71,7 @@ class ContextRequest:
     """一次上下文组装的输入。
 
     - ``base_prompt`` —— 基准提示词（必装）；
-    - ``workspace`` —— 工作区路径，给模型解释虚拟路径 ↔ 宿主路径；
+    - ``workspace`` —— 工作区路径，给模型解释路径该怎么用；
     - ``memory_catalog`` —— 记忆目录的正文（记忆模块给的）；
     - ``policy_note`` —— 策略说明（能力层给的）；
     - ``context_window`` —— 模型窗口（token），0 = 未知。
@@ -213,15 +213,19 @@ class ContextService:
     def _runtime_block(self, workspace: Path | None) -> ContextBlock | None:
         """运行时说明块。
 
-        **内容只有一条**：文件工具的路径是虚拟路径（以 "/" 为工作区根），
-        宿主路径只在拼命令时用。混进提示词会让模型拿宿主路径去调文件工具，
-        换来一串 ``path_not_found`` —— 白烧好几轮。
+        **内容只有一条**：路径怎么用。
+
+        之前这条写的是"宿主路径只在拼命令时用" —— **这是错的**。沙箱（docker
+        模式）里只挂载了工作区，宿主机上的绝对路径在容器里根本不存在，模型
+        照着拼一条 ``cd /Users/...`` 只会换来 "can't cd to"，白烧一轮。
+        现在只说"用工作区里的相对路径"，两种模式都对。
         """
         if workspace is None:
             return None
         note = (
-            f"文件工具的路径是虚拟路径，以 `/` 为工作区根目录；"
-            f"宿主路径 {workspace} 只在拼命令时用。"
+            "文件工具的路径是虚拟路径，以 `/` 为工作区根目录；"
+            "命令的工作目录也是工作区根，用工作区里的相对路径。"
+            "不要用宿主机的绝对路径 —— 沙箱里没有那条路径，cd 一定失败。"
         )
         return ContextBlock(
             key=KEY_RUNTIME,

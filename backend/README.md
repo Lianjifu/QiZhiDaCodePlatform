@@ -499,6 +499,9 @@ deepAgents 迁移的方案与决策见 [`docs/plans/agent-migration-deepagents.m
 
 - **路径一律相对工作区根目录**。"当前目录"这个概念整体消失 —— 会话级 `cd`
   没有了（`mv` / `cp` / `mkdir -p` 靠 `execute` 跑）。
+- **命令里也用工作区内的相对路径**：沙箱（docker 模式）只挂载了工作区，宿主机
+  的绝对路径在容器里**根本不存在** —— `cd /Users/...` 只会得到 "can't cd to"。
+  运行时说明块只告诉模型"用相对路径"，不把宿主路径塞进提示词。
 - **文件工具的治理策略用一张映射表补上**（`registration/tool_policy.py`）——
   它们由 deepAgents 注册，我们手里没有声明，但风险、幂等、要不要人批都得有，
   否则治理就漏了一块。
@@ -524,6 +527,16 @@ deepAgents 迁移的方案与决策见 [`docs/plans/agent-migration-deepagents.m
 
 审批走 **LangGraph 的中断机制**，批准后用同一个 `thread_id` 恢复图（`Command(resume=…)`）。
 **结果直接回到 agent 的上下文** —— 不需要"下一轮再补给它"那套回流机制。
+
+**决定数 = 挂起的调用数**：模型一轮里可以并行发好几个工具调用，它们会**一起**
+挂起等人批。HITL 会校验这个数 —— 少给一个决定就报 "Number of human decisions
+(1) does not match number of hanging tool calls (2)"，整轮直接失败。所以待批
+清单**按条**列出（界面上一条一个调用，批准按钮一次管全部），恢复时也**按条**给
+决定。
+
+> ⚠️ 恢复失败过一次（比如上面那个数对不上）的会话**救不回来** —— 那个错误的
+> 恢复值已经写进 checkpoint，再批准多少次都还是它。唯一的出路是删掉这一轮重来
+> （界面上的「重新生成」）。
 
 审批状态存在 **checkpoint 里**，不在调用记录表里：查待审批列表用
 `GET /api/v1/agent/{thread_id}/pending`。

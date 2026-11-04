@@ -50,8 +50,15 @@ export function toolTarget(args: Record<string, unknown>): string {
     const value = args[key]
     return typeof value === 'string' ? value : ''
   }
+  const filePath = pick('file_path')
+  if (filePath) {
+    // 读文件常常是**分段读**的：同一份 README 翻好几页。只显示路径的话，
+    // 卡片上就是一排一模一样的「读取文件 /backend/README.md」—— 看着像在
+    // 反复读同一个文件。把行号带出来，才看得出是在往下读。
+    const range = lineRange(args)
+    return range ? `${filePath}（${range} 行）` : filePath
+  }
   const detail =
-    pick('file_path') ||
     pick('path') ||
     pick('pattern') ||
     pick('query') ||
@@ -65,6 +72,35 @@ export function toolTarget(args: Record<string, unknown>): string {
   return detail.trim()
 }
 
+/** 读文件时的行范围（1 起算，含首尾）。没有 offset/limit 就不知道，不显示。 */
+function lineRange(args: Record<string, unknown>): string {
+  const offset = args.offset
+  const limit = args.limit
+  if (typeof offset !== 'number' && typeof limit !== 'number') return ''
+  const start = (typeof offset === 'number' ? offset : 0) + 1
+  const size = typeof limit === 'number' ? limit : 100
+  return `${start}-${start + size - 1}`
+}
+
+/**
+ * 命令跑失败的常见特征。
+ *
+ * deepAgents 的 execute **不抛异常**，也不把退出码带出来 —— 失败时只是把
+ * stderr 写进结果里（`sh: 1: cd: can't cd to /x`）。不认这些特征的话，一条
+ * 失败的命令在卡片上会显示成绿勾。
+ *
+ * 只对**命令类**工具用：读文件的内容里出现 "not found" 是正常的（那可能是
+ * 文档里引用的错误信息）。
+ */
+const SHELL_ERROR_PATTERNS: RegExp[] = [
+  /can't cd to /,
+  /command not found/,
+  /No such file or directory/,
+  /Permission denied/,
+  /Traceback \(most recent call last\)/,
+  /\bsegmentation fault\b/i,
+]
+
 /**
  * 工具结果是不是失败的。
  *
@@ -72,8 +108,16 @@ export function toolTarget(args: Record<string, unknown>): string {
  * （`Error: File '...' not found`）。历史消息里没有 ok 字段，只能认这个前缀 ——
  * 不认的话，刷新之后的失败卡片会显示成成功的绿勾。
  */
-export function isFailedResult(content: string | null | undefined): boolean {
-  return (content ?? '').trimStart().startsWith('Error:')
+export function isFailedResult(
+  content: string | null | undefined,
+  toolName?: string,
+): boolean {
+  const text = (content ?? '').trimStart()
+  if (text.startsWith('Error:')) return true
+  if (toolName === 'execute' || toolName === 'run_python') {
+    return SHELL_ERROR_PATTERNS.some((pattern) => pattern.test(text))
+  }
+  return false
 }
 
 /** 一行参数。 */

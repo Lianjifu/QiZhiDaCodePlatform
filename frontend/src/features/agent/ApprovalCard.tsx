@@ -21,13 +21,20 @@ export default function ApprovalCard({
 }) {
   if (pending.length === 0) return null
 
+  // 模型一轮里可以并行发好几个工具调用，它们会**一起**挂起等人批。
+  // 批准按钮一次管全部 —— 所以数量要说清楚，别让人以为只批了一个。
+  const many = pending.length > 1
+
   return (
     <div className="my-3 overflow-hidden rounded-xl border border-warning/60 bg-warning-soft">
       <div className="flex items-center gap-2 border-b border-warning/30 px-4 py-2.5">
         <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-warning/15">
           <AlertIcon className="h-3.5 w-3.5 text-warning" />
         </span>
-        <span className="text-sm font-medium text-ink">需要你批准</span>
+        <span className="text-sm font-medium text-ink">
+          需要你批准
+          {many ? `（${pending.length} 个调用）` : ''}
+        </span>
       </div>
 
       <div className="px-4 py-3">
@@ -73,7 +80,7 @@ export default function ApprovalCard({
           onClick={onApprove}
           className="rounded-lg bg-accent px-3.5 py-1.5 text-xs font-medium text-accent-text transition-colors hover:bg-accent-hover disabled:opacity-50"
         >
-          批准
+          {many ? '全部批准' : '批准'}
         </button>
         <button
           type="button"
@@ -81,7 +88,7 @@ export default function ApprovalCard({
           onClick={onReject}
           className="rounded-lg border border-line bg-base px-3.5 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:bg-hover disabled:opacity-50"
         >
-          拒绝
+          {many ? '全部拒绝' : '拒绝'}
         </button>
       </div>
     </div>

@@ -62,6 +62,51 @@ class RecordingModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self.reply))])
 
 
+class ParallelToolModel(BaseChatModel):
+    """第一次返回**两个并行**的 tool_call，之后回文本。
+
+    模拟"模型一轮里并行发好几个工具调用" —— 它们会一起挂起等人批。
+    """
+
+    reply: str = "已完成。"
+    seen: list[list[Any]] = []
+
+    @property
+    def _llm_type(self) -> str:
+        return "parallel"
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> ParallelToolModel:
+        return self
+
+    def _generate(
+        self,
+        messages: list[Any],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.seen.append(list(messages))
+        if len(self.seen) == 1:
+            calls = [
+                {
+                    "name": "execute",
+                    "args": {"command": "echo first"},
+                    "id": "call_1",
+                    "type": "tool_call",
+                },
+                {
+                    "name": "execute",
+                    "args": {"command": "echo second"},
+                    "id": "call_2",
+                    "type": "tool_call",
+                },
+            ]
+            return ChatResult(
+                generations=[ChatGeneration(message=AIMessage(content="", tool_calls=calls))]
+            )
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self.reply))])
+
+
 def _override(app, model: RecordingModel, session) -> None:
     app.dependency_overrides[get_agent_service] = lambda: AgentService(
         session=session, runner=AgentRunner(model=model)
@@ -129,6 +174,34 @@ async def test_approval_round_trip_pushes_result_back(app, client, session, monk
     assert approved["tool_calls"], "恢复后应该有工具调用"
     assert approved["tool_calls"][0]["name"] == "delete"
     assert not (workspace / "out.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_parallel_calls_are_approved_together(app, client, session) -> None:
+    """并行发好几个工具调用时，它们会**一起**挂起 —— 批准要一次全批。
+
+    HITL 校验的是"决定数 = 挂起的调用数"：只给一个决定会报
+    "Number of human decisions (1) does not match number of hanging tool
+    calls (2)"，整轮直接失败。所以待批清单要**按条**列出来，恢复时也要
+    **按条**给决定。
+    """
+    thread_id = "t-parallel-approve"
+    model = ParallelToolModel(reply="两条都跑完了")
+    _override(app, model, session)
+
+    resp = await client.post(API + "/chat", json={"message": "跑两条命令", "thread_id": thread_id})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["status"] == "pending_approval"
+    # 两个调用都挂起了 —— 清单里要有两条
+    assert len(data["pending"]) == 2, data["pending"]
+    assert {item["tool"] for item in data["pending"]} == {"execute"}
+
+    approve = await client.post(f"{API}/{thread_id}/approve")
+    assert approve.status_code == 200, approve.text
+    approved = approve.json()["data"]
+    assert approved["status"] == "completed"
+    assert "两条都跑完了" in approved["content"]
 
 
 @pytest.mark.asyncio

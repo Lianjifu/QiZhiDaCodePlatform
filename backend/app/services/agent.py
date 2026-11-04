@@ -91,6 +91,14 @@ def _readable_error(exc: Exception) -> str:
         return "模型凭据缺失：请在 .env 中配置 LLM_API_KEY（或对应厂商的环境变量）"
     if "connection" in lowered and ("refused" in lowered or "error" in lowered):
         return f"无法连接模型服务：{text or exc.__class__.__name__}"
+    if "does not match number of hanging tool calls" in lowered:
+        # HITL 的"决定数 ≠ 挂起数"。修好了不会再犯，但**已经挂掉的会话救不回来**
+        # —— 那个错误的恢复值已经写进 checkpoint，再批准多少次都还是它。
+        # 唯一出路是删掉这一轮重来（界面上是「重新生成」）。
+        return (
+            "这一轮的批准没有生效（挂起的调用数与批准数对不上）。"
+            "点这条消息上的「重新生成」重跑这一轮即可。"
+        )
     return f"智能体执行失败：{text or exc.__class__.__name__}"
 
 

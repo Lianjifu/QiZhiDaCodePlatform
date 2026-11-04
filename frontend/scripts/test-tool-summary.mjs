@@ -42,6 +42,19 @@ check('挑出最能说明问题的那项参数', () => {
   assert.equal(toolTarget({}), '')
 })
 
+check('读文件带出行范围', () => {
+  // 同一份文件分段读时，光看路径分不出是在往下读
+  assert.equal(toolTarget({ file_path: '/README.md' }), '/README.md')
+  assert.equal(
+    toolTarget({ file_path: '/README.md', offset: 100, limit: 220 }),
+    '/README.md（101-320 行）',
+  )
+  assert.equal(
+    toolTarget({ file_path: '/README.md', limit: 150 }),
+    '/README.md（1-150 行）',
+  )
+})
+
 check('参数逐行列出来', () => {
   const rows = toolArgRows({ path: '/backend', limit: 20, ok: true })
   assert.equal(rows.length, 3)
@@ -65,6 +78,16 @@ check('认得出失败的工具结果', () => {
   assert.equal(isFailedResult('文件读到了内容'), false)
   assert.equal(isFailedResult(''), false)
   assert.equal(isFailedResult(null), false)
+})
+
+check('命令失败认得出来', () => {
+  // execute 不抛异常也不带退出码 —— 失败只在 stderr 里
+  assert.equal(isFailedResult("/workspace/a.sh: 1: cd: can't cd to /x", 'execute'), true)
+  assert.equal(isFailedResult('sh: git: command not found', 'execute'), true)
+  assert.equal(isFailedResult('Permission denied', 'execute'), true)
+  assert.equal(isFailedResult('一切正常\n第二行', 'execute'), false)
+  // 读文件的内容里出现 "not found" 是正常的 —— 不能算失败
+  assert.equal(isFailedResult('No such file or directory', 'read_file'), false)
 })
 
 console.log(`\n${passed} 条通过`)

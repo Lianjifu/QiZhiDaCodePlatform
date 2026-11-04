@@ -94,7 +94,9 @@ function fromHistory(
         const call = target.message.toolCalls[target.index]
         target.message.toolCalls[target.index] = {
           ...call,
-          state: isFailedResult(item.content) ? 'failed' : 'succeeded',
+          state: isFailedResult(item.content, item.name ?? undefined)
+            ? 'failed'
+            : 'succeeded',
           summary: item.content.slice(0, 400),
           added: item.added,
           removed: item.removed,
@@ -135,49 +137,6 @@ function fromHistory(
   return messages
 }
 
-
-/**
- * 把审批后的调用结果填回工具块。
- *
- * 审批期间只推了 tool_call（工具还没跑），批准后才有结果。靠 tool_call_id
- * 配对；配不上的（历史里没带 id）就按顺序兜底。
- *
- * **兜底只能用还没被领走的结果** —— 先按 id 领走一条，再按顺序兜底的话，
- * 那条已经被领走的结果会被领第二次，真正没 id 的那条反而没人领。
- */
-function mergeToolResults(
-  calls: ToolCallView[],
-  results: { tool_call_id?: string | null; name: string; ok?: boolean | null; status?: string | null; error_code?: string | null }[],
-): ToolCallView[] {
-  if (results.length === 0) return calls.map((call) => ({ ...call, state: 'succeeded' }))
-  const byId = new Map<string, (typeof results)[number]>()
-  for (const result of results) {
-    const id = result.tool_call_id ?? ''
-    if (id) byId.set(id, result)
-  }
-  const used = new Set<(typeof results)[number]>()
-  let cursor = 0
-  return calls.map((call) => {
-    if (call.state !== 'running') return call
-    const callId = call.tool_call_id ?? ''
-    let result = callId ? byId.get(callId) : undefined
-    if (!result) {
-      // 兜底：按顺序找一条还没被领走的结果
-      while (cursor < results.length && used.has(results[cursor])) cursor += 1
-      result = results[cursor]
-    }
-    if (!result) return call
-    used.add(result)
-    cursor += 1
-    return {
-      ...call,
-      state: result.ok === false ? ('failed' as ToolCallState) : ('succeeded' as ToolCallState),
-      status: result.status ?? call.status,
-      error_code: result.error_code ?? call.error_code,
-      ok: result.ok ?? call.ok,
-    }
-  })
-}
 
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -406,12 +365,16 @@ export function useChat() {
         pendingApprovals(threadId).catch(() => [] as PendingApproval[]),
       ])
       const messages = fromHistory(result.messages)
-      if (pending.length > 0 && messages.length > 0) {
-        const index = messages.length - 1
-        messages[index] = {
-          ...messages[index],
-          pending,
-          status: 'pending_approval',
+      if (pending.length > 0) {
+        // 待批挂在**最后一条助手消息**上 —— 审批卡片是助手消息的一部分。
+        // 挂到"最后一条消息"是不行的：最后一条可能是工具消息，卡片就不见了。
+        const index = messages.findLastIndex((item) => item.role === 'assistant')
+        if (index !== -1) {
+          messages[index] = {
+            ...messages[index],
+            pending,
+            status: 'pending_approval',
+          }
         }
       }
       setMessages(messages)
@@ -425,28 +388,17 @@ export function useChat() {
     setBusy(true)
     setError('')
     try {
-      const result = await approveCall(threadId)
-      setMessages((prev) => {
-        const next = [...prev]
-        const index = next.findLastIndex((item) => item.role === 'assistant')
-        if (index !== -1) {
-          next[index] = {
-            ...next[index],
-            pending: [],
-            content: next[index].content || result.content,
-            status: 'completed',
-            // 审批期间工具块一直是「进行中」—— 批准后要把结果填回同一个块
-            toolCalls: mergeToolResults(next[index].toolCalls, result.tool_calls),
-          }
-        }
-        return next
-      })
+      await approveCall(threadId)
+      // 图恢复后 agent 会接着往下跑，**可能又撞上新的审批**（批准一张卡不等于
+      // 这一轮结束）。只把当前这张卡关掉的话，新的待批就丢了 —— 页面看着像
+      // 卡住了。重读历史与待批清单，让新的卡片出来。
+      await loadHistory(threadId)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setBusy(false)
     }
-  }, [])
+  }, [loadHistory])
 
   /** 拒绝挂起的调用。 */
   const reject = useCallback(async (threadId: string) => {
@@ -454,20 +406,14 @@ export function useChat() {
     setError('')
     try {
       await rejectCall(threadId)
-      setMessages((prev) => {
-        const next = [...prev]
-        const index = next.findLastIndex((item) => item.role === 'assistant')
-        if (index !== -1) {
-          next[index] = { ...next[index], pending: [], status: 'completed' }
-        }
-        return next
-      })
+      // 同 approve：恢复之后可能又撞上新的审批。
+      await loadHistory(threadId)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setBusy(false)
     }
-  }, [])
+  }, [loadHistory])
 
   /** 中断当前这一轮。 */
   const abort = useCallback(() => {
