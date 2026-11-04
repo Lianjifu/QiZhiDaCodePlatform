@@ -8,6 +8,9 @@ import { useEffect, useState } from 'react'
 
 import { API_BASE, ApiError } from '../api/client'
 import { health, listCapabilities, listProviders } from '../api/resources'
+import Badge from '../components/ui/Badge'
+import Button from '../components/ui/Button'
+import PageHeader from '../components/ui/PageHeader'
 import { formatJson } from '../lib/format'
 
 type CheckState = 'pending' | 'ok' | 'error'
@@ -117,42 +120,51 @@ export default function StatusPage() {
   const okCount = results.filter((item) => item.state === 'ok').length
 
   return (
-    <div className="mx-auto max-w-4xl px-8 py-8">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">系统状态</h1>
-          <p className="mt-1 text-sm text-ink-muted">
+    <div className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6">
+      <PageHeader
+        title="系统状态"
+        description={
+          <>
             每一项都是<strong className="font-medium text-ink">真实调用</strong>
             后端接口，下面显示的是接口实际返回的响应体。
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => {
-            setRunning(true)
-            setNonce((value) => value + 1)
-          }}
-          disabled={running}
-          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-text transition-colors hover:bg-accent-hover disabled:opacity-50"
-        >
-          {running ? '检测中…' : '重新检测'}
-        </button>
-      </header>
+          </>
+        }
+        actions={
+          <Button
+            variant="primary"
+            size="lg"
+            loading={running}
+            onClick={() => {
+              setRunning(true)
+              setNonce((value) => value + 1)
+            }}
+          >
+            重新检测
+          </Button>
+        }
+      />
 
-      <div className="mt-6 rounded-lg border border-line bg-raised px-4 py-3 text-sm">
+      <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-line bg-raised px-4 py-3 text-sm shadow-1">
         <span className="text-ink-muted">接口前缀</span>
-        <code className="ml-2 rounded bg-sunken px-1.5 py-0.5 text-xs">{API_BASE}</code>
-        <span className="ml-4 text-ink-muted">联通</span>
-        <span
-          className={`ml-2 font-medium ${okCount === results.length ? 'text-success' : 'text-warning'}`}
-        >
-          {okCount} / {results.length} 项通过
-        </span>
+        <code className="rounded bg-sunken px-1.5 py-0.5 font-mono text-xs">{API_BASE}</code>
+        <span className="text-ink-muted">联通</span>
+        {okCount === results.length ? (
+          <Badge tone="success">
+            {okCount} / {results.length} 项通过
+          </Badge>
+        ) : (
+          <Badge tone="warning">
+            {okCount} / {results.length} 项通过
+          </Badge>
+        )}
       </div>
 
       <div className="mt-4 space-y-3">
         {results.map((result) => (
-          <section key={result.id} className="rounded-lg border border-line bg-raised">
+          <section
+            key={result.id}
+            className="overflow-hidden rounded-xl border border-line bg-raised shadow-1"
+          >
             <div className="flex items-center gap-3 border-b border-line px-4 py-3">
               <StatusDot state={result.state} />
               <div className="min-w-0 flex-1">
@@ -165,13 +177,13 @@ export default function StatusPage() {
                 <p className="text-sm text-ink-faint">等待中…</p>
               ) : result.state === 'error' ? (
                 <div className="text-sm">
-                  <div className="text-red-600">{result.error?.message}</div>
+                  <div className="text-danger">{result.error?.message}</div>
                   <div className="mt-1 text-xs text-ink-muted">
                     HTTP {result.error?.status} · {result.error?.errorCode}
                   </div>
                 </div>
               ) : (
-                <pre className="max-h-72 overflow-auto rounded bg-sunken p-3 text-xs leading-relaxed text-ink-muted">
+                <pre className="max-h-72 overflow-auto rounded-lg bg-sunken p-3 text-xs leading-relaxed text-ink-muted">
                   {formatJson(result.payload)}
                 </pre>
               )}

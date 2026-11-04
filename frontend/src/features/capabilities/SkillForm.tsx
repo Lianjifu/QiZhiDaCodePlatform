@@ -8,6 +8,9 @@ import { useState } from 'react'
 
 import { createSkill, updateSkill } from '../../api/resources'
 import { LinesField, TagsField, TextArea, TextInput, Toggle } from '../../components/ui/Fields'
+import Banner from '../../components/ui/Banner'
+import { Checkbox } from '../../components/ui/Fields'
+import FormSection from '../../components/ui/FormSection'
 import Modal from '../../components/ui/Modal'
 import Button from '../../components/ui/Button'
 import type { Skill, Tool } from '../../types/api'
@@ -113,26 +116,23 @@ export default function SkillForm({
     <Modal
       title={skill ? `编辑技能：${skill.name}` : '新增技能'}
       onClose={onClose}
-      wide
+      size="lg"
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={saving}>
             取消
           </Button>
-          <Button variant="primary" onClick={() => void submit()} disabled={saving}>
-            {saving ? '保存中…' : '保存'}
+          <Button variant="primary" loading={saving} onClick={() => void submit()}>
+            保存
           </Button>
         </>
       }
     >
-      <div className="space-y-3">
-        {error ? (
-          <div className="rounded-lg border border-danger bg-danger-soft px-3 py-2 text-xs text-danger">
-            {error}
-          </div>
-        ) : null}
+      <div className="space-y-5">
+        {error ? <Banner tone="danger">{error}</Banner> : null}
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        <FormSection title="基本信息">
+        <div className="grid gap-3.5 sm:grid-cols-2">
           <TextInput
             label="技能名"
             required
@@ -148,6 +148,9 @@ export default function SkillForm({
           />
         </div>
 
+        </FormSection>
+
+        <FormSection title="知识正文" description="这些内容会进模型的提示词 —— 写清楚怎么做。">
         <TextArea
           label="核心做法"
           rows={5}
@@ -178,35 +181,33 @@ export default function SkillForm({
           hint="不能做什么 —— 比如「不要改测试文件」"
         />
 
+        </FormSection>
+
+        <FormSection title="标签与工具">
         <TagsField label="标签" value={form.tags} onChange={(value) => set('tags', value)} />
 
         <div>
-          <div className="mb-1 text-xs font-medium text-ink-muted">包含的工具</div>
+          <div className="mb-1.5 text-xs font-medium text-ink-muted">包含的工具</div>
           {tools.length === 0 ? (
-            <div className="rounded-lg bg-sunken px-3 py-2 text-xs text-ink-faint">
+            <div className="rounded-lg border border-dashed border-line bg-sunken px-3 py-3 text-xs text-ink-faint">
               还没有工具可选
             </div>
           ) : (
-            <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg bg-sunken px-3 py-2">
+            <div className="max-h-44 space-y-0.5 overflow-y-auto rounded-lg border border-line bg-sunken px-2 py-2">
               {tools.map((tool) => (
-                <label key={tool.id} className="flex items-start gap-2 text-xs text-ink-muted">
-                  <input
-                    type="checkbox"
-                    checked={form.tool_ids.includes(tool.id)}
-                    onChange={(event) => toggleTool(tool.id, event.target.checked)}
-                    className="mt-0.5 accent-accent"
-                  />
-                  <span>
-                    <span className="font-mono text-ink">{tool.name}</span>
-                    {tool.display_name ? ` · ${tool.display_name}` : ''}
-                  </span>
-                </label>
+                <Checkbox
+                  key={tool.id}
+                  label={`${tool.name}${tool.display_name ? ` · ${tool.display_name}` : ''}`}
+                  checked={form.tool_ids.includes(tool.id)}
+                  onChange={(value) => toggleTool(tool.id, value)}
+                />
               ))}
             </div>
           )}
         </div>
 
         <Toggle label="启用" checked={form.enabled} onChange={(value) => set('enabled', value)} />
+        </FormSection>
       </div>
     </Modal>
   )

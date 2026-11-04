@@ -13,9 +13,13 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 
 import { createWorktree, deleteWorktree, listEnvironments } from '../api/resources'
+import Badge from '../components/ui/Badge'
+import Banner from '../components/ui/Banner'
 import Button from '../components/ui/Button'
+import EmptyState from '../components/ui/EmptyState'
 import { Select } from '../components/ui/Fields'
 import Modal from '../components/ui/Modal'
+import PageHeader from '../components/ui/PageHeader'
 import { bindableEnvironments } from '../features/environments/format'
 import { useConfirm } from '../components/ui/useConfirm'
 import type { Environment, EnvironmentList } from '../types/api'
@@ -61,62 +65,62 @@ export default function EnvironmentsPage() {
   const folders = environments.filter((item) => item.kind !== 'worktree' && !item.is_repo)
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-6 py-6">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight text-ink">工作目录</h1>
-          <p className="mt-1 text-sm text-ink-muted">
-            把真实的代码仓库绑成会话的工作目录。绑上之后 agent 就在那个目录里读写文件、跑命令。
-          </p>
-        </div>
-        <Button
-          variant="primary"
-          onClick={() => setCreating(true)}
-          disabled={!list?.enabled || repos.length === 0}
-        >
-          新建 worktree
-        </Button>
-      </div>
+    <div className="mx-auto w-full max-w-5xl px-4 py-5 sm:px-6 sm:py-6">
+      <PageHeader
+        title="工作目录"
+        description="把真实的代码仓库绑成会话的工作目录。绑上之后 agent 就在那个目录里读写文件、跑命令。"
+        actions={
+          <Button
+            variant="primary"
+            size="lg"
+            onClick={() => setCreating(true)}
+            disabled={!list?.enabled || repos.length === 0}
+          >
+            新建 worktree
+          </Button>
+        }
+      />
 
       {error ? (
-        <div className="mt-4 rounded-lg border border-danger bg-danger-soft px-3 py-2 text-sm text-danger">
+        <Banner tone="danger" className="mt-4">
           {error}
-        </div>
+        </Banner>
       ) : null}
       {note ? (
-        <div className="mt-4 rounded-lg border border-success bg-success-soft px-3 py-2 text-sm text-success">
+        <Banner tone="success" className="mt-4">
           {note}
-        </div>
+        </Banner>
       ) : null}
 
       {list && !list.enabled ? (
-        <div className="mt-4 rounded-lg border border-line bg-raised px-4 py-3 text-sm text-ink-muted">
-          <p className="text-ink">平台还没有配置可用的仓库目录。</p>
-          <p className="mt-1 text-xs">
+        <div className="mt-5 rounded-xl border border-line bg-raised p-4 shadow-1">
+          <p className="text-sm font-medium text-ink">平台还没有配置可用的仓库目录。</p>
+          <p className="mt-1.5 text-xs leading-relaxed text-ink-muted">
             在后端的 <code className="font-mono">.env</code> 里配置{' '}
             <code className="font-mono">REPO_ROOTS</code>（逗号分隔的绝对路径），
             只有这些根目录下的仓库才能作为工作目录。
-            <br />
+          </p>
+          <p className="mt-2 text-xs leading-relaxed text-ink-faint">
             平台目前没有鉴权，这道白名单是唯一的闸门 —— 所以默认是「一个都不许」。
           </p>
         </div>
       ) : null}
 
       {list?.enabled ? (
-        <>
-          <Section title="允许的根目录">
-            <ul className="space-y-1">
+        <div className="mt-5 space-y-5">
+          <Section title="允许的根目录" count={list.roots.length}>
+            <ul className="divide-y divide-line">
               {list.roots.map((root) => (
-                <li key={root} className="font-mono text-xs text-ink-muted">
+                <li key={root} className="px-4 py-2.5 font-mono text-xs text-ink-muted">
                   {root}
                 </li>
               ))}
             </ul>
           </Section>
 
-          <Section title="仓库">
+          <Section title="仓库" count={repos.length}>
             {repos.length === 0 ? (
-              <Empty text="白名单下还没有 git 仓库" />
+              <Empty title="白名单下还没有 git 仓库" />
             ) : (
               <ul className="divide-y divide-line">
                 {repos.map((item) => (
@@ -126,9 +130,12 @@ export default function EnvironmentsPage() {
             )}
           </Section>
 
-          <Section title="Worktree">
+          <Section title="Worktree" count={worktrees.length}>
             {worktrees.length === 0 ? (
-              <Empty text="还没有 worktree" />
+              <Empty
+                title="还没有 worktree"
+                description="从一个仓库派生一份独立检出 —— 各自一个分支，互不干扰。"
+              />
             ) : (
               <ul className="divide-y divide-line">
                 {worktrees.map((item) => (
@@ -139,7 +146,8 @@ export default function EnvironmentsPage() {
                       void (async () => {
                         const ok = await confirm({
                           title: `删掉 worktree「${item.name}」？`,
-                          description: '这个目录连着里面的改动一起没了。分支还留在仓库里，随时能再建回来。',
+                          description:
+                            '这个目录连着里面的改动一起没了。分支还留在仓库里，随时能再建回来。',
                           confirmText: '删掉',
                           danger: true,
                         })
@@ -153,9 +161,9 @@ export default function EnvironmentsPage() {
             )}
           </Section>
 
-          <Section title="目录">
+          <Section title="目录" count={folders.length}>
             {folders.length === 0 ? (
-              <Empty text="白名单下没有普通目录" />
+              <Empty title="白名单下没有普通目录" />
             ) : (
               <ul className="divide-y divide-line">
                 {folders.map((item) => (
@@ -164,8 +172,14 @@ export default function EnvironmentsPage() {
               </ul>
             )}
           </Section>
-        </>
+        </div>
       ) : null}
+
+      {/*
+        扫目录找仓库要两秒多 —— 干等着不像坏了，给个骨架。
+        （后端那一步是「每个白名单根目录下逐个看是不是 git 仓库」。）
+      */}
+      {!list ? <Skeleton /> : null}
 
       {confirmDialog}
 
@@ -220,13 +234,14 @@ function NewWorktreeDialog({
     <Modal
       title="新建 worktree"
       onClose={onClose}
+      description="自动开一个新分支 + 一份独立检出"
       footer={
         <>
-          <Button size="sm" onClick={onClose}>
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
             取消
           </Button>
-          <Button size="sm" variant="primary" onClick={() => void submit()} disabled={saving}>
-            {saving ? '创建中…' : '创建'}
+          <Button variant="primary" loading={saving} onClick={() => void submit()}>
+            创建
           </Button>
         </>
       }
@@ -240,23 +255,36 @@ function NewWorktreeDialog({
             value: repo.path,
             label: `${repo.name || repo.path}${repo.branch ? `（${repo.branch}）` : ''}`,
           }))}
-          hint="自动开一个新分支 + 一份独立检出，分支名由平台生成"
+          hint="分支名由平台生成"
         />
-        {error ? (
-          <div className="rounded-lg border border-danger bg-danger-soft px-3 py-2 text-xs text-danger">
-            {error}
-          </div>
-        ) : null}
+        {error ? <Banner tone="danger">{error}</Banner> : null}
       </div>
     </Modal>
   )
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Section({
+  title,
+  count,
+  children,
+}: {
+  title: string
+  count?: number
+  children: ReactNode
+}) {
   return (
-    <section className="mt-6">
-      <h2 className="mb-2 text-xs font-medium uppercase tracking-wide text-ink-faint">{title}</h2>
-      <div className="overflow-hidden rounded-lg border border-line bg-raised">{children}</div>
+    <section>
+      <div className="mb-2 flex items-center gap-2">
+        <h2 className="text-xs font-medium tracking-wide text-ink-muted">{title}</h2>
+        {count !== undefined ? (
+          <span className="rounded-md bg-sunken px-1.5 py-px text-[10px] font-medium tabular-nums text-ink-faint">
+            {count}
+          </span>
+        ) : null}
+      </div>
+      <div className="overflow-hidden rounded-xl border border-line bg-raised shadow-1">
+        {children}
+      </div>
     </section>
   )
 }
@@ -269,30 +297,52 @@ function Row({
   onDelete?: () => void
 }) {
   return (
-    <li className="flex items-center gap-3 px-4 py-2.5">
+    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm text-ink">{item.name || item.path}</span>
-        <span className="block truncate font-mono text-[11px] text-ink-faint">{item.path}</span>
+        <span className="flex flex-wrap items-center gap-2">
+          <span className="truncate text-sm text-ink">{item.name || item.path}</span>
+          {/* worktree 也是仓库 —— 只标一个，不然两个标签说同一件事 */}
+          {item.kind === 'worktree' ? <Badge tone="accent">Worktree</Badge> : null}
+          {item.is_repo && item.kind !== 'worktree' ? <Badge tone="accent">仓库</Badge> : null}
+        </span>
+        <span className="mt-0.5 block truncate font-mono text-[11px] text-ink-faint">{item.path}</span>
       </span>
       {item.branch ? (
         <span className="shrink-0 font-mono text-[11px] text-ink-muted">{item.branch}</span>
       ) : null}
       {item.dirty ? (
-        <span className="shrink-0 text-[11px] text-ink-faint">有未提交的改动</span>
+        <span className="shrink-0 text-[11px] text-warning">有未提交的改动</span>
       ) : null}
       {onDelete ? (
-        <button
-          type="button"
-          onClick={onDelete}
-          className="shrink-0 text-xs text-ink-faint transition-colors hover:text-danger"
-        >
-          删除
-        </button>
+        <Button size="sm" variant="ghost" onClick={onDelete} className="ml-auto shrink-0">
+          <span className="text-danger">删除</span>
+        </Button>
       ) : null}
     </li>
   )
 }
 
-function Empty({ text }: { text: string }) {
-  return <div className="px-4 py-6 text-center text-sm text-ink-faint">{text}</div>
+function Empty({ title, description }: { title: string; description?: string }) {
+  return <EmptyState title={title} description={description} />
+}
+
+/** 加载中的骨架 —— 扫目录要两秒多，白屏看着像坏了。 */
+function Skeleton() {
+  return (
+    <div className="mt-5 space-y-5" aria-hidden="true">
+      {[0, 1, 2].map((group) => (
+        <div key={group}>
+          <div className="mb-2 h-3 w-24 rounded bg-sunken" />
+          <div className="overflow-hidden rounded-xl border border-line bg-raised">
+            {[0, 1, 2].map((row) => (
+              <div key={row} className="flex items-center gap-3 border-b border-line px-4 py-3">
+                <div className="h-3 w-40 rounded bg-sunken" />
+                <div className="h-3 flex-1 rounded bg-sunken/60" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
 }

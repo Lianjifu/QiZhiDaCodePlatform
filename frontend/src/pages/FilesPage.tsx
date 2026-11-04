@@ -21,9 +21,14 @@ import {
   saveFile,
   uploadFile,
 } from '../api/resources'
+import Badge from '../components/ui/Badge'
+import Banner from '../components/ui/Banner'
 import Button from '../components/ui/Button'
+import DataTable, { type Column } from '../components/ui/DataTable'
+import EmptyState from '../components/ui/EmptyState'
 import { TextInput } from '../components/ui/Fields'
 import Modal from '../components/ui/Modal'
+import PageHeader from '../components/ui/PageHeader'
 import { useConfirm } from '../components/ui/useConfirm'
 import { humanSize, formatTime } from '../lib/format'
 import { useSessions } from '../features/sessions/store'
@@ -54,6 +59,7 @@ export default function FilesPage() {
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
   const [uploading, setUploading] = useState(false)
+  const [filter, setFilter] = useState('')
   const [searchParams] = useSearchParams()
   const { sessions } = useSessions()
 
@@ -191,135 +197,160 @@ export default function FilesPage() {
     }
   }
 
+  /** 按路径过滤 —— 文件多了以后翻找比点开快。 */
+  const shown = useMemo(() => {
+    const keyword = filter.trim().toLowerCase()
+    if (!keyword) return files
+    return files.filter((file) => file.path.toLowerCase().includes(keyword))
+  }, [files, filter])
+
+  const columns: Column<WorkspaceFile>[] = [
+    {
+      header: '路径',
+      mobile: 'title',
+      render: (file) => (
+        <span className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-xs text-ink">{file.path}</span>
+          {file.uploaded ? <Badge tone="accent">上传件</Badge> : null}
+        </span>
+      ),
+    },
+    {
+      header: '大小',
+      mobile: 'meta',
+      render: (file) => (
+        <span className="text-xs tabular-nums text-ink-muted">{humanSize(file.size)}</span>
+      ),
+    },
+    {
+      header: '修改时间',
+      mobile: 'meta',
+      render: (file) => (
+        <span className="text-xs text-ink-muted">{formatTime(file.modified_at)}</span>
+      ),
+    },
+  ]
+
   return (
-    <div className="mx-auto w-full max-w-4xl px-6 py-6">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight text-ink">工作区文件</h1>
-          <p className="mt-1 text-sm text-ink-muted">
-            上传件与 agent 的产物都在这儿。平台产物（对话历史外置等）不在 —— 它对用户不可见。
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {files.length > 0 ? (
-            <a
-              href={archiveUrl(threadId)}
-              className="rounded-lg border border-line px-3 py-1.5 text-xs text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+    <div className="mx-auto w-full max-w-5xl px-4 py-5 sm:px-6 sm:py-6">
+      <PageHeader
+        title="工作区文件"
+        description="上传件与 agent 的产物都在这儿。平台产物（对话历史外置等）不在 —— 它对用户不可见。"
+        actions={
+          <>
+            {files.length > 0 ? (
+              <a
+                href={archiveUrl(threadId)}
+                className="inline-flex h-10 items-center rounded-lg border border-line px-4 text-sm font-medium text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+              >
+                打包下载
+              </a>
+            ) : null}
+            <label
+              className={[
+                'inline-flex h-10 cursor-pointer items-center rounded-lg bg-accent px-4 text-sm font-medium text-accent-text shadow-1 transition-colors hover:bg-accent-hover',
+                uploading ? 'opacity-70' : '',
+              ].join(' ')}
             >
-              打包下载
-            </a>
-          ) : null}
-          <label className="cursor-pointer rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-text transition-colors hover:bg-accent-hover">
-            {uploading ? '上传中…' : '上传文件'}
-            <input
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(event) => void onUpload(event.target.files)}
-            />
-          </label>
-        </div>
-      </div>
+              {uploading ? '上传中…' : '上传文件'}
+              <input
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(event) => void onUpload(event.target.files)}
+              />
+            </label>
+          </>
+        }
+      />
 
-      {error && (
-        <div className="mt-4 rounded-lg border border-danger bg-danger-soft px-3 py-2 text-sm text-danger">
+      {error ? (
+        <Banner tone="danger" className="mt-4">
           {error}
-        </div>
-      )}
-      {note && (
-        <div className="mt-4 rounded-lg border border-success bg-success-soft px-3 py-2 text-sm text-success">
+        </Banner>
+      ) : null}
+      {note ? (
+        <Banner tone="success" className="mt-4">
           {note}
-        </div>
-      )}
+        </Banner>
+      ) : null}
 
-      <div className="mt-4 overflow-hidden rounded-lg border border-line bg-raised">
-        {files.length === 0 ? (
-          <div className="px-4 py-10 text-center text-sm text-ink-faint">还没有文件</div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="bg-sunken text-left text-xs text-ink-faint">
-              <tr>
-                <th className="px-4 py-2 font-medium">路径</th>
-                <th className="px-4 py-2 font-medium">大小</th>
-                <th className="px-4 py-2 font-medium">修改时间</th>
-                <th className="px-4 py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {files.map((file) => (
-                <tr key={file.path} className="border-t border-line">
-                  <td className="px-4 py-2">
-                    <span className="font-mono text-xs">{file.path}</span>
-                    {file.uploaded && (
-                      <span className="ml-2 rounded bg-accent-soft px-1.5 py-0.5 text-[10px] text-accent">
-                        上传件
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-2 text-xs text-ink-muted">{humanSize(file.size)}</td>
-                  <td className="px-4 py-2 text-xs text-ink-muted">{formatTime(file.modified_at)}</td>
-                  <td className="px-4 py-2 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void openPreview(file)}
-                        className="text-xs text-ink-faint hover:text-ink"
-                      >
-                        查看
-                      </button>
-                      {isTextual(file) && file.size <= MAX_PREVIEW ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void readFileText(threadId, file.path).then((content) =>
-                                setEditing({ file, content }),
-                              )
-                            }
-                            className="text-xs text-accent hover:underline"
-                          >
-                            编辑
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setRenaming(file)
-                              setNewName(file.path)
-                            }}
-                            className="text-xs text-accent hover:underline"
-                          >
-                            改名
-                          </button>
-                        </>
-                      ) : null}
-                      <a
-                        href={downloadUrl(threadId, file.path)}
-                        className="text-xs text-ink-faint hover:text-ink"
-                      >
-                        下载
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => void remove(file)}
-                        className="text-xs text-ink-faint hover:text-danger"
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+      {files.length > 0 ? (
+        <div className="mt-4 max-w-xs">
+          <TextInput
+            label=""
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder="按路径过滤…"
+          />
+        </div>
+      ) : null}
+
+      <div className="mt-4 overflow-hidden rounded-xl border border-line bg-raised shadow-1">
+        <DataTable
+          columns={columns}
+          rows={shown}
+          rowKey={(file) => file.path}
+          actions={(file) => (
+            <>
+              <Button size="sm" variant="ghost" onClick={() => void openPreview(file)}>
+                查看
+              </Button>
+              {isTextual(file) && file.size <= MAX_PREVIEW ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      void readFileText(threadId, file.path).then((content) =>
+                        setEditing({ file, content }),
+                      )
+                    }
+                  >
+                    编辑
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setRenaming(file)
+                      setNewName(file.path)
+                    }}
+                  >
+                    改名
+                  </Button>
+                </>
+              ) : null}
+              <a
+                href={downloadUrl(threadId, file.path)}
+                className="inline-flex h-7 items-center rounded-lg px-2.5 text-xs font-medium text-ink-faint transition-colors hover:bg-hover hover:text-ink"
+              >
+                下载
+              </a>
+              <Button size="sm" variant="ghost" onClick={() => void remove(file)}>
+                <span className="text-danger">删除</span>
+              </Button>
+            </>
+          )}
+          empty={
+            files.length === 0 ? (
+              <EmptyState
+                title="还没有文件"
+                description="上传一个文件，或者让 agent 在工作区里生成产物 —— 它们都会出现在这儿。"
+              />
+            ) : (
+              <EmptyState title="没有匹配的文件" description={`没有路径包含「${filter}」的文件。`} />
+            )
+          }
+        />
       </div>
 
       {previewing ? (
-        <Modal title={`预览：${previewing.filename}`} onClose={() => setPreviewing(null)} wide>
+        <Modal title={`预览：${previewing.filename}`} onClose={() => setPreviewing(null)} size="lg">
           <img
             src={downloadUrl(threadId, previewing.path)}
             alt={previewing.filename}
-            className="mx-auto max-h-[60vh] rounded-lg"
+            className="mx-auto max-h-[70vh] rounded-lg"
           />
         </Modal>
       ) : null}
@@ -328,14 +359,14 @@ export default function FilesPage() {
         <Modal
           title={`编辑：${editing.file.filename}`}
           onClose={() => setEditing(null)}
-          wide
+          size="lg"
           footer={
             <>
               <Button variant="ghost" onClick={() => setEditing(null)} disabled={busy}>
                 取消
               </Button>
-              <Button variant="primary" onClick={() => void saveContent()} disabled={busy}>
-                {busy ? '保存中…' : '保存'}
+              <Button variant="primary" loading={busy} onClick={() => void saveContent()}>
+                保存
               </Button>
             </>
           }
@@ -344,7 +375,7 @@ export default function FilesPage() {
             value={editing.content}
             onChange={(event) => setEditing({ ...editing, content: event.target.value })}
             spellCheck={false}
-            className="h-[55vh] w-full resize-none rounded-lg border border-line bg-base p-3 font-mono text-xs leading-relaxed text-ink outline-none focus:border-accent"
+            className="h-[55vh] w-full resize-none rounded-lg border border-line bg-base p-3 font-mono text-xs leading-relaxed text-ink outline-none focus:border-accent focus:shadow-[0_0_0_3px_var(--ring)]"
           />
         </Modal>
       ) : null}
@@ -358,8 +389,8 @@ export default function FilesPage() {
               <Button variant="ghost" onClick={() => setRenaming(null)} disabled={busy}>
                 取消
               </Button>
-              <Button variant="primary" onClick={() => void doRename()} disabled={busy}>
-                {busy ? '改名中…' : '改名'}
+              <Button variant="primary" loading={busy} onClick={() => void doRename()}>
+                改名
               </Button>
             </>
           }

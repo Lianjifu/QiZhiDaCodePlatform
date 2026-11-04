@@ -4,7 +4,7 @@
  * 侧栏的分组照着 Claude 桌面端来：**产品头 / 动作 / 模块入口 / 全部会话**。
  * 模块入口对应平台真实的模块 —— 没有对应东西的就不放（比如「项目」）。
  */
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 
 import {
@@ -69,8 +69,6 @@ const MODULES: NavItem[] = [
 /** 侧栏折叠状态存在哪儿 —— 刷新页面不该把用户的布局弹回去。 */
 const SIDEBAR_KEY = 'qzd.sidebar.collapsed'
 
-/** 折叠后那条窄轨的宽度。 */
-const RAIL_WIDTH = 'w-14'
 
 export default function AppShell() {
   const navigate = useNavigate()
@@ -90,6 +88,10 @@ export default function AppShell() {
     () => localStorage.getItem(SIDEBAR_KEY) === '1',
   )
   /**
+   * 窄屏上侧栏是抽屉 —— 屏幕就那么宽，固定占一栏就没地方放内容了。
+   */
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  /**
    * 状态面板看哪个会话。
    *
    * 一般就是路由上的那个会话；但空会话页（`/chat`）还没落到路由上，
@@ -103,16 +105,30 @@ export default function AppShell() {
     ? location.pathname.slice('/chat/'.length)
     : null
 
+  /**
+   * 跳转 —— 顺带把抽屉收起来。
+   *
+   * **不用 effect 盯着路由变化**：那会多一次渲染，而且手机上收抽屉这件事
+   * 本来就跟着"用户点了某个入口"走。
+   */
+  const go = useCallback(
+    (to: string) => {
+      setDrawerOpen(false)
+      navigate(to)
+    },
+    [navigate],
+  )
+
   /** 新建一个会话 —— 立刻进列表，不是等用户发了第一条消息才进。 */
   const handleCreate = () => {
     const threadId = create()
-    navigate(`/chat/${threadId}`)
+    go(`/chat/${threadId}`)
   }
 
   /** 删一个会话（只删侧栏里的这条记录）。 */
   const handleRemove = (threadId: string) => {
     remove(threadId)
-    if (threadId === activeThread) navigate('/chat')
+    if (threadId === activeThread) go('/chat')
   }
 
   // 搜索：按标题过滤。空搜索词就是全列。
@@ -169,7 +185,7 @@ export default function AppShell() {
         icon: <PlusIcon className="h-3.5 w-3.5" />,
         action: () => {
           const threadId = create()
-          navigate(`/chat/${threadId}`)
+          go(`/chat/${threadId}`)
         },
       },
       {
@@ -177,35 +193,35 @@ export default function AppShell() {
         title: '编码助手',
         hint: '回到对话页',
         icon: <ChatIcon className="h-3.5 w-3.5" />,
-        action: () => navigate('/chat'),
+        action: () => go('/chat'),
       },
       {
         id: 'go-files',
         title: '工作区文件',
         hint: '文件与上传件',
         icon: <FolderIcon className="h-3.5 w-3.5" />,
-        action: () => navigate(activeThread ? `/files?thread=${activeThread}` : '/files'),
+        action: () => go(activeThread ? `/files?thread=${activeThread}` : '/files'),
       },
       {
         id: 'go-environments',
         title: '工作目录',
         hint: '仓库 / worktree',
         icon: <BranchIcon className="h-3.5 w-3.5" />,
-        action: () => navigate('/environments'),
+        action: () => go('/environments'),
       },
       {
         id: 'go-capabilities',
         title: '能力清单',
         hint: '工具 / 技能 / MCP',
         icon: <LayersIcon className="h-3.5 w-3.5" />,
-        action: () => navigate('/capabilities'),
+        action: () => go('/capabilities'),
       },
       {
         id: 'go-providers',
         title: '模型接入',
         hint: '供应商配置',
         icon: <PlugIcon className="h-3.5 w-3.5" />,
-        action: () => navigate('/providers'),
+        action: () => go('/providers'),
       },
       {
         id: 'toggle-sidebar',
@@ -243,7 +259,7 @@ export default function AppShell() {
         action: () => setMode('system'),
       },
     ],
-    [activeThread, collapsed, create, navigate, setMode],
+    [activeThread, collapsed, create, go, setMode],
   )
 
   /** 模块入口的跳转地址 —— 文件是按会话隔离的，要带上当前会话。 */
@@ -251,64 +267,105 @@ export default function AppShell() {
     to === '/files' && activeThread ? `/files?thread=${activeThread}` : to
 
   return (
-    <div className="flex h-screen overflow-hidden bg-base">
-      <aside
-        className={[
-          'flex shrink-0 flex-col border-r border-line bg-sunken transition-[width] duration-200',
-          collapsed ? RAIL_WIDTH : 'w-64',
-        ].join(' ')}
-      >
+    <div className="flex h-screen flex-col overflow-hidden bg-base">
+      {/*
+        窄屏顶栏 —— 侧栏收成抽屉之后，得有个地方放品牌和开关。
+        宽屏不需要它（侧栏自己就是导航）。
+      */}
+      <div className="flex h-13 shrink-0 items-center gap-2 border-b border-line bg-base px-3 py-2 lg:hidden">
+        <button
+          type="button"
+          title="打开导航"
+          onClick={() => setDrawerOpen(true)}
+          className="-ml-1 flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+        >
+          <PanelLeftIcon className="h-4.5 w-4.5" />
+        </button>
+        <span
+          className="flex h-6 w-6 items-center justify-center rounded-md text-xs font-semibold text-accent-text"
+          style={{ background: 'var(--brand-gradient)' }}
+        >
+          智
+        </span>
+        <span className="truncate text-sm font-medium text-ink">企智搭·代码平台</span>
+      </div>
+
+      <div className="flex min-h-0 flex-1">
+        {/* 抽屉的遮罩 —— 点一下收起 */}
+        {drawerOpen ? (
+          <div
+            className="fixed inset-0 z-40 bg-black/40 lg:hidden"
+            onClick={() => setDrawerOpen(false)}
+          />
+        ) : null}
+
+        <aside
+          className={[
+            'z-50 flex shrink-0 flex-col border-r border-line bg-sunken',
+            // 窄屏：从左边滑进来的抽屉；宽屏：固定的一栏
+            'fixed inset-y-0 left-0 w-64 transition-transform duration-200 lg:static lg:translate-x-0',
+            drawerOpen ? 'translate-x-0' : '-translate-x-full',
+            // 宽屏才有折叠 —— 窄屏上一律是完整的一栏
+            collapsed ? 'lg:w-14' : 'lg:w-64',
+          ].join(' ')}
+        >
         {collapsed ? (
-          /* 折叠态：一条图标轨 —— 只留入口，标题和会话列表都收起来 */
-          <div className="flex flex-1 flex-col items-center gap-1 py-3">
-            <button
-              type="button"
-              title="展开侧栏（⌘B）"
-              onClick={() => setCollapsed(false)}
-              className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-hover hover:text-ink"
-            >
-              <PanelLeftIcon className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              title="新建会话"
-              onClick={handleCreate}
-              className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-hover hover:text-ink"
-            >
-              <PlusIcon className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              title="搜索"
-              // 搜索框在展开态才有 —— 点了先把侧栏展开
-              onClick={() => {
-                setCollapsed(false)
-                setSearchOpen(true)
-              }}
-              className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-hover hover:text-ink"
-            >
-              <SearchIcon className="h-4 w-4" />
-            </button>
-            <div className="my-1 h-px w-6 bg-line" />
-            {MODULES.map((item) => (
-              <NavLink
-                key={item.to}
-                to={moduleTo(item.to)}
-                end={item.to === '/chat'}
-                title={item.label}
-                className={({ isActive }) =>
-                  [
-                    'flex h-9 w-9 items-center justify-center rounded-lg transition-colors',
-                    isActive ? 'bg-hover text-ink' : 'text-ink-faint hover:bg-hover hover:text-ink',
-                  ].join(' ')
-                }
-              >
-                {item.icon}
-              </NavLink>
-            ))}
-          </div>
-        ) : (
           <>
+            {/* 折叠态：一条图标轨 —— 只留入口，标题和会话列表都收起来 */}
+            <div className="hidden flex-1 flex-col items-center gap-1 py-3 lg:flex">
+              <button
+                type="button"
+                title="展开侧栏（⌘B）"
+                onClick={() => setCollapsed(false)}
+                className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+              >
+                <PanelLeftIcon className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                title="新建会话"
+                onClick={handleCreate}
+                className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+              >
+                <PlusIcon className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                title="搜索"
+                // 搜索框在展开态才有 —— 点了先把侧栏展开
+                onClick={() => {
+                  setCollapsed(false)
+                  setSearchOpen(true)
+                }}
+                className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+              >
+                <SearchIcon className="h-4 w-4" />
+              </button>
+              <div className="my-1 h-px w-6 bg-line" />
+              {MODULES.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={moduleTo(item.to)}
+                  end={item.to === '/chat'}
+                  title={item.label}
+                  onClick={() => setDrawerOpen(false)}
+                  className={({ isActive }) =>
+                    [
+                      'flex h-9 w-9 items-center justify-center rounded-lg transition-colors',
+                      isActive ? 'bg-hover text-ink' : 'text-ink-faint hover:bg-hover hover:text-ink',
+                    ].join(' ')
+                  }
+                >
+                  {item.icon}
+                </NavLink>
+              ))}
+            </div>
+            <div className="hidden border-t border-line p-1.5 lg:block">
+              <ThemeToggle compact />
+            </div>
+          </>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col">
             {/* 产品头 */}
             <div className="flex items-center gap-2.5 px-4 pb-2 pt-4">
               <div
@@ -383,6 +440,7 @@ export default function AppShell() {
                   // 不然看到的是另一个会话的工作区
                   to={moduleTo(item.to)}
                   end={item.to === '/chat'}
+                  onClick={() => setDrawerOpen(false)}
                   className={({ isActive }) =>
                     [
                       'flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors',
@@ -406,7 +464,7 @@ export default function AppShell() {
                   title="已置顶"
                   items={pinnedShown}
                   activeThread={activeThread}
-                  onSelect={(threadId) => navigate(`/chat/${threadId}`)}
+                  onSelect={(threadId) => go(`/chat/${threadId}`)}
                   onTogglePin={togglePin}
                   onRemove={handleRemove}
                 />
@@ -415,7 +473,7 @@ export default function AppShell() {
                 title="对话和任务"
                 items={othersShown}
                 activeThread={activeThread}
-                onSelect={(threadId) => navigate(`/chat/${threadId}`)}
+                onSelect={(threadId) => go(`/chat/${threadId}`)}
                 onTogglePin={togglePin}
                 onRemove={handleRemove}
               />
@@ -427,14 +485,8 @@ export default function AppShell() {
             <div className="border-t border-line p-2">
               <ThemeToggle />
             </div>
-          </>
-        )}
-
-        {collapsed ? (
-          <div className="border-t border-line p-1.5">
-            <ThemeToggle compact />
           </div>
-        ) : null}
+        )}
       </aside>
 
       <main className="min-w-0 flex-1 overflow-hidden bg-base">
@@ -450,14 +502,15 @@ export default function AppShell() {
 
       {/*
         右侧的状态面板 —— 占一整列，中间是对话区（参考 Claude 桌面端的布局）。
-        面板自己滚，不影响对话区。
+        面板自己滚，不影响对话区。**窄屏上占满整屏** —— 一栏 22rem 在手机上
+        就是全屏，没必要再并排放。
       */}
       {paletteOpen ? (
         <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />
       ) : null}
 
       {statusOpen ? (
-        <aside className="flex w-[22rem] shrink-0 flex-col overflow-y-auto border-l border-line bg-sunken p-3">
+        <aside className="flex w-full shrink-0 flex-col overflow-y-auto border-l border-line bg-sunken p-3 lg:w-[22rem]">
           <div className="mb-2 flex items-center justify-between px-1">
             <span className="text-xs font-medium text-ink-muted">会话状态</span>
             <button
@@ -478,6 +531,7 @@ export default function AppShell() {
           )}
         </aside>
       ) : null}
+      </div>
     </div>
   )
 }

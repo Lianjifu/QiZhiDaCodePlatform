@@ -8,6 +8,8 @@ import { useState } from 'react'
 
 import { createProvider, updateProvider } from '../../api/resources'
 import { Select, TagsField, TextArea, TextInput, Toggle } from '../../components/ui/Fields'
+import Banner from '../../components/ui/Banner'
+import FormSection from '../../components/ui/FormSection'
 import Modal from '../../components/ui/Modal'
 import Button from '../../components/ui/Button'
 import type { LLMProvider, ProviderPreset } from '../../types/api'
@@ -138,26 +140,23 @@ export default function ProviderForm({
     <Modal
       title={provider ? `编辑：${provider.name}` : '新增供应商配置'}
       onClose={onClose}
-      wide
+      size="lg"
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={saving}>
             取消
           </Button>
-          <Button variant="primary" onClick={() => void submit()} disabled={saving}>
-            {saving ? '保存中…' : '保存'}
+          <Button variant="primary" loading={saving} onClick={() => void submit()}>
+            保存
           </Button>
         </>
       }
     >
-      <div className="space-y-3">
-        {error ? (
-          <div className="rounded-lg border border-danger bg-danger-soft px-3 py-2 text-xs text-danger">
-            {error}
-          </div>
-        ) : null}
+      <div className="space-y-5">
+        {error ? <Banner tone="danger">{error}</Banner> : null}
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        <FormSection title="接入">
+        <div className="grid gap-3.5 sm:grid-cols-2">
           <TextInput
             label="配置名称"
             required
@@ -208,7 +207,7 @@ export default function ProviderForm({
           />
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-4">
+        <div className="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
           <TextInput
             label="温度"
             type="number"
@@ -242,7 +241,10 @@ export default function ProviderForm({
           />
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        </FormSection>
+
+        <FormSection title="其他">
+        <div className="grid gap-3.5 sm:grid-cols-2">
           <TextInput
             label="向量化模型"
             value={form.embedding_model}
@@ -268,7 +270,7 @@ export default function ProviderForm({
           onChange={(event) => set('description', event.target.value)}
         />
 
-        <div className="flex flex-wrap gap-4 rounded-lg bg-sunken px-3 py-2.5">
+        <div className="flex flex-wrap gap-x-8 gap-y-3 rounded-xl border border-line bg-sunken px-4 py-3">
           <Toggle
             label="启用"
             checked={form.is_active}
@@ -281,6 +283,7 @@ export default function ProviderForm({
             hint="默认供应商全局唯一"
           />
         </div>
+        </FormSection>
       </div>
     </Modal>
   )

@@ -7,7 +7,9 @@
 import { useState } from 'react'
 
 import { createTool, updateTool } from '../../api/resources'
+import Banner from '../../components/ui/Banner'
 import { JsonField, Select, TagsField, TextArea, TextInput, Toggle } from '../../components/ui/Fields'
+import FormSection from '../../components/ui/FormSection'
 import Modal from '../../components/ui/Modal'
 import Button from '../../components/ui/Button'
 import type { BuiltinTool, MCPServer, Tool } from '../../types/api'
@@ -122,166 +124,172 @@ export default function ToolForm({
     <Modal
       title={tool ? `编辑工具：${tool.name}` : '新增工具'}
       onClose={onClose}
-      wide
+      size="lg"
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={saving}>
             取消
           </Button>
-          <Button variant="primary" onClick={() => void submit()} disabled={saving}>
-            {saving ? '保存中…' : '保存'}
+          <Button variant="primary" loading={saving} onClick={() => void submit()}>
+            保存
           </Button>
         </>
       }
     >
-      <div className="space-y-3">
-        {error ? (
-          <div className="rounded-lg border border-danger bg-danger-soft px-3 py-2 text-xs text-danger">
-            {error}
+      <div className="space-y-5">
+        {error ? <Banner tone="danger">{error}</Banner> : null}
+
+        <FormSection title="基本信息" description="工具名会直接进 LLM 的工具 schema。">
+          <div className="grid gap-3.5 sm:grid-cols-2">
+            <TextInput
+              label="工具名"
+              required
+              value={form.name}
+              onChange={(event) => set('name', event.target.value)}
+              placeholder="字母开头，如 web_fetch"
+              hint="会直接进 LLM 的工具 schema"
+            />
+            <TextInput
+              label="显示名"
+              value={form.display_name}
+              onChange={(event) => set('display_name', event.target.value)}
+              placeholder="给人看的名字"
+            />
           </div>
-        ) : null}
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <TextInput
-            label="工具名"
-            required
-            value={form.name}
-            onChange={(event) => set('name', event.target.value)}
-            placeholder="字母开头，如 web_fetch"
-            hint="会直接进 LLM 的工具 schema"
+          <TextArea
+            label="说明"
+            rows={2}
+            value={form.description}
+            onChange={(event) => set('description', event.target.value)}
+            hint="给模型看的 —— 写清楚这个工具什么时候该用"
           />
-          <TextInput
-            label="显示名"
-            value={form.display_name}
-            onChange={(event) => set('display_name', event.target.value)}
-            placeholder="给人看的名字"
-          />
-        </div>
 
-        <TextArea
-          label="说明"
-          rows={2}
-          value={form.description}
-          onChange={(event) => set('description', event.target.value)}
-          hint="给模型看的 —— 写清楚这个工具什么时候该用"
-        />
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Select
-            label="类型"
-            required
-            value={form.type}
-            onChange={(event) => set('type', event.target.value as FormState['type'])}
-            options={[
-              { value: 'builtin', label: 'builtin（平台内置）' },
-              { value: 'http', label: 'http（HTTP 接口）' },
-              { value: 'mcp', label: 'mcp（MCP 服务器）' },
-            ]}
-          />
-          {form.type === 'builtin' ? (
+          <div className="grid gap-3.5 sm:grid-cols-2">
             <Select
-              label="内置来源"
+              label="类型"
               required
-              value={form.source}
-              onChange={(event) => set('source', event.target.value)}
+              value={form.type}
+              onChange={(event) => set('type', event.target.value as FormState['type'])}
               options={[
-                { value: '', label: '选一个内置能力' },
-                ...builtins.map((item) => ({
-                  value: item.source,
-                  label: `${item.display_name}（${item.key}）`,
-                })),
+                { value: 'builtin', label: 'builtin（平台内置）' },
+                { value: 'http', label: 'http（HTTP 接口）' },
+                { value: 'mcp', label: 'mcp（MCP 服务器）' },
               ]}
-              hint="只能从白名单里选 —— 平台不允许自建任意入口"
             />
-          ) : null}
-          {form.type === 'mcp' ? (
+            {form.type === 'builtin' ? (
+              <Select
+                label="内置来源"
+                required
+                value={form.source}
+                onChange={(event) => set('source', event.target.value)}
+                options={[
+                  { value: '', label: '选一个内置能力' },
+                  ...builtins.map((item) => ({
+                    value: item.source,
+                    label: `${item.display_name}（${item.key}）`,
+                  })),
+                ]}
+                hint="只能从白名单里选 —— 平台不允许自建任意入口"
+              />
+            ) : null}
+            {form.type === 'mcp' ? (
+              <Select
+                label="MCP 服务器"
+                required
+                value={form.source}
+                onChange={(event) => set('source', event.target.value)}
+                options={[
+                  { value: '', label: '选一个 MCP 服务器' },
+                  ...servers.map((item) => ({ value: item.name, label: item.name })),
+                ]}
+                hint="先到「MCP」标签页加一个服务器"
+              />
+            ) : null}
+          </div>
+        </FormSection>
+
+        {form.type === 'http' || form.type === 'mcp' ? (
+          <FormSection title="调用方式" description="工具被调用时怎么拿到结果。">
+            {form.type === 'http' ? (
+              <TextInput
+                label="接口地址"
+                required
+                value={String(form.config.url ?? '')}
+                onChange={(event) => set('config', { ...form.config, url: event.target.value })}
+                placeholder="https://example.com/api"
+              />
+            ) : null}
+
+            {form.type === 'mcp' ? (
+              <TextInput
+                label="MCP 工具名"
+                required
+                value={String(form.config.tool_name ?? '')}
+                onChange={(event) =>
+                  set('config', { ...form.config, tool_name: event.target.value })
+                }
+                placeholder="服务器上那个工具叫什么"
+              />
+            ) : null}
+
+            <JsonField
+              label={form.type === 'http' ? '其他配置' : '配置'}
+              value={form.config}
+              onChange={(value) => set('config', value)}
+              hint="JSON 对象，如 http 类型的 method / headers"
+            />
+
+            {form.type === 'http' ? (
+              <JsonField
+                label="入参 schema"
+                value={form.parameters}
+                onChange={(value) => set('parameters', value)}
+                hint="JSON Schema，必须有 type 或 properties"
+              />
+            ) : null}
+          </FormSection>
+        ) : null}
+
+        <FormSection title="权限与风险" description="决定它什么时候要人批。">
+          <div className="grid gap-3.5 sm:grid-cols-3">
             <Select
-              label="MCP 服务器"
-              required
-              value={form.source}
-              onChange={(event) => set('source', event.target.value)}
+              label="权限要求"
+              value={form.permission}
+              onChange={(event) => set('permission', event.target.value)}
               options={[
-                { value: '', label: '选一个 MCP 服务器' },
-                ...servers.map((item) => ({ value: item.name, label: item.name })),
+                { value: 'none', label: '按风险档位判定' },
+                { value: 'confirm', label: '一定要人批' },
+                { value: 'admin', label: '管理员放行' },
               ]}
-              hint="先到「MCP」标签页加一个服务器"
             />
-          ) : null}
-        </div>
+            <Select
+              label="风险等级"
+              value={form.risk}
+              onChange={(event) => set('risk', event.target.value)}
+              hint="审批按档位：低档自动放行，中档要人批，高档永远要人批。"
+              options={[
+                { value: 'read', label: '只读（低档）' },
+                { value: 'write', label: '写入（低档）' },
+                { value: 'execute', label: '执行命令（中档）' },
+                { value: 'network', label: '联网（中档）' },
+                { value: 'destructive', label: '破坏性（高档）' },
+              ]}
+            />
+            <TextInput
+              label="超时（秒）"
+              type="number"
+              min="1"
+              max="600"
+              value={form.timeout_s}
+              onChange={(event) => set('timeout_s', Number(event.target.value))}
+            />
+          </div>
 
-        {form.type === 'http' ? (
-          <TextInput
-            label="接口地址"
-            required
-            value={String(form.config.url ?? '')}
-            onChange={(event) => set('config', { ...form.config, url: event.target.value })}
-            placeholder="https://example.com/api"
-          />
-        ) : null}
+          <TagsField label="标签" value={form.tags} onChange={(value) => set('tags', value)} />
 
-        {form.type === 'mcp' ? (
-          <TextInput
-            label="MCP 工具名"
-            required
-            value={String(form.config.tool_name ?? '')}
-            onChange={(event) => set('config', { ...form.config, tool_name: event.target.value })}
-            placeholder="服务器上那个工具叫什么"
-          />
-        ) : null}
-
-        <JsonField
-          label={form.type === 'http' ? '其他配置' : '配置'}
-          value={form.config}
-          onChange={(value) => set('config', value)}
-          hint="JSON 对象，如 http 类型的 method / headers"
-        />
-
-        {form.type === 'http' ? (
-          <JsonField
-            label="入参 schema"
-            value={form.parameters}
-            onChange={(value) => set('parameters', value)}
-            hint="JSON Schema，必须有 type 或 properties"
-          />
-        ) : null}
-
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Select
-            label="权限要求"
-            value={form.permission}
-            onChange={(event) => set('permission', event.target.value)}
-            options={[
-              { value: 'none', label: '按风险档位判定' },
-              { value: 'confirm', label: '一定要人批' },
-              { value: 'admin', label: '管理员放行' },
-            ]}
-          />
-          <Select
-            label="风险等级"
-            value={form.risk}
-            onChange={(event) => set('risk', event.target.value)}
-            hint="审批按档位：低档自动放行，中档要人批，高档永远要人批。"
-            options={[
-              { value: 'read', label: '只读（低档）' },
-              { value: 'write', label: '写入（低档）' },
-              { value: 'execute', label: '执行命令（中档）' },
-              { value: 'network', label: '联网（中档）' },
-              { value: 'destructive', label: '破坏性（高档）' },
-            ]}
-          />
-          <TextInput
-            label="超时（秒）"
-            type="number"
-            min="1"
-            max="600"
-            value={form.timeout_s}
-            onChange={(event) => set('timeout_s', Number(event.target.value))}
-          />
-        </div>
-
-        <TagsField label="标签" value={form.tags} onChange={(value) => set('tags', value)} />
-
-        <Toggle label="启用" checked={form.enabled} onChange={(value) => set('enabled', value)} />
+          <Toggle label="启用" checked={form.enabled} onChange={(value) => set('enabled', value)} />
+        </FormSection>
       </div>
     </Modal>
   )

@@ -468,7 +468,7 @@ export default forwardRef<ComposerHandle, {
             ].join(' ')}
           />
 
-          <div className="flex items-center gap-1 px-2.5 pb-2.5">
+          <div className="flex flex-wrap items-center gap-1 px-2.5 pb-2.5">
             <input
               ref={fileRef}
               type="file"
@@ -533,19 +533,24 @@ export default forwardRef<ComposerHandle, {
             {/* 权限模式：这一轮要不要人批 */}
             <PermissionModePicker threadId={threadId} />
 
-            <div className="flex-1" />
+            <div className="hidden flex-1 sm:block" />
 
-            {/* 上下文占用：在模型选择的左边，点开看明细 */}
-            <ContextUsageIndicator
-              threadId={threadId}
-              busy={busy}
-              open={contextOpen}
-              onToggle={() => {
-                setContextOpen((value) => !value)
-                setPickerOpen(false)
-              }}
-              onOpenDetail={onOpenDetail}
-            />
+            {/*
+              上下文占用：在模型选择的左边，点开看明细。
+              **窄屏上收起来** —— 底栏塞不下四样东西，占用数字挪到状态面板里看。
+            */}
+            <div className="hidden sm:block">
+              <ContextUsageIndicator
+                threadId={threadId}
+                busy={busy}
+                open={contextOpen}
+                onToggle={() => {
+                  setContextOpen((value) => !value)
+                  setPickerOpen(false)
+                }}
+                onOpenDetail={onOpenDetail}
+              />
+            </div>
 
             {/* 模型选择 */}
             <div ref={pickerRef} className="relative">
@@ -555,7 +560,7 @@ export default forwardRef<ComposerHandle, {
                   setPickerOpen((value) => !value)
                   setContextOpen(false)
                 }}
-                className="rounded-lg px-2.5 py-1.5 text-xs text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+                className="max-w-[10rem] truncate rounded-lg px-2 py-1.5 text-xs whitespace-nowrap text-ink-muted transition-colors hover:bg-hover hover:text-ink"
               >
                 {currentProvider?.default_model ?? '选择模型'} ▾
               </button>

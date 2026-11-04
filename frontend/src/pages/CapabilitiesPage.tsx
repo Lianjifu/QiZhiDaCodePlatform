@@ -26,8 +26,14 @@ import {
   probeMCPServer,
   testTool,
 } from '../api/resources'
+import Badge from '../components/ui/Badge'
+import Banner from '../components/ui/Banner'
 import Button from '../components/ui/Button'
+import DataTable, { type Column } from '../components/ui/DataTable'
+import EmptyState from '../components/ui/EmptyState'
 import Modal from '../components/ui/Modal'
+import PageHeader from '../components/ui/PageHeader'
+import Tabs from '../components/ui/Tabs'
 import { useConfirm } from '../components/ui/useConfirm'
 import MCPForm from '../features/capabilities/MCPForm'
 import { approvalSummary } from '../features/capabilities/risk'
@@ -43,13 +49,6 @@ import type {
 } from '../types/api'
 
 type Tab = 'overview' | 'tools' | 'skills' | 'mcp'
-
-const TABS: { key: Tab; label: string }[] = [
-  { key: 'overview', label: '清单' },
-  { key: 'tools', label: '工具' },
-  { key: 'skills', label: '技能' },
-  { key: 'mcp', label: 'MCP' },
-]
 
 export default function CapabilitiesPage() {
   const { confirm, dialog: confirmDialog } = useConfirm()
@@ -130,87 +129,174 @@ export default function CapabilitiesPage() {
     }
   }
 
-  return (
-    <div className="mx-auto w-full max-w-4xl px-6 py-6">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight text-ink">能力清单</h1>
-          <p className="mt-1 text-sm text-ink-muted">
-            工具、技能、MCP 都在这一张清单里 —— agent 只从注册层取能力，不认别的来源。
-            {kinds.length > 0 && `（${kinds.join(' / ')}）`}
-          </p>
-        </div>
-        {tab === 'tools' ? (
-          <Button variant="primary" onClick={() => setToolEditing(null)}>
-            新增工具
-          </Button>
-        ) : tab === 'skills' ? (
-          <Button variant="primary" onClick={() => setSkillEditing(null)}>
-            新增技能
-          </Button>
-        ) : tab === 'mcp' ? (
-          <Button variant="primary" onClick={() => setMcpEditing(null)}>
-            新增 MCP 服务器
-          </Button>
-        ) : null}
-      </div>
+  const toolColumns: Column<Tool>[] = [
+    {
+      header: '名称',
+      mobile: 'title',
+      render: (tool) => (
+        <span className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-xs text-ink">{tool.name}</span>
+          {tool.display_name ? (
+            <span className="text-xs text-ink-muted">{tool.display_name}</span>
+          ) : null}
+          {tool.origin === 'builtin' ? <Badge>内置</Badge> : null}
+        </span>
+      ),
+    },
+    {
+      header: '权限 / 风险',
+      mobile: 'subtitle',
+      render: (tool) => (
+        <span className="text-xs text-ink-muted">
+          {tool.permission === 'confirm' ? '要人批 · ' : ''}
+          {approvalSummary(tool.risk)}
+        </span>
+      ),
+    },
+    {
+      header: '类型',
+      mobile: 'meta',
+      render: (tool) => <span className="text-xs text-ink-muted">{tool.type}</span>,
+    },
+    {
+      header: '状态',
+      render: (tool) =>
+        tool.enabled ? <Badge tone="success">启用</Badge> : <Badge>停用</Badge>,
+    },
+  ]
 
-      <div className="mt-4 flex gap-1 border-b border-line">
-        {TABS.map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            onClick={() => setTab(item.key)}
-            className={[
-              '-mb-px border-b-2 px-3 py-1.5 text-sm transition-colors',
-              tab === item.key
-                ? 'border-accent text-ink'
-                : 'border-transparent text-ink-muted hover:text-ink',
-            ].join(' ')}
-          >
-            {item.label}
-          </button>
-        ))}
+  const skillColumns: Column<Skill>[] = [
+    {
+      header: '名称',
+      mobile: 'title',
+      render: (skill) => (
+        <span className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-medium text-ink">{skill.name}</span>
+          {skill.builtin ? <Badge>内置</Badge> : null}
+        </span>
+      ),
+    },
+    {
+      header: '说明',
+      mobile: 'subtitle',
+      render: (skill) => (
+        <span className="text-xs text-ink-muted">{skill.description || '—'}</span>
+      ),
+    },
+    {
+      header: '工具',
+      mobile: 'meta',
+      render: (skill) => (
+        <span className="text-xs text-ink-muted">{skill.tool_names.join('、') || '—'}</span>
+      ),
+    },
+    {
+      header: '状态',
+      render: (skill) =>
+        skill.enabled ? <Badge tone="success">启用</Badge> : <Badge>停用</Badge>,
+    },
+  ]
+
+  const mcpColumns: Column<MCPServer>[] = [
+    {
+      header: '名称',
+      mobile: 'title',
+      render: (server) => <span className="text-sm font-medium text-ink">{server.name}</span>,
+    },
+    {
+      header: '地址 / 命令',
+      mobile: 'subtitle',
+      render: (server) => (
+        <span className="font-mono text-xs text-ink-muted">
+          {server.url ?? server.command ?? '—'}
+        </span>
+      ),
+    },
+    {
+      header: '方式',
+      mobile: 'meta',
+      render: (server) => <span className="text-xs text-ink-muted">{server.transport}</span>,
+    },
+    {
+      header: '状态',
+      render: (server) =>
+        server.enabled ? <Badge tone="success">启用</Badge> : <Badge>停用</Badge>,
+    },
+  ]
+
+  const actionButton =
+    tab === 'tools' ? (
+      <Button variant="primary" size="lg" onClick={() => setToolEditing(null)}>
+        新增工具
+      </Button>
+    ) : tab === 'skills' ? (
+      <Button variant="primary" size="lg" onClick={() => setSkillEditing(null)}>
+        新增技能
+      </Button>
+    ) : tab === 'mcp' ? (
+      <Button variant="primary" size="lg" onClick={() => setMcpEditing(null)}>
+        新增 MCP 服务器
+      </Button>
+    ) : null
+
+  return (
+    <div className="mx-auto w-full max-w-5xl px-4 py-5 sm:px-6 sm:py-6">
+      <PageHeader
+        title="能力清单"
+        description="工具、技能、MCP 都在这一张清单里 —— agent 只从注册层取能力，不认别的来源。"
+        meta={kinds.length > 0 ? kinds.join(' / ') : undefined}
+        actions={actionButton}
+      />
+
+      <div className="mt-4">
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          tabs={[
+            { key: 'overview', label: '清单', count: overview.length },
+            { key: 'tools', label: '工具', count: tools.length },
+            { key: 'skills', label: '技能', count: skills.length },
+            { key: 'mcp', label: 'MCP', count: servers.length },
+          ]}
+        />
       </div>
 
       {error ? (
-        <div className="mt-4 rounded-lg border border-danger bg-danger-soft px-3 py-2 text-sm text-danger">
+        <Banner tone="danger" className="mt-4">
           {error}
-        </div>
+        </Banner>
       ) : null}
       {note ? (
-        <div className="mt-4 rounded-lg border border-success bg-success-soft px-3 py-2 text-sm text-success">
+        <Banner tone="success" className="mt-4">
           {note}
-        </div>
+        </Banner>
       ) : null}
 
       {tab === 'overview' ? (
-        <div className="mt-4 space-y-2">
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
           {overview.length === 0 ? (
-            <Empty text="清单是空的" />
+            <div className="sm:col-span-2">
+              <EmptyState title="清单是空的" description="去「工具」「技能」或「MCP」标签页加一条。" />
+            </div>
           ) : (
             overview.map((item) => (
               <div
                 key={`${item.kind}-${item.key}`}
-                className="rounded-lg border border-line bg-raised px-4 py-3"
+                className="rounded-xl border border-line bg-raised px-4 py-3 shadow-1"
               >
-                <div className="flex items-center gap-2">
-                  <span className="rounded bg-sunken px-1.5 py-0.5 text-[10px] text-ink-faint">
-                    {item.kind}
-                  </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge>{item.kind}</Badge>
                   <span className="font-mono text-sm text-ink">{item.key}</span>
-                  {item.display_name && (
+                  {item.display_name ? (
                     <span className="text-sm text-ink-muted">{item.display_name}</span>
-                  )}
-                  {item.enabled === false && (
-                    <span className="rounded bg-sunken px-1.5 py-0.5 text-[10px] text-ink-faint">
-                      已停用
-                    </span>
-                  )}
+                  ) : null}
+                  {item.enabled === false ? <Badge tone="warning">已停用</Badge> : null}
                 </div>
-                {item.description && (
-                  <div className="mt-1 text-xs text-ink-muted">{item.description}</div>
-                )}
+                {item.description ? (
+                  <div className="mt-1.5 text-xs leading-relaxed text-ink-muted">
+                    {item.description}
+                  </div>
+                ) : null}
               </div>
             ))
           )}
@@ -218,272 +304,179 @@ export default function CapabilitiesPage() {
       ) : null}
 
       {tab === 'tools' ? (
-        <div className="mt-4 overflow-hidden rounded-lg border border-line bg-raised">
-          {tools.length === 0 ? (
-            <Empty text="还没有工具" />
-          ) : (
-            <table className="w-full text-sm">
-              <thead className="bg-sunken text-left text-xs text-ink-faint">
-                <tr>
-                  <th className="px-4 py-2 font-medium">名称</th>
-                  <th className="px-4 py-2 font-medium">类型</th>
-                  <th className="px-4 py-2 font-medium">权限 / 风险</th>
-                  <th className="px-4 py-2 font-medium">状态</th>
-                  <th className="px-4 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {tools.map((tool) => (
-                  <tr key={tool.id} className="border-t border-line">
-                    <td className="px-4 py-2">
-                      <span className="font-mono text-xs text-ink">{tool.name}</span>
-                      {tool.display_name && (
-                        <span className="ml-2 text-xs text-ink-muted">{tool.display_name}</span>
-                      )}
-                      {tool.origin === 'builtin' && (
-                        <span className="ml-2 rounded bg-sunken px-1.5 py-0.5 text-[10px] text-ink-faint">
-                          内置
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2 text-xs text-ink-muted">{tool.type}</td>
-                    <td className="px-4 py-2 text-xs text-ink-muted">
-                      {tool.permission === 'confirm' ? '要人批 · ' : ''}
-                      {approvalSummary(tool.risk)}
-                    </td>
-                    <td className="px-4 py-2 text-xs">
-                      {tool.enabled ? (
-                        <span className="text-success">启用</span>
-                      ) : (
-                        <span className="text-ink-faint">停用</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setViewing(tool)}
-                          className="text-xs text-ink-faint hover:text-ink"
-                        >
-                          详情
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void run(async () => {
-                              const result = await testTool(tool.id)
-                              setNote(
-                                result.ok
-                                  ? `工具 ${tool.name} 可用：${result.message || '通过'}`
-                                  : `工具 ${tool.name} 不可用：${result.message}`,
-                              )
-                            }, '')
-                          }
-                          className="text-xs text-ink-faint hover:text-accent"
-                        >
-                          测试
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setToolEditing(tool)}
-                          className="text-xs text-accent hover:underline"
-                        >
-                          编辑
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void (async () => {
-                              const ok = await confirm({
-                                title: `删掉工具「${tool.name}」？`,
-                                description: '技能里对它的引用会一并清掉。',
-                                confirmText: '删掉',
-                                danger: true,
-                              })
-                              if (!ok) return
-                              await run(() => deleteTool(tool.id), `已删掉工具 ${tool.name}`)
-                            })()
-                          }}
-                          className="text-xs text-ink-faint hover:text-danger"
-                        >
-                          删除
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+        <div className="mt-4 overflow-hidden rounded-xl border border-line bg-raised shadow-1">
+          <DataTable
+            columns={toolColumns}
+            rows={tools}
+            rowKey={(tool) => tool.id}
+            actions={(tool) => (
+              <>
+                <Button size="sm" variant="ghost" onClick={() => setViewing(tool)}>
+                  详情
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() =>
+                    void run(async () => {
+                      const result = await testTool(tool.id)
+                      setNote(
+                        result.ok
+                          ? `工具 ${tool.name} 可用：${result.message || '通过'}`
+                          : `工具 ${tool.name} 不可用：${result.message}`,
+                      )
+                    }, '')
+                  }
+                >
+                  测试
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setToolEditing(tool)}>
+                  编辑
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    void (async () => {
+                      const ok = await confirm({
+                        title: `删掉工具「${tool.name}」？`,
+                        description: '技能里对它的引用会一并清掉。',
+                        confirmText: '删掉',
+                        danger: true,
+                      })
+                      if (!ok) return
+                      await run(() => deleteTool(tool.id), `已删掉工具 ${tool.name}`)
+                    })()
+                  }}
+                >
+                  <span className="text-danger">删除</span>
+                </Button>
+              </>
+            )}
+            empty={
+              <EmptyState
+                title="还没有工具"
+                description="工具是 agent 能调用的原子能力 —— 从内置白名单里挑一个接进来。"
+                action={
+                  <Button variant="primary" onClick={() => setToolEditing(null)}>
+                    新增工具
+                  </Button>
+                }
+              />
+            }
+          />
         </div>
       ) : null}
 
       {tab === 'skills' ? (
-        <div className="mt-4 overflow-hidden rounded-lg border border-line bg-raised">
-          {skills.length === 0 ? (
-            <Empty text="还没有技能" />
-          ) : (
-            <table className="w-full text-sm">
-              <thead className="bg-sunken text-left text-xs text-ink-faint">
-                <tr>
-                  <th className="px-4 py-2 font-medium">名称</th>
-                  <th className="px-4 py-2 font-medium">说明</th>
-                  <th className="px-4 py-2 font-medium">工具</th>
-                  <th className="px-4 py-2 font-medium">状态</th>
-                  <th className="px-4 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {skills.map((skill) => (
-                  <tr key={skill.id} className="border-t border-line">
-                    <td className="px-4 py-2">
-                      <span className="text-ink">{skill.name}</span>
-                      {skill.builtin && (
-                        <span className="ml-2 rounded bg-sunken px-1.5 py-0.5 text-[10px] text-ink-faint">
-                          内置
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2 text-xs text-ink-muted">{skill.description || '—'}</td>
-                    <td className="px-4 py-2 text-xs text-ink-muted">
-                      {skill.tool_names.join('、') || '—'}
-                    </td>
-                    <td className="px-4 py-2 text-xs">
-                      {skill.enabled ? (
-                        <span className="text-success">启用</span>
-                      ) : (
-                        <span className="text-ink-faint">停用</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setViewing(skill)}
-                          className="text-xs text-ink-faint hover:text-ink"
-                        >
-                          详情
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSkillEditing(skill)}
-                          className="text-xs text-accent hover:underline"
-                        >
-                          编辑
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void (async () => {
-                              const ok = await confirm({
-                                title: `删掉技能「${skill.name}」？`,
-                                description: '技能里的知识与成员关系会一并没了。',
-                                confirmText: '删掉',
-                                danger: true,
-                              })
-                              if (!ok) return
-                              await run(() => deleteSkill(skill.id), `已删掉技能 ${skill.name}`)
-                            })()
-                          }}
-                          className="text-xs text-ink-faint hover:text-danger"
-                        >
-                          删除
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+        <div className="mt-4 overflow-hidden rounded-xl border border-line bg-raised shadow-1">
+          <DataTable
+            columns={skillColumns}
+            rows={skills}
+            rowKey={(skill) => skill.id}
+            actions={(skill) => (
+              <>
+                <Button size="sm" variant="ghost" onClick={() => setViewing(skill)}>
+                  详情
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setSkillEditing(skill)}>
+                  编辑
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    void (async () => {
+                      const ok = await confirm({
+                        title: `删掉技能「${skill.name}」？`,
+                        description: '技能里的知识与成员关系会一并没了。',
+                        confirmText: '删掉',
+                        danger: true,
+                      })
+                      if (!ok) return
+                      await run(() => deleteSkill(skill.id), `已删掉技能 ${skill.name}`)
+                    })()
+                  }}
+                >
+                  <span className="text-danger">删除</span>
+                </Button>
+              </>
+            )}
+            empty={
+              <EmptyState
+                title="还没有技能"
+                description="技能是一组工具加上知识 —— 模型按描述挑着用。"
+                action={
+                  <Button variant="primary" onClick={() => setSkillEditing(null)}>
+                    新增技能
+                  </Button>
+                }
+              />
+            }
+          />
         </div>
       ) : null}
 
       {tab === 'mcp' ? (
-        <div className="mt-4 overflow-hidden rounded-lg border border-line bg-raised">
-          {servers.length === 0 ? (
-            <Empty text="还没有 MCP 服务器" />
-          ) : (
-            <table className="w-full text-sm">
-              <thead className="bg-sunken text-left text-xs text-ink-faint">
-                <tr>
-                  <th className="px-4 py-2 font-medium">名称</th>
-                  <th className="px-4 py-2 font-medium">方式</th>
-                  <th className="px-4 py-2 font-medium">地址 / 命令</th>
-                  <th className="px-4 py-2 font-medium">状态</th>
-                  <th className="px-4 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {servers.map((server) => (
-                  <tr key={server.id} className="border-t border-line">
-                    <td className="px-4 py-2 text-ink">{server.name}</td>
-                    <td className="px-4 py-2 text-xs text-ink-muted">{server.transport}</td>
-                    <td className="px-4 py-2 font-mono text-xs text-ink-muted">
-                      {server.url ?? server.command ?? '—'}
-                    </td>
-                    <td className="px-4 py-2 text-xs">
-                      {server.enabled ? (
-                        <span className="text-success">启用</span>
-                      ) : (
-                        <span className="text-ink-faint">停用</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setViewing(server)}
-                          className="text-xs text-ink-faint hover:text-ink"
-                        >
-                          详情
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void run(async () => {
-                              setProbed(await probeMCPServer(server.id))
-                            }, '')
-                          }
-                          className="text-xs text-ink-faint hover:text-accent"
-                        >
-                          探测工具
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setMcpEditing(server)}
-                          className="text-xs text-accent hover:underline"
-                        >
-                          编辑
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void (async () => {
-                              const ok = await confirm({
-                                title: `删掉 MCP 服务器「${server.name}」？`,
-                                description: '通过它接进来的工具会一起消失。',
-                                confirmText: '删掉',
-                                danger: true,
-                              })
-                              if (!ok) return
-                              await run(
-                                () => deleteMCPServer(server.id),
-                                `已删掉 MCP 服务器 ${server.name}`,
-                              )
-                            })()
-                          }}
-                          className="text-xs text-ink-faint hover:text-danger"
-                        >
-                          删除
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+        <div className="mt-4 overflow-hidden rounded-xl border border-line bg-raised shadow-1">
+          <DataTable
+            columns={mcpColumns}
+            rows={servers}
+            rowKey={(server) => server.id}
+            actions={(server) => (
+              <>
+                <Button size="sm" variant="ghost" onClick={() => setViewing(server)}>
+                  详情
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() =>
+                    void run(async () => {
+                      setProbed(await probeMCPServer(server.id))
+                    }, '')
+                  }
+                >
+                  探测工具
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setMcpEditing(server)}>
+                  编辑
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    void (async () => {
+                      const ok = await confirm({
+                        title: `删掉 MCP 服务器「${server.name}」？`,
+                        description: '通过它接进来的工具会一起消失。',
+                        confirmText: '删掉',
+                        danger: true,
+                      })
+                      if (!ok) return
+                      await run(
+                        () => deleteMCPServer(server.id),
+                        `已删掉 MCP 服务器 ${server.name}`,
+                      )
+                    })()
+                  }}
+                >
+                  <span className="text-danger">删除</span>
+                </Button>
+              </>
+            )}
+            empty={
+              <EmptyState
+                title="还没有 MCP 服务器"
+                description="接一个 MCP 服务器，服务器上的工具就进清单了。"
+                action={
+                  <Button variant="primary" onClick={() => setMcpEditing(null)}>
+                    新增 MCP 服务器
+                  </Button>
+                }
+              />
+            }
+          />
         </div>
       ) : null}
 
@@ -527,7 +520,7 @@ export default function CapabilitiesPage() {
       ) : null}
 
       {viewing ? (
-        <Modal title="详情" onClose={() => setViewing(null)} wide>
+        <Modal title="详情" onClose={() => setViewing(null)} size="lg">
           <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-lg bg-sunken p-3 font-mono text-xs leading-relaxed text-ink-muted">
             {JSON.stringify(viewing, null, 2)}
           </pre>
@@ -555,11 +548,5 @@ export default function CapabilitiesPage() {
 
       {confirmDialog}
     </div>
-  )
-}
-
-function Empty({ text }: { text: string }) {
-  return (
-    <div className="px-4 py-10 text-center text-sm text-ink-faint">{text}</div>
   )
 }

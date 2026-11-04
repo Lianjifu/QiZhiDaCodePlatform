@@ -5,9 +5,11 @@
  */
 import { useState, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react'
 
+import { ChevronIcon } from '../../components/icons'
+
 /** 输入框统一样式 —— 只在这个文件里定义，不导出去（免得触发"只导出组件"那条规则）。 */
 const CONTROL =
-  'w-full rounded-lg border border-line bg-base px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent focus:shadow-[0_0_0_3px_var(--ring)] disabled:opacity-60'
+  'w-full rounded-lg border border-line bg-base px-3 text-sm text-ink outline-none transition placeholder:text-ink-faint focus:border-accent focus:shadow-[0_0_0_3px_var(--ring)] disabled:opacity-60'
 
 /** 一个带标签的控件。 */
 export function Field({
@@ -25,15 +27,18 @@ export function Field({
 }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-medium text-ink-muted">
-        {label}
-        {required ? <span className="ml-0.5 text-danger">*</span> : null}
-      </span>
+      {/* 没给标签就别占一行 —— 筛选框那种"只有框"的场合 */}
+      {label ? (
+        <span className="mb-1.5 block text-xs font-medium text-ink-muted">
+          {label}
+          {required ? <span className="ml-0.5 text-danger">*</span> : null}
+        </span>
+      ) : null}
       {children}
       {error ? (
-        <span className="mt-1 block text-[11px] text-danger">{error}</span>
+        <span className="mt-1.5 block text-xs text-danger">{error}</span>
       ) : hint ? (
-        <span className="mt-1 block text-[11px] text-ink-faint">{hint}</span>
+        <span className="mt-1.5 block text-xs leading-relaxed text-ink-faint">{hint}</span>
       ) : null}
     </label>
   )
@@ -54,7 +59,7 @@ export function TextInput({
 }) {
   return (
     <Field label={label} hint={hint} required={required} error={error}>
-      <input {...props} className={CONTROL} />
+      <input {...props} className={`${CONTROL} h-9`} />
     </Field>
   )
 }
@@ -75,7 +80,7 @@ export function TextArea({
 }) {
   return (
     <Field label={label} hint={hint} required={required} error={error}>
-      <textarea {...props} rows={rows} className={`${CONTROL} resize-y leading-relaxed`} />
+      <textarea {...props} rows={rows} className={`${CONTROL} resize-y py-2 leading-relaxed`} />
     </Field>
   )
 }
@@ -97,18 +102,24 @@ export function Select({
 }) {
   return (
     <Field label={label} hint={hint} required={required} error={error}>
-      <select {...props} className={CONTROL}>
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+      <div className="relative">
+        <select {...props} className={`${CONTROL} h-9 appearance-none pr-9`}>
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        {/* 自己的箭头 —— 原生那个在深色下几乎看不见 */}
+        <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-faint">
+          <ChevronIcon className="h-4 w-4" />
+        </span>
+      </div>
     </Field>
   )
 }
 
-/** 开关（勾选框 + 说明）。 */
+/** 开关（拨杆 + 说明）。 */
 export function Toggle({
   label,
   hint,
@@ -121,17 +132,44 @@ export function Toggle({
   onChange: (value: boolean) => void
 }) {
   return (
-    <label className="flex cursor-pointer items-start gap-2">
+    <label className="flex cursor-pointer items-start gap-2.5">
+      <span className="relative mt-0.5 inline-flex h-5 w-9 shrink-0">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(event) => onChange(event.target.checked)}
+          className="peer sr-only"
+        />
+        <span className="absolute inset-0 rounded-full bg-line-strong transition-colors peer-checked:bg-accent peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--ring)]" />
+        <span className="absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform peer-checked:translate-x-4" />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm text-ink">{label}</span>
+        {hint ? <span className="mt-0.5 block text-xs leading-relaxed text-ink-faint">{hint}</span> : null}
+      </span>
+    </label>
+  )
+}
+
+/** 勾选框（多选列表里用）。 */
+export function Checkbox({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string
+  checked: boolean
+  onChange: (value: boolean) => void
+}) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2 rounded-lg px-1 py-1 text-sm text-ink transition-colors hover:bg-hover">
       <input
         type="checkbox"
         checked={checked}
         onChange={(event) => onChange(event.target.checked)}
-        className="mt-0.5 accent-accent"
+        className="h-4 w-4 shrink-0 accent-accent"
       />
-      <span>
-        <span className="block text-xs font-medium text-ink-muted">{label}</span>
-        {hint ? <span className="block text-[11px] text-ink-faint">{hint}</span> : null}
-      </span>
+      <span className="min-w-0 truncate">{label}</span>
     </label>
   )
 }
@@ -161,7 +199,7 @@ export function TagsField({
           )
         }
         placeholder="用逗号隔开，如：python, 测试"
-        className={CONTROL}
+        className={`${CONTROL} h-9`}
       />
     </Field>
   )
@@ -188,7 +226,7 @@ export function LinesField({
         value={value.join('\n')}
         onChange={(event) => onChange(event.target.value.split('\n'))}
         placeholder="一行一条"
-        className={`${CONTROL} resize-y leading-relaxed`}
+        className={`${CONTROL} resize-y py-2 leading-relaxed`}
       />
     </Field>
   )
@@ -246,7 +284,7 @@ export function JsonField({
             // 不是合法 JSON —— 保持上一次的合法值，等用户改对
           }
         }}
-        className={`${CONTROL} resize-y font-mono text-xs leading-relaxed`}
+        className={`${CONTROL} resize-y py-2 font-mono text-xs leading-relaxed`}
       />
     </Field>
   )

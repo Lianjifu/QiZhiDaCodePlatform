@@ -248,7 +248,7 @@ function EnvironmentPicker({
   const folders = matched.filter((item) => item.kind !== 'worktree' && !item.is_repo)
 
   return (
-    <Modal title="选择工作目录" onClose={onClose} wide>
+    <Modal title="选择工作目录" onClose={onClose} size="lg">
       <div className="space-y-4">
         <div className="relative">
           <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-faint" />

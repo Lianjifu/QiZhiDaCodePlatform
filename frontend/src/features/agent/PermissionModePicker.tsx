@@ -162,7 +162,7 @@ export default function PermissionModePicker({
         disabled={busy}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-ink-muted transition-colors hover:bg-hover hover:text-ink disabled:opacity-50"
+        className="flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs whitespace-nowrap text-ink-muted transition-colors hover:bg-hover hover:text-ink disabled:opacity-50"
         title="权限模式：这一轮要不要人批"
       >
         <ShieldIcon className="h-3.5 w-3.5 text-ink-faint" />

@@ -7,6 +7,8 @@
 import { useState } from 'react'
 
 import { createMCPServer, updateMCPServer } from '../../api/resources'
+import Banner from '../../components/ui/Banner'
+import FormSection from '../../components/ui/FormSection'
 import { JsonField, LinesField, Select, TagsField, TextArea, TextInput, Toggle } from '../../components/ui/Fields'
 import Modal from '../../components/ui/Modal'
 import Button from '../../components/ui/Button'
@@ -122,26 +124,23 @@ export default function MCPForm({
     <Modal
       title={server ? `编辑 MCP 服务器：${server.name}` : '新增 MCP 服务器'}
       onClose={onClose}
-      wide
+      size="lg"
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={saving}>
             取消
           </Button>
-          <Button variant="primary" onClick={() => void submit()} disabled={saving}>
-            {saving ? '保存中…' : '保存'}
+          <Button variant="primary" loading={saving} onClick={() => void submit()}>
+            保存
           </Button>
         </>
       }
     >
-      <div className="space-y-3">
-        {error ? (
-          <div className="rounded-lg border border-danger bg-danger-soft px-3 py-2 text-xs text-danger">
-            {error}
-          </div>
-        ) : null}
+      <div className="space-y-5">
+        {error ? <Banner tone="danger">{error}</Banner> : null}
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        <FormSection title="基本信息">
+        <div className="grid gap-3.5 sm:grid-cols-2">
           <TextInput
             label="服务器名"
             required
@@ -168,7 +167,9 @@ export default function MCPForm({
           value={form.description}
           onChange={(event) => set('description', event.target.value)}
         />
+        </FormSection>
 
+        <FormSection title="连接" description="stdio 是本机命令，另外两种是远程地址。">
         {isStdio ? (
           <>
             <TextInput
@@ -209,7 +210,10 @@ export default function MCPForm({
           </>
         )}
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        </FormSection>
+
+        <FormSection title="其他">
+        <div className="grid gap-3.5 sm:grid-cols-2">
           <TextInput
             label="超时（秒）"
             type="number"
@@ -222,6 +226,7 @@ export default function MCPForm({
         </div>
 
         <Toggle label="启用" checked={form.enabled} onChange={(value) => set('enabled', value)} />
+        </FormSection>
       </div>
     </Modal>
   )
