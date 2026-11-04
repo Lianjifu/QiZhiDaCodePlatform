@@ -276,10 +276,11 @@ def test_container_reuse_preserves_installed_packages(tmp_path):
 
 
 def test_挂载预检按工作区与镜像只做一次(monkeypatch, tmp_path):
-    """预检要起一个一次性容器（docker run --rm）—— 同一个工作区不用反复验。
+    """挂载预检不该每次命令都做一遍 —— 也不该为此另起容器。
 
-    ``run_python`` 每次调用都新建一个 DockerSandbox 实例，预检要是按实例算，
-    每条命令都得白起一个容器（三百毫秒上下）。
+    预检现在在会话容器里做（``docker exec … test -f``），所以**一次
+    一次性容器都不该起**（``docker run --rm``）。以前预检要起一个
+    一次性容器，验完就删，紧接着还要再起一个常驻容器 —— 两次容器创建。
     """
     calls: list[list[str]] = []
 
@@ -295,7 +296,8 @@ def test_挂载预检按工作区与镜像只做一次(monkeypatch, tmp_path):
     for _ in range(3):
         DockerSandbox(workspace, session_id="t-mount").execute("echo hi")
 
-    checks = [argv for argv in calls if "--rm" in argv]
+    assert not [argv for argv in calls if "--rm" in argv], "不该为预检起一次性容器"
+    checks = [argv for argv in calls if "test" in argv and "-f" in argv]
     assert len(checks) == 1, f"预检跑了 {len(checks)} 次，应该只跑一次"
 
 

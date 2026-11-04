@@ -50,6 +50,7 @@ import logging
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from deepagents.backends.protocol import (
@@ -82,8 +83,7 @@ logger = logging.getLogger(__name__)
 
 # (工作区, 镜像) → 挂载预检已通过
 #
-# **进程级共享** —— 预检要起一个一次性容器（docker run --rm），
-# 同一份工作区 + 同一个镜像的结果不会变。
+# **进程级共享** —— 同一份工作区 + 同一个镜像的结果不会变。
 _MOUNT_OK: set[tuple[str, str]] = set()
 
 # docker daemon 自己报错的固定开头
@@ -107,6 +107,19 @@ _FILE_METHODS_UNSUPPORTED = (
     "原因：基类把虚拟路径原样塞进容器命令，而我们的工作区挂在 {mount} —— "
     "虚拟路径在容器里不存在。文件操作由宿主侧的 FilesystemBackend 负责。"
 )
+
+# 挂载没生效时的提示
+_MOUNT_FAILED = (
+    "工作区没有挂载进容器: {workspace}\n"
+    "docker 运行时看不到这个目录（macOS 上 Docker Desktop / Colima "
+    "只能挂载被共享的路径，Colima 默认共享 $HOME）。\n"
+    "解决办法：把 WORKSPACE_ROOT 放到共享目录下，"
+    "或把该目录加入 docker 的共享列表。"
+)
+
+# 标记文件在容器里出现得慢一点时，重试几次
+_MOUNT_VISIBLE_ATTEMPTS = 6
+_MOUNT_VISIBLE_INTERVAL = 0.05
 
 
 def _container_gone(completed: subprocess.CompletedProcess[str]) -> bool:
@@ -442,18 +455,19 @@ class DockerSandbox(BaseSandbox):
         容器里的命令就在一个空工作区里跑，报错信息还特别误导
         （"cannot open /workspace/xxx.sh: No such file"）。
 
-        所以这里先放一个标记文件，进容器确认它看得见；看不见就明确报错，
+        所以这里放一个标记文件，进容器确认它看得见；看不见就明确报错，
         把"没共享目录"这件事直接说出来。
+
+        **在会话容器里验，不再另起一个一次性容器** —— 以前这里要
+        ``docker run --rm`` 起一个临时容器（一百多毫秒），验完就删，
+        紧接着还要再起一个常驻容器 —— 两次容器创建，全是白花的钱。
+        现在直接在常驻容器里放标记文件看一眼。
 
         Raises:
             RuntimeError: 工作区没有挂进容器。
         """
-        # **预检结果按 (工作区, 镜像) 共享** —— 预检要起一个一次性容器
-        # （docker run --rm，三百毫秒上下）。同一个工作区 + 同一个镜像，
-        # 挂进去的结果不会变，没必要每次命令都再起一个容器验一遍。
-        #
-        # 之前这个标记只在**实例**上，而 ``run_python`` 每次调用都新建一个
-        # DockerSandbox —— 于是每条命令都白起一个容器。
+        # **预检结果按 (工作区, 镜像) 共享** —— 同一个工作区 + 同一个镜像，
+        # 挂进去的结果不会变，没必要每次命令都再验一遍。
         cache_key = (str(self.workspace), self.image)
         if self._mount_ok or cache_key in _MOUNT_OK:
             self._mount_ok = True
@@ -466,40 +480,39 @@ class DockerSandbox(BaseSandbox):
         except OSError as exc:
             raise RuntimeError(f"工作区不可写: {self.workspace}（{exc}）") from exc
 
-        argv = [
-            "docker",
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "-v",
-            f"{self.workspace}:{self.mount}",
-            "-w",
-            self.mount,
-            self.image,
-            "sh",
-            "-c",
-            f"test -f {self.mount}/{_MOUNT_CHECK_FILE}",
-        ]
         try:
-            completed = subprocess.run(  # noqa: S603
-                argv, capture_output=True, text=True, timeout=60, check=False
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise RuntimeError(f"挂载预检失败: {exc}") from exc
+            name = self._ensure_container()
+            if not self._marker_visible(name, marker):
+                # 挂载没生效 —— 容器留着也没用（而且会占着名字），
+                # 删掉免得下次建容器撞名。
+                remove_container(name)
+                get_pool().forget_probe(name)
+                raise RuntimeError(_MOUNT_FAILED.format(workspace=self.workspace))
+            _MOUNT_OK.add(cache_key)
+            self._mount_ok = True
         finally:
             marker.unlink(missing_ok=True)
 
-        if completed.returncode != 0:
-            raise RuntimeError(
-                f"工作区没有挂载进容器: {self.workspace}\n"
-                f"docker 运行时看不到这个目录（macOS 上 Docker Desktop / Colima "
-                f"只能挂载被共享的路径，Colima 默认共享 $HOME）。\n"
-                f"解决办法：把 WORKSPACE_ROOT 放到共享目录下，"
-                f"或把该目录加入 docker 的共享列表。"
+    def _marker_visible(self, name: str, marker: Path) -> bool:
+        """标记文件在容器里看得见吗。
+
+        **要重试几次** —— 容器是复用的时候，标记文件是刚写到宿主上的，
+        macOS 的 Docker Desktop 要靠文件共享把它同步进容器，不是立刻的。
+        """
+        target = f"{self.mount}/{marker.name}"
+        for attempt in range(_MOUNT_VISIBLE_ATTEMPTS):
+            completed = subprocess.run(  # noqa: S603
+                ["docker", "exec", name, "test", "-f", target],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
             )
-        self._mount_ok = True
-        _MOUNT_OK.add(cache_key)
+            if completed.returncode == 0:
+                return True
+            if attempt + 1 < _MOUNT_VISIBLE_ATTEMPTS:
+                time.sleep(_MOUNT_VISIBLE_INTERVAL)
+        return False
 
     def _safe_path(self, path: str) -> Path:
         """把相对路径解析到工作区内。

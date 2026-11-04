@@ -8,14 +8,9 @@
  *
  * 多少刷一次：进会话时读一次，之后每 30 秒一次（标签页不可见时不读）。
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
-
-import { sessionStatus } from '../../api/resources'
-import type { SessionStatus } from '../../types/api'
 import { ContextBreakdown } from './ContextBreakdown'
 import { formatTokens } from './contextFormat'
-
-const REFRESH_MS = 30_000
+import { useRefreshOnIdle, useSessionStatus } from './useSessionStatus'
 
 export default function ContextUsageIndicator({
   threadId,
@@ -33,46 +28,16 @@ export default function ContextUsageIndicator({
   /** 打开右侧完整面板 */
   onOpenDetail?: () => void
 }) {
-  const [data, setData] = useState<{ threadId: string; status: SessionStatus } | null>(null)
-  /** 当前该显示哪个会话 —— 用来挡掉"上一个会话的慢响应" */
-  const currentRef = useRef(threadId)
-  useEffect(() => {
-    currentRef.current = threadId
-  }, [threadId])
-
-  const load = useCallback(() => {
-    const wanted = currentRef.current
-    if (!wanted) return
-    sessionStatus(wanted)
-      .then((status) => {
-        if (currentRef.current !== wanted) return
-        setData({ threadId: wanted, status })
-      })
-      .catch(() => {
-        // 读不到就保持上一次的值 —— 不该变成一个报错框
-      })
-  }, [])
-
-  useEffect(() => {
-    load()
-    const timer = window.setInterval(() => {
-      if (!document.hidden) load()
-    }, REFRESH_MS)
-    return () => window.clearInterval(timer)
-  }, [threadId, load])
+  // **跟右侧的完整面板共用一份数据** —— 同一个接口读两遍，数字还可能对不上
+  const { status, refresh } = useSessionStatus(threadId)
 
   /**
    * 这一轮跑完了就重新读一次。
    *
    * 光靠 30 秒的轮询太慢 —— 一轮对话刚结束，占用数字还停在上一轮，看着像没变。
    */
-  const prevBusy = useRef(busy)
-  useEffect(() => {
-    if (prevBusy.current && !busy) load()
-    prevBusy.current = busy
-  }, [busy, load])
+  useRefreshOnIdle(busy, refresh)
 
-  const status = data?.threadId === threadId ? data.status : null
   const percent = status?.context.percent ?? 0
   const used = status?.context.used ?? 0
   const limit = status?.context.limit ?? 0

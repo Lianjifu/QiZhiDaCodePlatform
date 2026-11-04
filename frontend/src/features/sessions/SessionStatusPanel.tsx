@@ -9,16 +9,10 @@
  * **上下文占用是估算**（4 字符约 1 token），面板上写明了 —— 别让人拿它当
  * 精确的 token 数看。
  */
-import { useEffect, useState } from 'react'
-
-import { sessionStatus } from '../../api/resources'
 import { humanSize } from '../../lib/format'
-import type { SessionStatus } from '../../types/api'
 import { ContextBreakdown } from './ContextBreakdown'
 import { PART_COLORS, RESERVED_COLOR, formatTokens } from './contextFormat'
-
-/** 多久刷一次状态。 */
-const REFRESH_MS = 30_000
+import { useSessionStatus } from './useSessionStatus'
 
 /** 一段内容 —— 一张独立的卡片。 */
 function Section({
@@ -37,41 +31,9 @@ function Section({
 }
 
 export default function SessionStatusPanel({ threadId }: { threadId: string }) {
-  const [data, setData] = useState<SessionStatus | null>(null)
-  const [loadedThread, setLoadedThread] = useState('')
-  const [failure, setFailure] = useState<{ threadId: string; message: string } | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    const load = () => {
-      sessionStatus(threadId)
-        .then((result) => {
-          if (cancelled) return
-          setData(result)
-          setLoadedThread(threadId)
-        })
-        .catch((cause) => {
-          if (cancelled) return
-          setFailure({
-            threadId,
-            message: cause instanceof Error ? cause.message : String(cause),
-          })
-        })
-    }
-    load()
-    // 面板开着就定期刷 —— 后台任务在跑的时候，占用和改动量都在变
-    const timer = window.setInterval(() => {
-      if (!document.hidden) load()
-    }, REFRESH_MS)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [threadId])
-
-  // 换会话时旧的数据不算数 —— 面板不能显示上一个会话的状态
-  const status = loadedThread === threadId ? data : null
-  const error = failure?.threadId === threadId ? failure.message : ''
+  // **跟底栏的占用指示器共用一份数据** —— 同一个接口读两遍，数字还可能对不上；
+  // 而且面板打开时底栏早就拉过了，不用再等一次。
+  const { status, error } = useSessionStatus(threadId)
 
   if (!status && !error) {
     return (

@@ -59,6 +59,10 @@ def make_run_python(context: ExecutionContext) -> Callable[[str], Awaitable[dict
             else:
                 sandbox = DockerSandbox(
                     context.workspace,
+                    # **跟 execute 用同一个容器** —— 容器名按会话标识算，
+                    # 不给就退化成"按工作区目录名算"，于是同一个会话会起
+                    # 两个容器：装好的依赖看不到，还白占一份内存。
+                    session_id=context.thread_id,
                     image=context.sandbox_image,
                     mount=context.docker_mount,
                     timeout=context.sandbox_timeout,

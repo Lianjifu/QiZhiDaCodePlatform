@@ -12,11 +12,13 @@
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from deepagents.backends.filesystem import FilesystemBackend
 
+from app.capabilities.backends import sandbox_backend
 from app.capabilities.backends.sandbox_backend import DockerSandbox
 from app.capabilities.errors import CapabilityError
 from app.capabilities.execution.context import ExecutionContext
@@ -168,6 +170,31 @@ async def test_run_python_can_read_workspace_files(ctx):
     (ctx.workspace / "data.txt").write_text("42", encoding="utf-8")
     out = await make_run_python(ctx)("print(open('data.txt').read().strip())")
     assert "42" in out["output"]
+
+
+@pytest.mark.asyncio
+async def test_run_python_用的是会话自己的容器(monkeypatch, tmp_path):
+    """容器名按会话标识算 —— run_python 不给会话标识就退化成"按工作区目录名算"。
+
+    那样同一个会话会起**两个**容器：execute 装好的依赖 run_python 看不见，
+    还白占一份内存（容器常驻，512M 起步）。
+    """
+    context = ExecutionContext.build(workspace=tmp_path)
+    context.sandbox_type = "docker"
+    context.thread_id = "thread-abc"
+    seen: dict[str, str] = {}
+
+    class FakeSandbox:
+        def __init__(self, workspace, *, session_id="", **kwargs):
+            seen["session_id"] = session_id
+
+        async def aexecute(self, command, *, timeout=None):
+            return SimpleNamespace(exit_code=0, output="ok")
+
+    monkeypatch.setattr(sandbox_backend, "DockerSandbox", FakeSandbox)
+    out = await make_run_python(context)("print(1)")
+    assert out["exit_code"] == 0
+    assert seen["session_id"] == "thread-abc"
 
 
 @pytest.mark.asyncio
