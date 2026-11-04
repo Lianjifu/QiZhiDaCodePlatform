@@ -622,6 +622,14 @@ GET    /api/v1/agent/{thread_id}/permission  这个会话的权限模式
 POST   /api/v1/agent/{thread_id}/permission  改权限模式（auto/manual/accept_edits/plan/bypass）
 ```
 
+> ⚠️ **权限模式接口没有鉴权，而它能把自己提到 bypass** —— 知道 `thread_id` 就能
+> `POST /api/v1/agent/{thread_id}/permission` 把这个会话设成 `bypass`，
+> 之后该会话的 `delete` / `git_merge` / `execute` 全部放行。
+> 同样地，`POST /agent/{thread_id}/approve` 能替别人批准挂起的破坏性调用。
+> 这比「文件接口无鉴权」高一档 —— 建议把 `bypass` 收在进程级开关后面
+> （环境变量打开），并给这两类操作加审计日志。
+> 详见 [docs/plans/agent-review-2026-11.md](docs/plans/agent-review-2026-11.md) P0-4。
+
 对话时用 `skill_ids` 指定要挂载的技能；不传则导出全部启用的技能，由模型按
 描述自己挑（渐进披露）：
 
@@ -1198,7 +1206,7 @@ pip install -r requirements.txt
 ```bash
 cd backend
 source ../.venv/bin/activate
-pytest -q          # 215 passed
+pytest -q          # 368 passed
 ```
 
 只想快速检查语法（不装依赖也能跑）：
