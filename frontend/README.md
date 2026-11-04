@@ -61,6 +61,8 @@ src/
       Modal.tsx    弹窗：点遮罩 / Esc 关闭，内容区自己滚
       Button.tsx   四档按钮：默认 / 主操作 / 危险 / 文字
       Fields.tsx   表单控件：输入 / 多行 / 下拉 / 开关 / 标签 / JSON
+      ConfirmDialog.tsx  确认弹窗（危险操作用）
+      useConfirm.tsx      确认弹窗的 hook：await confirm({…})
   features/
     agent/         编码助手（唯一支持多轮对话的页面）
       ChatPage.tsx  MessageList.tsx  ToolCallBlock.tsx
@@ -268,7 +270,9 @@ token 数看。后端在 `app/agents/status.py`；在跑的任务在 `app/agents
   平台不允许自建任意入口；mcp 类型的来源是已配置的 MCP 服务器名。
 - **入参 schema 只有 http 类型才要填** —— builtin / mcp 传空字典是正常的。
 - **改文件内容只处理文本** —— 二进制走上传。
-- 删除一律要确认（`window.confirm`）；删工具会连带清掉技能里对它的引用。
+- 删除一律要确认 —— 用平台自己的**确认弹窗**（`useConfirm`），不用浏览器原生的
+  `window.confirm`（那个是系统样式，还会阻塞整个页面）；删工具会连带清掉技能里
+  对它的引用。
 
 **工具表里的「权限 / 风险」那一列**显示的是档位 + 要不要人批：
 

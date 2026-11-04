@@ -17,9 +17,11 @@ import Button from '../components/ui/Button'
 import { Select } from '../components/ui/Fields'
 import Modal from '../components/ui/Modal'
 import { bindableEnvironments } from '../features/environments/format'
+import { useConfirm } from '../components/ui/useConfirm'
 import type { Environment, EnvironmentList } from '../types/api'
 
 export default function EnvironmentsPage() {
+  const { confirm, dialog: confirmDialog } = useConfirm()
   const [list, setList] = useState<EnvironmentList | null>(null)
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
@@ -134,8 +136,16 @@ export default function EnvironmentsPage() {
                     key={item.path}
                     item={item}
                     onDelete={() => {
-                      if (!window.confirm(`删掉 worktree「${item.name}」？分支还留在仓库里。`)) return
-                      void run(() => deleteWorktree(item.path), '已删除 worktree')
+                      void (async () => {
+                        const ok = await confirm({
+                          title: `删掉 worktree「${item.name}」？`,
+                          description: '这个目录连着里面的改动一起没了。分支还留在仓库里，随时能再建回来。',
+                          confirmText: '删掉',
+                          danger: true,
+                        })
+                        if (!ok) return
+                        await run(() => deleteWorktree(item.path), '已删除 worktree')
+                      })()
                     }}
                   />
                 ))}
@@ -156,6 +166,8 @@ export default function EnvironmentsPage() {
           </Section>
         </>
       ) : null}
+
+      {confirmDialog}
 
       {creating ? (
         <NewWorktreeDialog

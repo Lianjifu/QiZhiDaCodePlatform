@@ -18,6 +18,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { getSessionPermission, setSessionPermission } from '../../api/resources'
 import { ShieldIcon } from '../../components/icons'
+import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { PERMISSION_MODES, permissionLabel } from './permissionModes'
 
 export default function PermissionModePicker({
@@ -32,6 +33,8 @@ export default function PermissionModePicker({
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  /** 待确认的动作（切到绕过权限要问一句） */
+  const [confirming, setConfirming] = useState<string | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
 
   // 当前模式：后端说了算（默认值来自全局配置）
@@ -67,11 +70,13 @@ export default function PermissionModePicker({
     if (key === mode) return
     if (key === 'bypass') {
       // 绕过权限 = 连破坏性操作都不问 —— 这一步要点确认
-      const ok = window.confirm(
-        '绕过权限模式：所有操作都会直接执行，包括删除文件、破坏性命令。确定要切到这个模式吗？',
-      )
-      if (!ok) return
+      setConfirming(key)
+      return
     }
+    await apply(key)
+  }
+
+  const apply = async (key: string) => {
     setBusy(true)
     setError('')
     try {
@@ -82,6 +87,7 @@ export default function PermissionModePicker({
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setBusy(false)
+      setConfirming(null)
     }
   }
 
@@ -98,6 +104,17 @@ export default function PermissionModePicker({
         {permissionLabel(mode)}
         <span className="text-ink-faint">▾</span>
       </button>
+
+      {confirming === 'bypass' ? (
+        <ConfirmDialog
+          title="切到绕过权限？"
+          description="绕过权限模式里所有操作都会直接执行 —— 包括删除文件、破坏性命令、联网请求，平台不会再问。这个会话剩下的操作都不会有人工审批。"
+          confirmText="切到绕过权限"
+          danger
+          onConfirm={() => void apply('bypass')}
+          onCancel={() => setConfirming(null)}
+        />
+      ) : null}
 
       {open ? (
         <div className="absolute bottom-full left-0 mb-1 w-72 overflow-hidden rounded-xl border border-line bg-overlay shadow-lg">

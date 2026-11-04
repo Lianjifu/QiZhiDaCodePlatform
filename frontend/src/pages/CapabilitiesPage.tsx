@@ -28,6 +28,7 @@ import {
 } from '../api/resources'
 import Button from '../components/ui/Button'
 import Modal from '../components/ui/Modal'
+import { useConfirm } from '../components/ui/useConfirm'
 import MCPForm from '../features/capabilities/MCPForm'
 import { approvalSummary } from '../features/capabilities/risk'
 import SkillForm from '../features/capabilities/SkillForm'
@@ -51,6 +52,7 @@ const TABS: { key: Tab; label: string }[] = [
 ]
 
 export default function CapabilitiesPage() {
+  const { confirm, dialog: confirmDialog } = useConfirm()
   const [tab, setTab] = useState<Tab>('overview')
   const [overview, setOverview] = useState<Capability[]>([])
   const [kinds, setKinds] = useState<string[]>([])
@@ -291,8 +293,16 @@ export default function CapabilitiesPage() {
                         <button
                           type="button"
                           onClick={() => {
-                            if (!window.confirm(`删掉工具「${tool.name}」？`)) return
-                            void run(() => deleteTool(tool.id), `已删掉工具 ${tool.name}`)
+                            void (async () => {
+                              const ok = await confirm({
+                                title: `删掉工具「${tool.name}」？`,
+                                description: '技能里对它的引用会一并清掉。',
+                                confirmText: '删掉',
+                                danger: true,
+                              })
+                              if (!ok) return
+                              await run(() => deleteTool(tool.id), `已删掉工具 ${tool.name}`)
+                            })()
                           }}
                           className="text-xs text-ink-faint hover:text-danger"
                         >
@@ -364,8 +374,16 @@ export default function CapabilitiesPage() {
                         <button
                           type="button"
                           onClick={() => {
-                            if (!window.confirm(`删掉技能「${skill.name}」？`)) return
-                            void run(() => deleteSkill(skill.id), `已删掉技能 ${skill.name}`)
+                            void (async () => {
+                              const ok = await confirm({
+                                title: `删掉技能「${skill.name}」？`,
+                                description: '技能里的知识与成员关系会一并没了。',
+                                confirmText: '删掉',
+                                danger: true,
+                              })
+                              if (!ok) return
+                              await run(() => deleteSkill(skill.id), `已删掉技能 ${skill.name}`)
+                            })()
                           }}
                           className="text-xs text-ink-faint hover:text-danger"
                         >
@@ -441,11 +459,19 @@ export default function CapabilitiesPage() {
                         <button
                           type="button"
                           onClick={() => {
-                            if (!window.confirm(`删掉 MCP 服务器「${server.name}」？`)) return
-                            void run(
-                              () => deleteMCPServer(server.id),
-                              `已删掉 MCP 服务器 ${server.name}`,
-                            )
+                            void (async () => {
+                              const ok = await confirm({
+                                title: `删掉 MCP 服务器「${server.name}」？`,
+                                description: '通过它接进来的工具会一起消失。',
+                                confirmText: '删掉',
+                                danger: true,
+                              })
+                              if (!ok) return
+                              await run(
+                                () => deleteMCPServer(server.id),
+                                `已删掉 MCP 服务器 ${server.name}`,
+                              )
+                            })()
                           }}
                           className="text-xs text-ink-faint hover:text-danger"
                         >
@@ -526,6 +552,8 @@ export default function CapabilitiesPage() {
           )}
         </Modal>
       ) : null}
+
+      {confirmDialog}
     </div>
   )
 }

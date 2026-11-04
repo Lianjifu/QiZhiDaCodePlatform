@@ -24,6 +24,7 @@ import {
 import Button from '../components/ui/Button'
 import { TextInput } from '../components/ui/Fields'
 import Modal from '../components/ui/Modal'
+import { useConfirm } from '../components/ui/useConfirm'
 import { humanSize, formatTime } from '../lib/format'
 import { useSessions } from '../features/sessions/store'
 import type { WorkspaceFile } from '../types/api'
@@ -48,6 +49,7 @@ function isTextual(file: WorkspaceFile): boolean {
 }
 
 export default function FilesPage() {
+  const { confirm, dialog: confirmDialog } = useConfirm()
   const [files, setFiles] = useState<WorkspaceFile[]>([])
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
@@ -173,7 +175,13 @@ export default function FilesPage() {
   }
 
   const remove = async (file: WorkspaceFile) => {
-    if (!window.confirm(`删掉「${file.path}」？删了就找不回来了。`)) return
+    const ok = await confirm({
+      title: `删掉「${file.path}」？`,
+      description: '删了就找不回来了 —— 回收站是空的。',
+      confirmText: '删掉',
+      danger: true,
+    })
+    if (!ok) return
     try {
       await deleteFile(threadId, file.path)
       await refresh()
@@ -365,6 +373,8 @@ export default function FilesPage() {
           />
         </Modal>
       ) : null}
+
+      {confirmDialog}
     </div>
   )
 }

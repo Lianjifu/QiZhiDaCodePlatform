@@ -16,10 +16,12 @@ import {
 } from '../api/resources'
 import Button from '../components/ui/Button'
 import Modal from '../components/ui/Modal'
+import { useConfirm } from '../components/ui/useConfirm'
 import ProviderForm from '../features/providers/ProviderForm'
 import type { LLMProvider, ProviderPreset, ProviderTestResult } from '../types/api'
 
 export default function ProvidersPage() {
+  const { confirm, dialog: confirmDialog } = useConfirm()
   const [providers, setProviders] = useState<LLMProvider[]>([])
   const [presets, setPresets] = useState<ProviderPreset[]>([])
   const [error, setError] = useState('')
@@ -64,7 +66,13 @@ export default function ProvidersPage() {
   }, [load])
 
   const remove = async (provider: LLMProvider) => {
-    if (!window.confirm(`删掉「${provider.name}」？用这条配置的会话会跑不起来。`)) return
+    const ok = await confirm({
+      title: `删掉「${provider.name}」？`,
+      description: '用这条配置的会话会跑不起来 —— 它们会退回默认模型，或者直接报错。',
+      confirmText: '删掉',
+      danger: true,
+    })
+    if (!ok) return
     try {
       await deleteProvider(provider.id)
       await refresh()
@@ -254,6 +262,8 @@ export default function ProvidersPage() {
           </pre>
         </Modal>
       ) : null}
+
+      {confirmDialog}
     </div>
   )
 }
