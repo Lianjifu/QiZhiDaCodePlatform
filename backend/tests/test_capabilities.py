@@ -969,7 +969,12 @@ def test_breaker_stays_closed_when_errors_are_few():
     assert breaker.is_open("ok_one") is False
 
 
-def test_breaker_counts_slow_calls_as_failures():
+def test_breaker_does_not_count_slow_successes_as_failures():
+    """**慢不等于失败** —— 慢的成功不该把能力误熔断。
+
+    ``run_python`` 正常跑 6 秒是常事。把它记成失败，五次正常执行就能
+    把能力熔断，之后每次调用都被快速失败 —— 比慢更糟。
+    """
     from app.capabilities.execution.breaker import CircuitBreaker
 
     breaker = CircuitBreaker(
@@ -977,7 +982,23 @@ def test_breaker_counts_slow_calls_as_failures():
     )
     for _ in range(3):
         breaker.record("slow", ok=True, duration_ms=500)
-    assert breaker.is_open("slow") is True
+    assert breaker.is_open("slow") is False
+    # 但慢这件事本身要被记下来 —— 事后查得到
+    assert breaker.state("slow")["degraded"] == 3
+    # 错误率只算真失败
+    assert breaker.state("slow")["error_rate"] == 0.0
+
+
+def test_breaker_opens_on_real_failures():
+    """真失败还是照样熔断 —— 上面的改动不能把熔断器整个废掉。"""
+    from app.capabilities.execution.breaker import CircuitBreaker
+
+    breaker = CircuitBreaker(
+        window_seconds=60, min_samples=3, error_rate=0.5, cooldown_seconds=30, latency_ms=100
+    )
+    for _ in range(3):
+        breaker.record("broken", ok=False, duration_ms=10)
+    assert breaker.is_open("broken") is True
 
 
 # ---------- 任务状态：置信度 / 阻塞 ----------

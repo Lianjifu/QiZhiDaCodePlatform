@@ -80,8 +80,12 @@ async def get_memory(
     item_id: str,
     service: ServiceDep,
 ) -> ResponseModel[MemoryOut]:
-    """取一条记忆的全文。"""
-    entry = await service.read(item_id)
+    """取一条记忆的全文。
+
+    **按 id 跨会话找** —— 路径里只有 id，没有会话。
+    记忆 id 全局唯一（``s:12`` / ``l:3``），按它就能定位到那一条。
+    """
+    entry = await service.read_any(item_id)
     if entry is None:
         raise NotFoundError(f"记忆 {item_id} 不存在")
     return ResponseModel[MemoryOut](data=MemoryOut.model_validate(entry.to_dict()))
@@ -96,7 +100,7 @@ async def delete_memory(
 
     agent 记错了要能删 —— 这是"写入后用户能一句话纠错"的兜底。
     """
-    deleted = await service.forget(item_id)
+    deleted = await service.forget_any(item_id)
     if not deleted:
         raise NotFoundError(f"记忆 {item_id} 不存在")
     return ResponseModel[dict](message="已删除", data={"id": item_id})

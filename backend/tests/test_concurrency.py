@@ -16,7 +16,6 @@ from app.capabilities.execution.concurrency import ConcurrencyLimiter
 from app.models.invocation import STATUS_EXPIRED, STATUS_PENDING, Invocation
 from app.services.invocation import expire_stale_approvals
 
-
 # ---------- 并发闸门 ----------
 
 

@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from deepagents.backends.filesystem import FilesystemBackend
 from langchain.chat_models import init_chat_model
+from langchain_core.messages import HumanMessage
 
 from app.agents.builder import build_agent
 from app.agents.llm import _apply_context_window
@@ -28,8 +29,10 @@ from app.context.blocks import (
     ContextBlock,
 )
 from app.context.budget import (
+    CONTEXT_BUDGET_RATIO,
     FALLBACK_CONTEXT_WINDOW,
     budget_for_window,
+    conversation_budget_ratio,
     resolve_window,
 )
 from app.context.compaction import (
@@ -127,6 +130,27 @@ def test_required_block_is_never_silently_dropped():
     assert result.warnings, "装不下必装块要警告"
 
 
+def test_required_truncatable_block_does_not_blow_the_budget():
+    """必装但**可截断**的块（基准提示词）—— 截断，不撑破预算。
+
+    超预算的后果是厂商拒掉整个请求；截断的后果只是模型少看一段提示词。
+    """
+    blocks = [
+        ContextBlock(
+            key="base",
+            content="前。" + "x" * 500,
+            priority=0,
+            required=True,
+            overflow=OVERFLOW_TRUNCATE,
+        ),
+    ]
+    result = assemble(blocks, budget_chars=100)
+    assert result.blocks, "必装块必须装进去"
+    assert result.truncated, "可截断的必装块应该被截断"
+    assert not result.over_budget, "装配器保证不超预算"
+    assert result.used_chars <= result.budget_chars
+
+
 def test_policy_block_dropped_raises_warning():
     """策略说明被挤掉要警告 —— 模型会因此反复触发审批。"""
     blocks = [
@@ -197,12 +221,41 @@ def test_memory_catalog_keeps_own_boundary():
 
 
 def test_profile_makes_threshold_fractional():
-    """挂上 profile 后阈值按窗口比例走。"""
+    """挂上 profile 后阈值按窗口比例走。
+
+    触发线是**对话的份额**（窗口 − 系统提示词那份），不是另定的 0.85 ——
+    两份预算互不知情的话，一次请求能到 1.35 倍窗口。
+    """
     model = init_chat_model("openai:deepseek-flash", api_key="x")
     _apply_context_window(model, 1048576)
     middleware = build_compaction_middleware(model=model)
-    assert middleware.trigger == ("fraction", 0.85)
+    assert middleware.trigger == ("fraction", conversation_budget_ratio())
     assert middleware.keep == ("fraction", 0.10)
+
+
+def test_budget_and_compaction_share_one_notion():
+    """系统提示词与对话的额度加起来正好一个窗口。"""
+    assert CONTEXT_BUDGET_RATIO + conversation_budget_ratio(CONTEXT_BUDGET_RATIO) == 1.0
+    # 对话的份额是**减出来的**，不是另定的
+    assert conversation_budget_ratio(0.5) == 0.5
+    assert conversation_budget_ratio(0.8) == pytest.approx(0.2)
+
+
+@pytest.mark.asyncio
+async def test_compaction_uses_two_thresholds():
+    """对话与整个请求各用各的阈值。
+
+    框架只有一个阈值，可它要同时跟"只算对话"和"整个请求"两种度量比 ——
+    同一个阈值比两者，要么提前压缩，要么放任请求超窗。
+    """
+    model = init_chat_model("openai:deepseek-flash", api_key="x")
+    _apply_context_window(model, 1000)
+    middleware = build_compaction_middleware(model=model)
+    messages = [HumanMessage(content="早")]
+    # 对话占 400：低于对话的份额（500）—— 不压缩
+    assert middleware._should_summarize(messages, 400) is False
+    # 对话占 600：超过对话的份额 —— 压缩
+    assert middleware._should_summarize(messages, 600) is True
 
 
 def test_without_profile_does_not_crash():
@@ -260,7 +313,7 @@ async def test_compaction_replaces_default_not_duplicates(tmp_path):
         if isinstance(obj, PlatformSummarizationMiddleware) and id(obj) not in before
     ]
     assert len(instances) == 1, "应该只有一份压缩中间件"
-    assert instances[0].trigger == ("fraction", 0.85)
+    assert instances[0].trigger == ("fraction", conversation_budget_ratio())
     assert agent is not None
 
 

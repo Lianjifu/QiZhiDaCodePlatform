@@ -42,10 +42,9 @@ from app.agents.tasks import REGISTRY, describe_call
 from app.capabilities.errors import CapabilityError
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.redaction import redact
-from app.capabilities.execution.risk import assess
+from app.capabilities.execution.risk import assess_call
 from app.capabilities.execution.task_state import adjust_confidence, load_task_state
 from app.capabilities.registration.policy import (
-    Annotations,
     PermissionMode,
     RiskLevel,
     normalize_mode,
@@ -54,7 +53,6 @@ from app.capabilities.registration.spec import KIND_TOOL, CapabilitySpec
 from app.capabilities.registration.tool_policy import (
     FS_TOOL_NAMES,
     READ_ONLY_TOOL_NAMES,
-    ToolPolicy,
     approval_required_tools,
     policy_for_tool,
 )
@@ -215,12 +213,19 @@ class CapabilityMiddleware(AgentMiddleware):
         挂起用 LangGraph 的 ``interrupt()``：它在工具执行过程中抛中断，
         恢复时把决定值交回这里。批准就继续执行，拒绝就返回一条错误消息给模型。
 
-        **已经在声明级批过的，不再问第二次。** 声明级（deepAgents 的 HITL）先于
-        工具执行发生 —— 工具能走到这里，说明人已经看过这次调用并批过了。
-        再挂一次等于同一次调用让人批两遍。
+        **声明级批过，不等于这一次调用就安全了。** 声明级看的是**工具**
+        （"execute 这个工具要人批"），参数级看的是**这次调用的参数**
+        （"这条命令里有 rm -rf"）。两者不是一回事 —— 一条 ``rm -rf`` 走的
+        同样是 ``execute`` 工具，声明级只会告诉人"执行命令"，
+        不会告诉人"这条命令在删库"。
 
-        所以参数级只管**声明级放行过的那类调用**：平时不需要人批的工具，
-        碰到破坏性命令 / 内网地址时单独拎出来问一次。
+        所以声明级那张审批卡片上显示的风险档位，是**参数级上调后的**
+        （"破坏性"而不是"执行命令"）—— 由 ``runner._pending_entries``
+        算出来。人不清楚自己批的是删库还是跑命令，卡片上的字就得说清楚。
+
+        **绕过权限模式下不挂起**：那个模式的承诺是"不会有人工审批"，
+        参数级再挂一次就是违背承诺。但判定仍然要跑 —— 结果会落到调用记录里，
+        事后查得到"这次绕过了什么"。
 
         Args:
             name: 工具名。
@@ -232,14 +237,32 @@ class CapabilityMiddleware(AgentMiddleware):
         if not self.interrupt_enabled:
             # worker：没有前端界面，挂起就永远等不到人批
             return None
+
         if name in self._approval_tool_names():
-            # 声明级已经批过这一次 —— 参数级不再重复问
+            # 声明级已经就**这个工具**问过人了 —— 再问一次就是同一次调用让人批两遍。
+            #
+            # 但声明级批的是工具，不是这次调用的参数：一条 ``rm -rf`` 走的同样是
+            # ``execute`` 工具。所以参数级规则仍然要跑 —— 跑出来的结果由
+            # ``runner._pending_entries`` 落到审批卡片上，人看到的是
+            # **参数级上调后的档位**（"破坏性"而不是"执行命令"），
+            # 而不是只看到工具的基线档位。
             return None
 
-        assessment = assess(self._spec_for(name), args)
+        assessment = assess_call(name, args, self.specs)
         if not assessment.needs_review:
             # 没有威胁信号 —— 只是风险分类被调整了（比如"会向固定出口发数据"
             # 记成 write）。那不是危险，不该再挂一次让人批。
+            return None
+
+        if self.permission_mode == PermissionMode.BYPASS:
+            # 绕过权限：用户明确说了不要人工审批。这里不挂起 ——
+            # 挂了就违背承诺。但判定跑过了，结果记进调用记录。
+            logger.warning(
+                "绕过权限模式放行了命中风险规则的调用：tool=%s risk=%s reasons=%s",
+                name,
+                assessment.risk,
+                assessment.reasons,
+            )
             return None
 
         payload = {
@@ -342,7 +365,11 @@ class CapabilityMiddleware(AgentMiddleware):
                 capability_key=name,
                 arguments=redact(args),
                 payload=dict(args),
-                status=STATUS_BLOCKED if blocked else (STATUS_FAILED if failed else STATUS_SUCCEEDED),
+                status=(
+                    STATUS_BLOCKED
+                    if blocked
+                    else (STATUS_FAILED if failed else STATUS_SUCCEEDED)
+                ),
                 risk=policy.risk,
                 permission=policy.permission,
                 decision_reason="文件工具经由 deepAgents 后端执行",
@@ -390,24 +417,6 @@ class CapabilityMiddleware(AgentMiddleware):
         return approval_required_tools(self.specs, self.trust_mode, self.allowed_tool_keys)
 
     # ---------- 内部 ----------
-
-    def _spec_for(self, name: str) -> CapabilitySpec:
-        """取工具对应的声明（文件工具没有声明，用映射表合成一个）。
-
-        合成出来的声明只用于风险评估 —— 风险基线来自映射表，注解按幂等性填，
-        这样 ``execution/risk.py`` 那套参数级规则可以原样复用。
-        """
-        for spec in self.specs:
-            if spec.kind == KIND_TOOL and spec.key == name:
-                return spec
-        policy: ToolPolicy = policy_for_tool(name)
-        return CapabilitySpec(
-            key=name,
-            kind=KIND_TOOL,
-            risk=policy.risk,
-            permission=policy.permission,
-            annotations=Annotations(idempotent=policy.idempotent),
-        )
 
 
 # 权限模式 → 中文名（给模型看的那句话）

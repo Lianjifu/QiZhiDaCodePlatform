@@ -50,6 +50,7 @@ export default function ToolCallBlock({ call }: { call: ToolCallView }) {
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
         className={[
           'flex w-full items-center gap-2 rounded-lg border px-2 py-1.5 text-left transition-colors',
           open
@@ -96,10 +97,18 @@ export default function ToolCallBlock({ call }: { call: ToolCallView }) {
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
           ) : failed ? (
             <span className="h-1.5 w-1.5 rounded-full bg-danger" />
+          ) : call.state === 'pending' ? (
+            // **没有结果的调用不是"成功"** —— 它可能还在等审批，
+            // 也可能上一轮跑到一半就断了。标成完成是在骗人。
+            <span className="h-1.5 w-1.5 rounded-full bg-ink-faint" />
           ) : (
             <CheckIcon className="h-3.5 w-3.5 text-success" />
           )}
         </span>
+
+        {call.state === 'pending' ? (
+          <span className="shrink-0 text-[11px] text-ink-faint">未完成</span>
+        ) : null}
 
         <ChevronIcon
           className={[

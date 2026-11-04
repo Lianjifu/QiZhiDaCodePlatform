@@ -34,7 +34,7 @@ def serialized(method: Callable[..., Awaitable]) -> Callable[..., Awaitable]:
     """
 
     @functools.wraps(method)
-    async def wrapper(self: "SessionMemoryStore", *args, **kwargs):
+    async def wrapper(self: SessionMemoryStore, *args, **kwargs):
         lock = self._lock
         if lock is None:
             return await method(self, *args, **kwargs)
@@ -236,6 +236,41 @@ class SessionMemoryStore:
         result = await self.session.execute(stmt)
         await self.session.flush()
         return int(result.rowcount or 0)
+
+    # ---------- 管理接口：跨会话按 id 找 ----------
+
+    @serialized
+    async def get_any(self, item_id: str) -> MemoryEntry | None:
+        """按 id 取一条记忆，**不限会话**。
+
+        **为什么需要它**：管理接口的路径是 ``/memory/{id}`` —— 请求里只有 id，
+        没有会话。id 本身是全局唯一的（表主键），所以按它找得到。
+        会话内的隔离靠的是「谁在用哪个存储」，而不是「id 查不到」——
+        管理接口本来就是跨会话的（要能删别人写错的记忆）。
+        """
+        row_id = _parse_id(item_id)
+        if row_id is None:
+            return None
+        stmt = select(MemoryItem).where(MemoryItem.id == row_id)
+        row = (await self.session.execute(stmt)).scalar_one_or_none()
+        return _to_entry(row) if row is not None else None
+
+    @serialized
+    async def forget_any(self, item_id: str) -> bool:
+        """按 id 删一条记忆，**不限会话**。"""
+        row_id = _parse_id(item_id)
+        if row_id is None:
+            return False
+        stmt = delete(MemoryItem).where(MemoryItem.id == row_id).returning(MemoryItem.id)
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        return result.scalar_one_or_none() is not None
+
+    @serialized
+    async def find_by_hash(self, digest: str) -> MemoryEntry | None:
+        """按内容哈希找一条（查重用）—— 走 ``content_hash`` 索引。"""
+        row = await self._find_by_hash(digest)
+        return _to_entry(row) if row is not None else None
 
     # ---------- 内部 ----------
 

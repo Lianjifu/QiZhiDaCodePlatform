@@ -60,7 +60,8 @@ def test_设置后按会话生效():
     assert permission_path("t-a").exists()
 
 
-def test_恢复默认():
+def test_恢复默认(monkeypatch):
+    monkeypatch.setattr(settings, "capability_allow_bypass", True)
     set_permission_mode("t-a", "bypass")
     assert resolve_permission_mode("t-a") == "bypass"
     set_permission_mode("t-a", "default")
@@ -89,8 +90,9 @@ def test_文件坏了也不影响会话():
 # ---------- 接口 ----------
 
 
-async def test_权限模式接口(client):
+async def test_权限模式接口(client, monkeypatch):
     """GET 读当前模式，POST 改 —— 界面那个选择器靠它。"""
+    monkeypatch.setattr(settings, "capability_allow_bypass", True)
     response = await client.get("/api/v1/agent/t-perm-1/permission")
     assert response.status_code == 200
     assert response.json()["data"]["permission_mode"] == "auto"
@@ -114,3 +116,46 @@ async def test_不支持的模式接口要报错(client):
         json={"mode": "whatever"},
     )
     assert response.status_code >= 400
+
+
+# ---------- bypass 总闸 ----------
+
+
+def test_bypass默认关着(monkeypatch):
+    """bypass 必须有进程级总闸 —— 平台没鉴权，那条接口本身就是绕过链。"""
+    monkeypatch.setattr(settings, "capability_allow_bypass", False)
+    with pytest.raises(ValueError, match="bypass"):
+        set_permission_mode("t-gate", "bypass")
+    assert not permission_path("t-gate").exists()
+
+
+def test_bypass总闸开着才能切(monkeypatch):
+    monkeypatch.setattr(settings, "capability_allow_bypass", True)
+    assert set_permission_mode("t-gate", "bypass") == "bypass"
+    assert resolve_permission_mode("t-gate") == "bypass"
+
+
+def test_总闸关掉后存的bypass也不生效(monkeypatch):
+    """闸是后来关的 —— 之前存下的 bypass 也不能继续用。"""
+    monkeypatch.setattr(settings, "capability_allow_bypass", True)
+    set_permission_mode("t-gate2", "bypass")
+    monkeypatch.setattr(settings, "capability_allow_bypass", False)
+    assert resolve_permission_mode("t-gate2") == "auto"
+
+
+def test_全局配置写bypass也要过总闸(monkeypatch):
+    """运维在配置里写了 bypass —— 总闸关着也不生效（退回 auto）。"""
+    monkeypatch.setattr(settings, "capability_trust_mode", "bypass")
+    monkeypatch.setattr(settings, "capability_allow_bypass", False)
+    assert resolve_permission_mode("t-gate3") == "auto"
+    monkeypatch.setattr(settings, "capability_allow_bypass", True)
+    assert resolve_permission_mode("t-gate3") == "bypass"
+
+
+async def test_bypass被拒要报422(client):
+    """请求不合法 —— 该是 4xx（平台的校验错误码是 422），不是 500。"""
+    response = await client.post(
+        "/api/v1/agent/t-perm-3/permission",
+        json={"mode": "bypass"},
+    )
+    assert response.status_code == 422

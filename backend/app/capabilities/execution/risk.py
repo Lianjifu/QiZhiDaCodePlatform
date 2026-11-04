@@ -20,10 +20,12 @@ from urllib.parse import urlparse
 
 from app.capabilities.registration.policy import (
     EGRESS_TARGET_FIXED,
+    Annotations,
     RiskLevel,
     max_risk,
 )
-from app.capabilities.registration.spec import CapabilitySpec
+from app.capabilities.registration.spec import KIND_TOOL, CapabilitySpec
+from app.capabilities.registration.tool_policy import policy_for_tool
 
 # 破坏性命令特征
 _DESTRUCTIVE_COMMANDS: tuple[tuple[str, str], ...] = (
@@ -36,6 +38,27 @@ _DESTRUCTIVE_COMMANDS: tuple[tuple[str, str], ...] = (
     (r"\bwget\b[^|]*\|\s*(ba)?sh\b", "下载并直接执行脚本"),
     (r">\s*/dev/(sd|nvme)", "写裸设备"),
 )
+
+# 源码里藏着的破坏性调用 —— 走 Python 也能删文件。
+#
+# **为什么要单独一套**：``run_python`` 的参数名是 ``code``，不叫 ``command``。
+# 只按 ``command`` 匹配的话，一段 ``shutil.rmtree("/")`` 完全逃逸 ——
+# 参数级规则在它身上从来没生效过。
+#
+# **只收真正不可逆的**：``os.system`` / ``subprocess`` 不算 —— 它们本身不是破坏性
+# 操作，``os.system("ls")`` 是正经代码。它们里面带的破坏性命令由上面那套
+# shell 特征匹配（``os.system("rm -rf /")`` 里的 ``rm -rf`` 照样命中）。
+_SOURCE_DESTRUCTIVE: tuple[tuple[str, str], ...] = (
+    (r"\bshutil\.rmtree\b", "递归删除目录"),
+    (r"\bos\.(remove|unlink|rmdir)\b", "删除文件或目录"),
+)
+
+# 参数名 → 内容怎么读。
+#
+# **按参数名读，不按工具名读**：同一套规则要能盖住 ``execute``（参数叫
+# ``command``）与 ``run_python``（参数叫 ``code``）。按工具名写死的话，
+# 新加一个能传源码的能力就又漏一个。
+_SOURCE_PARAM_NAMES: tuple[str, ...] = ("command", "code", "script", "source", "program")
 
 # 内部网段
 _INTERNAL_NETWORKS: tuple[str, ...] = (
@@ -129,13 +152,25 @@ def assess(spec: CapabilitySpec, arguments: dict[str, Any] | None = None) -> Ris
         # 声明与注解矛盾：这个能力可能造成破坏性改动，值得单独看一眼
         threat = True
 
-    command = arguments.get("command")
-    if isinstance(command, str):
-        # 命令内容里的破坏性特征 —— 命中就把风险顶到 destructive 并要管理员放行
+    # 内容里的破坏性特征 —— 命中就把风险顶到 destructive 并要管理员放行。
+    #
+    # **按参数名读内容，不按工具名读**：``execute`` 的参数叫 ``command``，
+    # ``run_python`` 的参数叫 ``code``。只认 ``command`` 的话，
+    # ``run_python("import shutil; shutil.rmtree('/')")`` 完全逃逸。
+    for param in _SOURCE_PARAM_NAMES:
+        content = arguments.get(param)
+        if not isinstance(content, str):
+            continue
         for pattern, label in _DESTRUCTIVE_COMMANDS:
-            if re.search(pattern, command):
+            if re.search(pattern, content):
                 risk = max_risk(risk, RiskLevel.DESTRUCTIVE)
-                reasons.append(f"命令包含{label}")
+                reasons.append(f"内容包含{label}")
+                require_admin = True
+                threat = True
+        for pattern, label in _SOURCE_DESTRUCTIVE:
+            if re.search(pattern, content):
+                risk = max_risk(risk, RiskLevel.DESTRUCTIVE)
+                reasons.append(f"内容包含{label}")
                 require_admin = True
                 threat = True
 
@@ -152,6 +187,56 @@ def assess(spec: CapabilitySpec, arguments: dict[str, Any] | None = None) -> Ris
         reasons=reasons,
         require_admin=require_admin,
         threat=threat,
+    )
+
+
+def assess_call(
+    name: str,
+    arguments: dict[str, Any] | None,
+    specs: list[CapabilitySpec] | None = None,
+) -> RiskAssessment:
+    """评估**一次具体调用**的风险。
+
+    参数级规则挂起时要用它 —— 光知道工具名不够，得看这次的参数。
+
+    deepAgents 的文件工具没有声明（它们由 ``FilesystemMiddleware`` 注册），
+    所以风险基线从策略表取，注解按幂等性填 —— 与
+    ``CapabilityMiddleware._spec_for`` 合成的是同一份。
+
+    Args:
+        name: 工具名。
+        arguments: 本次调用的参数。
+        specs: 本次可见的能力清单（用来找我们自己的能力的声明）。
+
+    Returns:
+        评估结果。
+    """
+    return assess(spec_for_tool(name, specs), arguments)
+
+
+def spec_for_tool(name: str, specs: list[CapabilitySpec] | None = None) -> CapabilitySpec:
+    """取工具对应的声明；文件工具没有声明，用策略表合成一个。
+
+    合成出来的声明只用于风险评估 —— 风险基线来自映射表，注解按幂等性填，
+    这样 ``execution/risk.py`` 那套参数级规则可以原样复用。
+
+    Args:
+        name: 工具名。
+        specs: 本次可见的能力清单。
+
+    Returns:
+        能力声明（找不到时是按只读兜底的合成声明）。
+    """
+    for spec in specs or []:
+        if spec.kind == KIND_TOOL and spec.key == name:
+            return spec
+    policy = policy_for_tool(name)
+    return CapabilitySpec(
+        key=name,
+        kind=KIND_TOOL,
+        risk=policy.risk,
+        permission=policy.permission,
+        annotations=Annotations(idempotent=policy.idempotent),
     )
 
 
@@ -174,4 +259,4 @@ def _is_internal_url(url: str) -> bool:
     return any(address in ipaddress.ip_network(cidr) for cidr in _INTERNAL_NETWORKS)
 
 
-__all__ = ["RiskAssessment", "assess"]
+__all__ = ["RiskAssessment", "assess", "assess_call", "spec_for_tool"]

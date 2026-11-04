@@ -132,6 +132,15 @@ class Settings(BaseSettings):
     #   | plan（只读）| bypass（全放行）
     # 老名字还认：strict→manual、balanced→auto、permissive→bypass
     capability_trust_mode: str = "auto"
+    # **能不能用 bypass**（跳过人工确认，含破坏性操作）。
+    #
+    # 默认**关**。平台没有鉴权，而会话级权限模式接口是能改的 ——
+    # 没有这道总闸，那条接口本身就是一条绕过链：知道 thread_id 就能把会话
+    # 提到 bypass，之后删文件、跑破坏性命令都不再要人批。
+    #
+    # 关着的时候，选 bypass 会被**明确拒绝**（不静默忽略 —— 静默忽略会让人
+    # 以为已经切过去了）。全局配置写成 bypass 也一样不生效（退回 auto）。
+    capability_allow_bypass: bool = False
     # 能力没声明超时时的兜底（秒）
     capability_default_timeout: int = 30
     # 审批请求超时自动拒绝（秒）
@@ -182,8 +191,7 @@ class Settings(BaseSettings):
     rag_embedding_timeout: int = 60
     rag_embedding_batch_size: int = 32
 
-    # ---- 上下文模块 ----
-    # 上下文占模型窗口的比例。另一半留给模型输出、工具 schema 和
+    # ---- 上下文模块 ----    # 上下文占模型窗口的比例。另一半留给模型输出、工具 schema 和
     # deepAgents 自己追加的提示词 —— 那部分我们控制不了，只能留地方。
     context_budget_ratio: float = 0.5
     # 一个 token 折算多少字符。英文约 4，中文约 1.5，取折中。

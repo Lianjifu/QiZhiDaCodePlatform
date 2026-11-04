@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.schemas.agent import (
     AgentChatOut,
     AgentChatRequest,
+    AgentDecisionIn,
     AgentForkIn,
     AgentForkOut,
     AgentHistoryOut,
@@ -145,9 +146,16 @@ async def pending(
 async def approve(
     thread_id: str,
     service: ServiceDep,
+    payload: AgentDecisionIn | None = None,
 ) -> ResponseModel[AgentChatOut]:
-    """批准挂起的调用，图继续跑，agent 自己接着往下做。"""
-    result = await service.approve(thread_id)
+    """批准挂起的调用，图继续跑，agent 自己接着往下做。
+
+    **可以逐条批**：请求体里带 ``decisions`` 时，一条挂起的调用一个决定
+    （按待批清单的顺序）。不带 = 全部批准。
+    """
+    result = await service.approve(
+        thread_id, decisions=payload.decisions if payload else None
+    )
     return ResponseModel[AgentChatOut](data=_to_out(result))
 
 
@@ -159,9 +167,16 @@ async def approve(
 async def reject(
     thread_id: str,
     service: ServiceDep,
+    payload: AgentDecisionIn | None = None,
 ) -> ResponseModel[AgentChatOut]:
-    """拒绝挂起的调用：工具不执行，agent 收到拒绝消息后继续。"""
-    result = await service.reject(thread_id)
+    """拒绝挂起的调用：工具不执行，agent 收到拒绝消息后继续。
+
+    **可以逐条拒**：请求体里带 ``decisions`` 时，一条挂起的调用一个决定
+    （按待批清单的顺序）。不带 = 全部拒绝。
+    """
+    result = await service.reject(
+        thread_id, decisions=payload.decisions if payload else None
+    )
     return ResponseModel[AgentChatOut](data=_to_out(result))
 
 
@@ -184,6 +199,8 @@ async def get_permission(
             thread_id=thread_id,
             permission_mode=mode,
             session_override=mode != normalize_mode(settings.capability_trust_mode),
+            # **前端要把不可选的项标出来** —— 别让用户点了才被拒
+            allow_bypass=settings.capability_allow_bypass,
         )
     )
 
@@ -210,6 +227,7 @@ async def set_permission(
             thread_id=thread_id,
             permission_mode=mode,
             session_override=mode != normalize_mode(settings.capability_trust_mode),
+            allow_bypass=settings.capability_allow_bypass,
         )
     )
 
@@ -239,6 +257,32 @@ async def clear(thread_id: str, service: ServiceDep) -> ResponseModel[dict[str, 
     """
     await service.clear(thread_id)
     return ResponseModel[dict[str, str]](data={"thread_id": thread_id, "status": "cleared"})
+
+
+@router.delete(
+    "/{thread_id}/session",
+    summary="彻底删除会话",
+)
+async def delete_session(
+    thread_id: str,
+    service: ServiceDep,
+) -> ResponseModel[dict[str, Any]]:
+    """**彻底删掉**一个会话。
+
+    与 ``DELETE /{thread_id}``（清空对话记录）不同，这个会把会话的**全部**
+    痕迹抹掉：
+
+    - checkpoint（对话历史）；
+    - 会话内短期记忆；
+    - 会话级权限模式；
+    - 环境绑定；
+    - **工作区目录**（上传件、技能导出、产物一并没了）。
+
+    ⚠️ **当前没有鉴权** —— 知道 ``thread_id`` 的人就能删掉别人的会话，
+    连工作区里的文件一起。鉴权补上之前不要暴露到公网。
+    """
+    removed = await service.delete_session(thread_id)
+    return ResponseModel[dict[str, Any]](message="会话已删除", data=removed)
 
 
 @router.post("/stream", summary="与编码助手对话（SSE 流式）")

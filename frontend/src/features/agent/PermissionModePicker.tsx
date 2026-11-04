@@ -21,6 +21,21 @@ import { ShieldIcon } from '../../components/icons'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { PERMISSION_MODES, permissionLabel } from './permissionModes'
 
+/**
+ * 权限模式的读取结果。
+ *
+ * **把 threadId 一起记着** —— 换会话时上一个会话的结果不能顶着显示，
+ * 那是另一个会话的模式。
+ */
+interface LoadedPermission {
+  threadId: string
+  /** 还没读到 / 读失败时都是 null —— **不能拿具体模式顶上** */
+  mode: string | null
+  error: string
+  /** 平台有没有开 bypass 总闸 —— 没开时那一项不可选 */
+  allowBypass: boolean
+}
+
 export default function PermissionModePicker({
   threadId,
   onChange,
@@ -29,13 +44,25 @@ export default function PermissionModePicker({
   /** 模式变了（用来刷新界面上的其它地方） */
   onChange?: (mode: string) => void
 }) {
-  const [mode, setMode] = useState('auto')
+  const [loaded, setLoaded] = useState<LoadedPermission>({
+    threadId,
+    mode: null,
+    error: '',
+    allowBypass: false,
+  })
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   /** 待确认的动作（切到绕过权限要问一句） */
   const [confirming, setConfirming] = useState<string | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
+
+  /** 当前会话读到的模式 —— 别的会话的结果不算数。 */
+  const current: LoadedPermission =
+    loaded.threadId === threadId
+      ? loaded
+      : { threadId, mode: null, error: '', allowBypass: false }
+  const mode = current.mode
 
   // 当前模式：后端说了算（默认值来自全局配置）
   useEffect(() => {
@@ -44,11 +71,24 @@ export default function PermissionModePicker({
     void getSessionPermission(threadId)
       .then((result) => {
         if (cancelled) return
-        setMode(result.permission_mode)
+        setLoaded({
+          threadId,
+          mode: result.permission_mode,
+          error: '',
+          allowBypass: result.allow_bypass,
+        })
         setOpen(false)
       })
-      .catch(() => {
-        // 读不到就用 auto —— 显示错了不影响干活
+      .catch((cause) => {
+        if (cancelled) return
+        // **读失败就明说读失败** —— 早先这里静默吞掉错误、初始态写死 auto，
+        // 真实模式是 bypass 时界面却显示「自动」，用户以为会有人批。
+        setLoaded({
+          threadId,
+          mode: null,
+          error: cause instanceof Error ? cause.message : String(cause),
+          allowBypass: false,
+        })
       })
     return () => {
       cancelled = true
@@ -61,14 +101,26 @@ export default function PermissionModePicker({
     const onDown = (event: MouseEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
     }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
     document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
   }, [open])
 
   const choose = async (key: string) => {
     setOpen(false)
     if (key === mode) return
     if (key === 'bypass') {
+      // **总闸没开就明说** —— 点了才被后端拒，用户会以为是自己操作错了
+      if (!current.allowBypass) {
+        setError('平台没有开启「绕过权限」—— 它会跳过所有人工审批，需要管理员在配置里显式打开。')
+        return
+      }
       // 绕过权限 = 连破坏性操作都不问 —— 这一步要点确认
       setConfirming(key)
       return
@@ -81,7 +133,12 @@ export default function PermissionModePicker({
     setError('')
     try {
       const result = await setSessionPermission(threadId, key)
-      setMode(result.permission_mode)
+      setLoaded({
+        threadId,
+        mode: result.permission_mode,
+        error: '',
+        allowBypass: result.allow_bypass,
+      })
       onChange?.(result.permission_mode)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -91,17 +148,25 @@ export default function PermissionModePicker({
     }
   }
 
+  /** 按钮上显示的字 —— **读不到就不显示某个具体模式**。 */
+  const label = current.error
+    ? '权限模式读取失败'
+    : mode === null
+      ? '权限模式读取中…'
+      : permissionLabel(mode)
+
   return (
     <div ref={rootRef} className="relative">
       <button
         type="button"
         disabled={busy}
+        aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
         className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-ink-muted transition-colors hover:bg-hover hover:text-ink disabled:opacity-50"
         title="权限模式：这一轮要不要人批"
       >
         <ShieldIcon className="h-3.5 w-3.5 text-ink-faint" />
-        {permissionLabel(mode)}
+        {label}
         <span className="text-ink-faint">▾</span>
       </button>
 
@@ -121,14 +186,24 @@ export default function PermissionModePicker({
           <div className="border-b border-line px-3 py-2 text-[11px] text-ink-faint">
             权限模式 —— 这一轮要不要人批
           </div>
-          {PERMISSION_MODES.map((item) => (
+          {current.error ? (
+            <div className="px-3 py-2 text-[11px] text-danger">
+              读取失败：{current.error} —— 下面选一个就能改过来。
+            </div>
+          ) : null}
+          {PERMISSION_MODES.map((item) => {
+            // **bypass 没开总闸就是不可选** —— 别让用户点了才被拒
+            const disabled = item.key === 'bypass' && !current.allowBypass
+            return (
             <button
               key={item.key}
               type="button"
+              disabled={disabled}
               onClick={() => void choose(item.key)}
               className={[
                 'flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left transition-colors hover:bg-hover',
                 item.key === mode ? 'bg-sunken' : '',
+                disabled ? 'cursor-not-allowed opacity-50 hover:bg-transparent' : '',
               ].join(' ')}
             >
               <span className="flex items-center gap-1.5 text-xs font-medium text-ink">
@@ -140,9 +215,12 @@ export default function PermissionModePicker({
                 ) : null}
                 {item.key === mode ? <span className="text-accent">✓</span> : null}
               </span>
-              <span className="text-[11px] leading-relaxed text-ink-faint">{item.hint}</span>
+              <span className="text-[11px] leading-relaxed text-ink-faint">
+                {disabled ? '（平台没有开启这一项）' : item.hint}
+              </span>
             </button>
-          ))}
+            )
+          })}
           {error ? <div className="px-3 py-2 text-[11px] text-danger">{error}</div> : null}
         </div>
       ) : null}

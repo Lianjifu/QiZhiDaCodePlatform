@@ -19,6 +19,7 @@ from app.agents.checkpointer import open_checkpointer
 from app.agents.llm import build_model_for_provider
 from app.agents.permissions import (
     clear_permission_mode,
+    permission_path,
     resolve_permission_mode,
     set_permission_mode,
 )
@@ -33,17 +34,18 @@ from app.agents.status import (
     sum_changes,
 )
 from app.agents.tasks import REGISTRY
+from app.agents.turn_lock import turn_lock
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.registration.registry import CapabilityRegistry
 from app.capabilities.registration.spec import KIND_MCP, KIND_TOOL, SOURCE_MCP, CapabilitySpec
-from app.context.budget import FALLBACK_CONTEXT_WINDOW
-from app.context.compaction import TRIGGER_FRACTION
+from app.context.budget import FALLBACK_CONTEXT_WINDOW, TOTAL_REQUEST_FRACTION
 from app.core.config import settings
 from app.core.exceptions import AgentError, AppError, NotFoundError, ValidationError
 from app.core.workspace import resolve_workspace
 from app.environments.service import EnvironmentService
-from app.environments.store import save_binding
+from app.environments.store import clear_binding, load_binding, save_binding
 from app.git.service import GitService
+from app.memory.service import MemoryService
 from app.repositories.invocation import InvocationRepository
 from app.repositories.llm_provider import LLMProviderRepository
 from app.repositories.mcp_server import MCPServerRepository
@@ -344,6 +346,29 @@ class AgentService:
         的 ``vision_enabled``），不能看就只把路径告诉 agent。
         """
         agent_workspace, session_workspace = self.resolve_agent_workspace(thread_id)
+        # **会话级独占** —— 同一个会话不许有两轮在跑（checkpoint 是共享的）。
+        async with turn_lock(thread_id):
+            return await self._chat_locked(
+                message,
+                thread_id,
+                provider_id,
+                skill_ids,
+                attachments,
+                agent_workspace,
+                session_workspace,
+            )
+
+    async def _chat_locked(
+        self,
+        message: str,
+        thread_id: str,
+        provider_id: int | None,
+        skill_ids: list[int] | None,
+        attachments: list[str] | None,
+        agent_workspace: Path,
+        session_workspace: Path,
+    ) -> AgentRunResult:
+        """跑一轮对话（已持有会话锁）。"""
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(provider_id)
@@ -428,33 +453,70 @@ class AgentService:
             设置之后的实际模式。
 
         Raises:
-            AgentError: 给了不支持的取值。
+            ValidationError: 给了不支持的取值，或要切 bypass 但总闸没开。
         """
         try:
             return set_permission_mode(thread_id, mode)
         except ValueError as exc:
+            # **bypass 被总闸挡住是"请求不合法"，不是"agent 出错了"** ——
+            # 该给 400，不是 500。
+            if "bypass" in str(exc):
+                raise ValidationError(str(exc)) from exc
             raise AgentError(str(exc)) from exc
 
-    async def approve(self, thread_id: str) -> AgentRunResult:
+    async def approve(
+        self, thread_id: str, decisions: list[str] | None = None
+    ) -> AgentRunResult:
         """批准挂起的调用，恢复图继续跑。
 
         恢复之后 agent 自己接着往下跑 —— 结果直接回到它的上下文，
         不用等用户再说一句。
+
+        Args:
+            thread_id: 会话 ID。
+            decisions: 逐条决定（一条挂起的调用一个，按待批清单顺序）；
+                ``None`` = 全部批准。
         """
-        return await self._resume(thread_id, "approve")
+        return await self._resume(thread_id, "approve", decisions)
 
-    async def reject(self, thread_id: str) -> AgentRunResult:
-        """拒绝挂起的调用，恢复图（工具不执行，agent 收到拒绝消息）。"""
-        return await self._resume(thread_id, "reject")
+    async def reject(
+        self, thread_id: str, decisions: list[str] | None = None
+    ) -> AgentRunResult:
+        """拒绝挂起的调用，恢复图（工具不执行，agent 收到拒绝消息）。
 
-    async def _resume(self, thread_id: str, decision: str) -> AgentRunResult:
+        Args:
+            thread_id: 会话 ID。
+            decisions: 逐条决定（一条挂起的调用一个，按待批清单顺序）；
+                ``None`` = 全部拒绝。
+        """
+        return await self._resume(thread_id, "reject", decisions)
+
+    async def _resume(
+        self, thread_id: str, decision: str, decisions: list[str] | None = None
+    ) -> AgentRunResult:
         """恢复挂起的图。
 
         Args:
             thread_id: 会话 ID。
             decision: ``accept``（批准）或 ``reject``（拒绝）。
+            decisions: 逐条决定；``None`` 表示一刀切。
         """
         agent_workspace, session_workspace = self.resolve_agent_workspace(thread_id)
+        # **会话级独占** —— 审批恢复期间不许有别的轮次搅乱 checkpoint。
+        async with turn_lock(thread_id):
+            return await self._resume_locked(
+                thread_id, decision, decisions, agent_workspace, session_workspace
+            )
+
+    async def _resume_locked(
+        self,
+        thread_id: str,
+        decision: str,
+        decisions: list[str] | None,
+        agent_workspace: Path,
+        session_workspace: Path,
+    ) -> AgentRunResult:
+        """恢复挂起的图（已持有会话锁）。"""
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(None)
@@ -473,6 +535,7 @@ class AgentService:
                     thread_id,
                     agent_workspace,
                     decision=decision,
+                    decisions=decisions,
                     specs=specs,
                     context=context,
                 )
@@ -535,6 +598,71 @@ class AgentService:
         # 会话级权限模式也一并清掉 —— 会话都没了，放行的口径不该留着
         clear_permission_mode(thread_id)
 
+    async def delete_session(self, thread_id: str) -> dict[str, Any]:
+        """**彻底删掉**一个会话 —— 连工作区一起。
+
+        与 {@link clear} 的区别：clear 只清对话，文件留着（用户可能还要看
+        产物）；这个是「这个会话不要了」—— 连工作区、绑定、短期记忆一起清。
+
+        **为什么要有这个**：之前只有 clear，绑定文件与会话工作区永远没人回收。
+        平台又没有「删除会话」的入口，那些目录就这么堆着 —— 既是垃圾，
+        也是隐患（工作区里的文件一直能被文件接口读到）。
+
+        Args:
+            thread_id: 会话 ID。
+
+        Returns:
+            清理了哪些东西（给接口回给调用方看）。
+        """
+        removed: dict[str, Any] = {
+            "checkpoint": False,
+            "permissions": False,
+            "binding": False,
+            "memories": 0,
+            "workspace": False,
+        }
+
+        async with open_checkpointer() as checkpointer:
+            try:
+                await checkpointer.adelete_thread(thread_id)
+                removed["checkpoint"] = True
+            except Exception as exc:
+                logger.exception("删除会话历史失败 thread_id=%s", thread_id)
+                raise AgentError(_readable_error(exc)) from exc
+
+        # 权限模式：会话都没了，放行的口径不该留着
+        permission_file = permission_path(thread_id)
+        if permission_file.exists():
+            clear_permission_mode(thread_id)
+            removed["permissions"] = True
+
+        # 环境绑定：绑的是用户的仓库 —— **只删绑定关系，不删仓库**
+        if load_binding(thread_id) is not None:
+            clear_binding(thread_id)
+            removed["binding"] = True
+
+        # 短期记忆：与对话历史同生共死
+        if self.session is not None:
+            try:
+                memory_service = MemoryService(session=self.session, thread_id=thread_id)
+                removed["memories"] = await memory_service.forget_thread(thread_id)
+                await self.session.commit()
+            except Exception as exc:
+                logger.exception("删除会话记忆失败 thread_id=%s", thread_id)
+                raise AgentError(_readable_error(exc)) from exc
+
+        # 会话工作区：上传件、导出、产物都在这儿
+        workspace = self.resolve_workspace(thread_id)
+        if workspace.exists():
+            try:
+                shutil.rmtree(workspace)
+                removed["workspace"] = True
+            except OSError as exc:
+                logger.exception("删除会话工作区失败 thread_id=%s path=%s", thread_id, workspace)
+                raise AgentError(f"删不掉会话工作区：{exc}") from exc
+
+        return removed
+
     async def regenerate(
         self,
         thread_id: str,
@@ -546,6 +674,25 @@ class AgentService:
         事件格式与 :meth:`stream` 完全一致 —— 前端那边不用为它单开一条路。
         """
         agent_workspace, session_workspace = self.resolve_agent_workspace(thread_id)
+        async with turn_lock(thread_id):
+            async for event in self._regenerate_locked(
+                thread_id,
+                provider_id,
+                skill_ids,
+                agent_workspace,
+                session_workspace,
+            ):
+                yield event
+
+    async def _regenerate_locked(
+        self,
+        thread_id: str,
+        provider_id: int | None,
+        skill_ids: list[int] | None,
+        agent_workspace: Path,
+        session_workspace: Path,
+    ) -> AsyncIterator[AgentStreamChunk]:
+        """重跑上一轮（已持有会话锁）。"""
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(provider_id)
@@ -586,7 +733,8 @@ class AgentService:
         """
         new_thread_id = f"t_{uuid4().hex[:16]}"
         agent_workspace, session_workspace = self.resolve_agent_workspace(thread_id)
-        _copy_workspace(session_workspace, self.resolve_workspace(new_thread_id))
+        new_workspace = self.resolve_workspace(new_thread_id)
+        _copy_workspace(session_workspace, new_workspace)
         # 绑定了工作目录的话，新会话**继承同一个环境** —— 分支出来的会话
         # 还得在同一个仓库里干活，不然它跟原会话就不是一回事了。
         _inherit_binding(thread_id, new_thread_id)
@@ -621,10 +769,31 @@ class AgentService:
                     kept_messages=kept,
                 )
             except AppError:
+                # 分支失败 → **把刚建的东西撤掉**。
+                # 不撤的话会留下孤儿目录与孤儿绑定：会话根本不存在，
+                # 但它的目录还在、绑定还在 —— 垃圾，而且文件接口还能读到。
+                self._rollback_fork(new_thread_id, new_workspace)
                 raise
             except Exception as exc:
                 logger.exception("分支会话失败 thread_id=%s", thread_id)
+                self._rollback_fork(new_thread_id, new_workspace)
                 raise AgentError(_readable_error(exc)) from exc
+
+    @staticmethod
+    def _rollback_fork(new_thread_id: str, new_workspace: Path) -> None:
+        """分支失败时的回滚：删掉建出来的目录与绑定。
+
+        **回滚要尽力** —— 删不掉就记日志，不能因为回滚失败把真正的错误盖住。
+        """
+        try:
+            clear_binding(new_thread_id)
+        except OSError as exc:
+            logger.warning("回滚分支绑定失败 thread_id=%s：%s", new_thread_id, exc)
+        try:
+            if new_workspace.exists():
+                shutil.rmtree(new_workspace, ignore_errors=True)
+        except OSError as exc:
+            logger.warning("回滚分支工作区失败 thread_id=%s：%s", new_thread_id, exc)
 
     async def status(self, thread_id: str) -> SessionStatusOut:
         """这个会话的当前状态。
@@ -681,8 +850,8 @@ class AgentService:
                     memory_text=memory_text,
                     mcp_items=mcp_items,
                     memory_items=memory_items,
-                    # 压缩缓冲：窗口用到 85% 就触发压缩，那 15% 得一直空着
-                    buffer_tokens=int(window * (1 - TRIGGER_FRACTION)),
+                    # 压缩缓冲：整个请求用到 85% 就触发压缩，那 15% 得一直空着
+                    buffer_tokens=int(window * (1 - TOTAL_REQUEST_FRACTION)),
                     # **没开口就什么都没占** —— 系统提示词和工具定义是每次请求
                     # 都带上的，可请求还没发出去
                     started=bool(history),
@@ -807,6 +976,34 @@ class AgentService:
         事件有五种：文本增量 / 工具调用 / 工具结果 / 待审批 / 收尾。
         """
         agent_workspace, session_workspace = self.resolve_agent_workspace(thread_id)
+        # **会话级独占** —— 锁要覆盖整个生成过程。
+        #
+        # 在生成器里 acquire、在 finally 里 release：客户端中途断开时生成器被
+        # 关闭，锁照样还回去。只锁住第一个 yield 是不够的 —— 那之后
+        # checkpoint 还在被写。
+        async with turn_lock(thread_id):
+            async for event in self._stream_locked(
+                message,
+                thread_id,
+                provider_id,
+                skill_ids,
+                attachments,
+                agent_workspace,
+                session_workspace,
+            ):
+                yield event
+
+    async def _stream_locked(
+        self,
+        message: str,
+        thread_id: str,
+        provider_id: int | None,
+        skill_ids: list[int] | None,
+        attachments: list[str] | None,
+        agent_workspace: Path,
+        session_workspace: Path,
+    ) -> AsyncIterator[AgentStreamChunk]:
+        """流式跑一轮对话（已持有会话锁）。"""
         async with open_checkpointer() as checkpointer:
             try:
                 model = await self._resolve_model(provider_id)

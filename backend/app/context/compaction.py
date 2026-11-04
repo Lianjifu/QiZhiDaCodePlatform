@@ -44,6 +44,25 @@ deepAgents 的 ``compute_summarization_defaults(model)`` 按模型有没有
 OpenAI 兼容端点挂上去的模型对象**没有 profile** —— 所以我们在
 ``app/agents/llm.py`` 里显式挂上（见那里的 ``_apply_context_window``）。
 挂了之后阈值自动变成按比例，不用在这里重复算。
+
+### 两个阈值，不是一个
+
+框架只有**一个**阈值，可它要同时跟两种度量比：
+
+- ``token_counter(messages)`` —— **只算对话**；
+- ``usage_metadata["total_tokens"]`` —— **整个请求**（含系统提示词与工具
+  schema），厂商报回来的真实大小。
+
+拿同一个阈值去比两者，要么提前压缩（把系统提示词的额度也算进对话，
+上下文白白少一半），要么放任请求超窗被厂商拒。
+
+所以这里拆成两个：
+
+- 对话超过**对话的份额**（窗口 − 系统提示词那份，见 ``budget.py``）就压缩；
+- 整个请求超过**请求上限**（0.85 窗口）也压缩。
+
+**系统提示词占的额度要从压缩阈值里扣掉** —— 两份预算互不知情是最容易
+踩的坑：一次请求 1.35 倍窗口，厂商直接拒。
 """
 
 from __future__ import annotations
@@ -54,6 +73,12 @@ from typing import Any
 from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain_core.language_models import BaseChatModel
 
+from app.context.budget import (
+    TOTAL_REQUEST_FRACTION,
+    conversation_budget_ratio,
+)
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 # 必须与框架的默认中间件同名 —— deepAgents 按 name 做替换。
@@ -63,9 +88,6 @@ MIDDLEWARE_NAME = "SummarizationMiddleware"
 # 保留的消息条数下限。一轮工具调用就有好几条消息，
 # 保留太少 agent 会忘记自己刚做过什么。
 MIN_KEPT_MESSAGES = 20
-
-# 触发比例：窗口用到 85% 时开始压缩。留 15% 给输出与工具 schema。
-TRIGGER_FRACTION = 0.85
 
 # 保留比例：保留最近 10% 的历史（按 token 算）。
 KEEP_FRACTION = 0.10
@@ -126,7 +148,8 @@ class PlatformSummarizationMiddleware(SummarizationMiddleware):
             trigger: Any = ("tokens", FALLBACK_TRIGGER_TOKENS)
             keep: Any = ("messages", max(keep_messages, FALLBACK_KEEP_MESSAGES))
         else:
-            trigger = ("fraction", TRIGGER_FRACTION)
+            # 兜底触发条件（框架那套）：对话的份额 —— 不是 0.85。
+            trigger = ("fraction", conversation_budget_ratio(settings.context_budget_ratio))
             keep = ("fraction", KEEP_FRACTION)
 
         super().__init__(
@@ -139,6 +162,35 @@ class PlatformSummarizationMiddleware(SummarizationMiddleware):
         )
         self._keep_messages = keep_messages
         self._window = window
+
+    def _should_summarize(self, messages: list[Any], total_tokens: int) -> bool:
+        """两条度量各用各的阈值。
+
+        框架只有**一个**阈值，可它要同时跟两种度量比：
+
+        - ``token_counter(messages)`` —— **只算对话**；
+        - ``usage_metadata["total_tokens"]`` —— **整个请求**（含系统提示词与
+          工具 schema）。
+
+        同一个阈值比两者，要么提前压缩（把系统提示词的额度也算进对话），
+        要么放任请求超窗被厂商拒。
+
+        这里拆成两个：
+
+        - 对话超过**对话的份额**（窗口 − 系统提示词那份）就压缩；
+        - 整个请求超过**请求上限**也压缩。
+        """
+        limit = self._get_profile_limits()
+        if limit is None:
+            # 窗口未知 —— 退回框架那套绝对值
+            return super()._should_summarize(messages, total_tokens)
+        conversation_limit = int(
+            limit * conversation_budget_ratio(settings.context_budget_ratio)
+        )
+        if total_tokens >= conversation_limit:
+            return True
+        total_limit = int(limit * TOTAL_REQUEST_FRACTION)
+        return self._should_summarize_based_on_reported_tokens(messages, float(total_limit))
 
 
 def build_compaction_middleware(
@@ -171,7 +223,6 @@ __all__ = [
     "KEEP_FRACTION",
     "MIDDLEWARE_NAME",
     "MIN_KEPT_MESSAGES",
-    "TRIGGER_FRACTION",
     "PlatformSummarizationMiddleware",
     "build_compaction_middleware",
 ]

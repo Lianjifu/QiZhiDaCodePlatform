@@ -53,14 +53,20 @@ from langchain_core.messages import (
 from langgraph.graph.message import RemoveMessage
 
 from app.agents.builder import build_agent
-from app.agents.llm import get_chat_model, supports_vision
-from app.agents.prompts import CODE_AGENT_PROMPT
+from app.agents.dynamic_context import (
+    PLACEHOLDER_MEMORY,
+    PLACEHOLDER_UPLOADS,
+    PromptHolder,
+)
+from app.agents.graph_cache import GRAPH_CACHE, GraphEntry
+from app.agents.llm import get_chat_model, model_identity, supports_vision
 from app.agents.permissions import resolve_permission_mode
+from app.agents.prompts import base_prompt_for
 from app.capabilities.backends.assembly import MEMORY_ROUTE
 from app.capabilities.execution.context import ExecutionContext
+from app.capabilities.execution.risk import assess_call
 from app.capabilities.intent.middleware import build_policy_note
-from app.capabilities.registration.spec import KIND_SKILL, KIND_TOOL, CapabilitySpec
-from app.capabilities.registration.tool_policy import policy_for_tool
+from app.capabilities.registration.spec import KIND_SKILL, CapabilitySpec
 from app.capabilities.skills_export import export_skills
 from app.context.service import ContextRequest, build_context_service
 from app.core.config import settings
@@ -90,6 +96,14 @@ MEMORY_FILE = "AGENTS.md"
 # 要全文去查调用记录（/api/v1/invocations/{id}）。
 TOOL_RESULT_SUMMARY_MAX = 400
 
+# LangGraph 允许在**调用时**用配置覆盖 checkpointer（配置里的这个键优先于
+# 编译时绑定的那个）。
+#
+# **图要跨请求复用，checkpointer 不能编进去** —— 它是每次请求新开的一个
+# SQLite 连接（用完就关），编进去的话复用时就拿着上个请求那个已经关掉的
+# 连接写 checkpoint。这个键名是 langgraph 的内部常量，用注释盯着它。
+CONFIG_KEY_CHECKPOINTER = "__pregel_checkpointer"
+
 
 @dataclass
 class AgentRunResult:
@@ -111,6 +125,22 @@ class AgentRunResult:
     status: str = STATUS_COMPLETED
     # 待审批的条目（status == pending_approval 时有值）
     pending: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class BuiltAgent:
+    """组装好的 agent。
+
+    - ``agent`` —— 编译好的图；
+    - ``skills`` —— 本次挂载的技能；
+    - ``holder`` —— 每轮变化的那两块提示词内容（记忆目录、上传件清单）；
+    - ``context`` —— 这次用的执行上下文（复用图时是**被刷新过的那一个**）。
+    """
+
+    agent: Any
+    skills: list[CapabilitySpec] = field(default_factory=list)
+    holder: PromptHolder = field(default_factory=PromptHolder)
+    context: ExecutionContext | None = None
 
 
 class AgentRunner:
@@ -135,6 +165,18 @@ class AgentRunner:
         if self.model is None:
             self.model = get_chat_model()
         return self.model
+
+    def _config(self, thread_id: str) -> dict[str, Any]:
+        """调用图时的配置。
+
+        **checkpointer 按请求带，不编进图里** —— 图要跨请求复用，而
+        checkpointer 是每次请求新开的一个 SQLite 连接（用完就关）。编进去
+        的话，复用时就拿着上个请求那个已经关掉的连接写 checkpoint。
+        """
+        config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+        if self.checkpointer is not None:
+            config[CONFIG_KEY_CHECKPOINTER] = self.checkpointer
+        return config
 
     async def run(
         self,
@@ -168,20 +210,19 @@ class AgentRunner:
             max_inline_bytes=settings.max_inline_image_bytes,
             max_attachments=settings.max_attachments_per_turn,
         )
-        agent, skills = await self._build(
-            message,
+        built = await self._build(
             thread_id,
             workspace,
             specs=specs,
             context=context,
             skill_ids=skill_ids,
-            attachments=parsed,
         )
-        result = await agent.ainvoke(
+        await self._fill_holder(built.holder, message, built.context, parsed)
+        result = await built.agent.ainvoke(
             {"messages": _input_messages(message, blocks)},
-            config={"configurable": {"thread_id": thread_id}},
+            config=self._config(thread_id),
         )
-        return await self._result_from(result, skills, thread_id, context, specs)
+        return await self._result_from(result, built.skills, thread_id, built.context, specs)
 
     async def history(
         self,
@@ -194,23 +235,22 @@ class AgentRunner:
     ) -> list[AgentHistoryMessage]:
         """读这个会话的历史消息。
 
-        数据源同样是 checkpoint 的 state —— 与 ``_last_user_message`` 同一个
+        数据源是 checkpoint 的 state —— 与 ``_last_user_message`` 同一个
         来源。前端刷新页面后靠它把对话还原出来。
 
         没有这个会话的 checkpoint 时返回空列表（不是错误 —— 用户还没聊过）。
         """
-        agent, _skills = await self._build(
-            "",
+        built = await self._build(
             thread_id,
             workspace,
             specs=specs,
             context=context,
             skill_ids=skill_ids,
-            # 只是读状态，不跑模型 —— 不必为此付一次召回
-            with_memory=False,
+            # 只读 —— 不接管这张图的执行上下文
+            attach=False,
         )
         try:
-            state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
+            state = await built.agent.aget_state(self._config(thread_id))
         except Exception as exc:  # pragma: no cover - 没这个会话时不该报错
             logger.debug("读会话历史失败 thread_id=%s: %s", thread_id, exc)
             return []
@@ -235,18 +275,21 @@ class AgentRunner:
 
         数据源是 LangGraph 的 checkpoint —— 图挂在哪儿只有它知道。
         用来做"刷新页面后待批列表还在"这类场景。
+
+        **要跟恢复时看到的完全一致** —— 前端按这里的清单逐条给决定，恢复时
+        HITL 校验的就是这个数。所以这里用图自己的状态视图（``aget_state``），
+        不用 checkpointer 那条路。
         """
-        agent, _skills = await self._build(
-            "",
+        built = await self._build(
             thread_id,
             workspace,
             specs=specs,
             context=context,
             skill_ids=skill_ids,
-            # 只是查状态，不跑模型 —— 不必为此付一次召回
-            with_memory=False,
+            # 只读 —— 不接管这张图的执行上下文
+            attach=False,
         )
-        state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
+        state = await built.agent.aget_state(self._config(thread_id))
         interrupts = getattr(state, "interrupts", ()) or ()
         return [entry for item in interrupts for entry in _pending_entries(item, specs)]
 
@@ -256,6 +299,7 @@ class AgentRunner:
         workspace: Path,
         *,
         decision: str,
+        decisions: list[str] | None = None,
         specs: list[CapabilitySpec] | None = None,
         context: ExecutionContext | None = None,
         skill_ids: list[int] | None = None,
@@ -265,43 +309,36 @@ class AgentRunner:
         恢复之后 agent 自己接着往下跑 —— 不需要用户再说一句。
 
         ``decision`` 取 ``"approve"`` / ``"reject"``，对应 deepAgents 的恢复载荷。
+        **逐条决定**用 ``decisions`` 给出 —— 一条挂起的调用一个决定，按待批清单
+        的顺序（与前端看到的 ``pending`` 一致）。
 
         恢复这一轮**没有新的用户输入**，但记忆目录仍要带 —— agent 还在接着做
         同一件事，没有目录就等于凭空丢了记忆。检索词取会话里最后一条用户
-        消息，所以这里先造一次图把那条消息读出来，再带着目录重造一次。
+        消息 —— **直接从 checkpoint 里读，不用为此先建一张图**（早先这里建
+        两张图：第一张为了读那句话，第二张带着目录重跑）。
         """
         from langgraph.types import Command
 
-        agent, skills = await self._build(
-            "",
+        built = await self._build(
             thread_id,
             workspace,
             specs=specs,
             context=context,
             skill_ids=skill_ids,
-            with_memory=False,
         )
-        query = await self._last_user_message(agent, thread_id)
-        if query:
-            agent, skills = await self._build(
-                "",
-                thread_id,
-                workspace,
-                specs=specs,
-                context=context,
-                skill_ids=skill_ids,
-                memory_query=query,
-            )
+        # 检索词取会话里最后一条用户消息（这一轮没有新的用户输入）。
+        query = await self._last_user_message(built.agent, thread_id)
+        await self._fill_holder(built.holder, query, built.context, None)
         # 挂着的调用有几个就给几个决定 —— HITL 校验的是"决定数 = 挂起数"，
         # 少给一个就报 "Number of human decisions (1) does not match number of
         # hanging tool calls (2)"，整轮直接失败。
-        interrupts = await self._interrupts_of(agent, thread_id)
-        decisions = [{"type": decision} for _ in range(_required_decisions(interrupts))]
-        result = await agent.ainvoke(
-            Command(resume={"decisions": decisions}),
-            config={"configurable": {"thread_id": thread_id}},
+        interrupts = await self._interrupts_of(built.agent, thread_id)
+        resume_value = _build_resume_value(interrupts, decision, decisions, specs)
+        result = await built.agent.ainvoke(
+            Command(resume=resume_value),
+            config=self._config(thread_id),
         )
-        return await self._result_from(result, skills, thread_id, context, specs)
+        return await self._result_from(result, built.skills, thread_id, built.context, specs)
 
     async def _result_from(
         self,
@@ -380,16 +417,15 @@ class AgentRunner:
             max_inline_bytes=settings.max_inline_image_bytes,
             max_attachments=settings.max_attachments_per_turn,
         )
-        agent, _skills = await self._build(
-            message,
+        built = await self._build(
             thread_id,
             workspace,
             specs=specs,
             context=context,
             skill_ids=skill_ids,
-            attachments=parsed,
         )
-        async for event in self._stream_turn(agent, message, thread_id, blocks, specs):
+        await self._fill_holder(built.holder, message, built.context, parsed)
+        async for event in self._stream_turn(built.agent, message, thread_id, blocks, specs):
             yield event
 
     async def _stream_turn(
@@ -406,7 +442,7 @@ class AgentRunner:
 
         async for mode, data in agent.astream(
             {"messages": _input_messages(message, blocks)},
-            config={"configurable": {"thread_id": thread_id}},
+            config=self._config(thread_id),
             stream_mode=["messages", "updates"],
         ):
             if mode == "messages":
@@ -449,18 +485,15 @@ class AgentRunner:
         为什么连用户消息一起删：留着它再发一遍，历史里就会出现两条一样的用户
         消息。
         """
-        model = self._resolve_model()
-        agent, _skills = await self._build(
-            "",
+        built = await self._build(
             thread_id,
             workspace,
             specs=specs,
             context=context,
             skill_ids=skill_ids,
-            with_memory=False,
         )
-        config = {"configurable": {"thread_id": thread_id}}
-        state = await agent.aget_state(config)
+        config = self._config(thread_id)
+        state = await built.agent.aget_state(config)
         messages = list((getattr(state, "values", None) or {}).get("messages") or [])
         last_user = _last_user_index(messages)
         if last_user < 0:
@@ -473,10 +506,11 @@ class AgentRunner:
             if getattr(msg, "id", None)
         ]
         if removals:
-            await agent.aupdate_state(config, {"messages": removals})
+            await built.agent.aupdate_state(config, {"messages": removals})
 
         text = _message_text(messages[last_user].content)
-        async for event in self._stream_turn(agent, text, thread_id, [], specs):
+        await self._fill_holder(built.holder, text, built.context, None)
+        async for event in self._stream_turn(built.agent, text, thread_id, [], specs):
             yield event
 
     async def fork(
@@ -500,16 +534,16 @@ class AgentRunner:
         Returns:
             新会话里保留了几条消息。
         """
-        agent, _skills = await self._build(
-            "",
+        built = await self._build(
             thread_id,
             workspace,
             specs=specs,
             context=context,
             skill_ids=skill_ids,
-            with_memory=False,
+            # 只写 checkpoint，不跑工具 —— 不接管执行上下文
+            attach=False,
         )
-        state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
+        state = await built.agent.aget_state(self._config(thread_id))
         messages = list((getattr(state, "values", None) or {}).get("messages") or [])
         index = -1
         for position, msg in enumerate(messages):
@@ -520,8 +554,8 @@ class AgentRunner:
             raise NotFoundError(f"找不到消息 {message_id}")
 
         kept = messages[: index + 1]
-        await agent.aupdate_state(
-            {"configurable": {"thread_id": new_thread_id}},
+        await built.agent.aupdate_state(
+            self._config(new_thread_id),
             {"messages": kept},
         )
         return len(kept)
@@ -529,7 +563,7 @@ class AgentRunner:
     async def _interrupts_of(self, agent: Any, thread_id: str) -> list[Any]:
         """当前这一轮挂在哪儿等人批。"""
         try:
-            state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
+            state = await agent.aget_state(self._config(thread_id))
         except Exception:  # pragma: no cover - 读状态失败不该让恢复崩掉
             logger.debug("读会话状态失败，无法确定挂起的调用数")
             return []
@@ -543,7 +577,7 @@ class AgentRunner:
     ) -> list[PendingApprovalOut]:
         """从 checkpoint 读这一轮挂起的待批条目。"""
         try:
-            state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
+            state = await agent.aget_state(self._config(thread_id))
         except Exception:  # pragma: no cover - 读状态失败不该让流崩掉
             logger.debug("读会话状态失败，无法判断是否挂起审批")
             return []
@@ -588,61 +622,76 @@ class AgentRunner:
             return ""
 
     async def _last_user_message(self, agent: Any, thread_id: str) -> str:
-        """从图的状态里取这个会话最后一条用户消息。
+        """这个会话最后一条用户消息。
 
         恢复挂起的图时没有新的用户输入，但记忆检索仍需要知道"用户在聊什么"
         —— 所以回退到最后一条用户消息。
 
-        只能从**编译好的图**上读状态：LangGraph 把消息存在单独的 blob 表里，
-        checkpointer 的 ``aget`` / ``aget_tuple`` 都拿不到它。
+        只能从**图**上读：消息在 checkpoint 里是**增量**存的（每一轮写一条
+        delta），只有图自己会把这些增量拼回完整的历史。
         """
         try:
-            state = await agent.aget_state({"configurable": {"thread_id": thread_id}})
+            state = await agent.aget_state(self._config(thread_id))
         except Exception as exc:  # pragma: no cover - 读状态失败不该拖垮对话
             logger.debug("读会话最后一条用户消息失败: %s", exc)
             return ""
         values = getattr(state, "values", None) or {}
-        for msg in reversed(values.get("messages") or []):
-            # 只要**用户**的消息 —— agent 自己说的话不是检索词
-            if isinstance(msg, HumanMessage):
-                content = msg.content
-            elif isinstance(msg, dict) and msg.get("type") == "human":
-                content = msg.get("content")
-            else:
-                continue
-            text = _message_text(content)
-            if text.strip():
-                return text
-        return ""
+        return _last_user_message_of(values.get("messages") or [])
+
+    async def _fill_holder(
+        self,
+        holder: PromptHolder,
+        message: str,
+        context: ExecutionContext | None,
+        attachments: list[Attachment] | None,
+    ) -> None:
+        """把这一轮的内容填进 holder（记忆目录 + 上传件清单）。
+
+        **每轮都重填** —— 这两块内容每轮都不一样，而图是跨轮复用的。
+        """
+        memory_block = await self._memory_block(message, context) if context else ""
+        uploads_note = ""
+        if context is not None:
+            uploads_note = build_uploads_note(
+                Path(context.session_workspace or context.workspace),
+                attachments=attachments,
+                max_entries=settings.uploads_block_max_entries,
+            )
+        holder.update(memory_catalog=memory_block, uploads_note=uploads_note)
 
     async def _build(
         self,
-        message: str,
         thread_id: str,
         workspace: Path,
         *,
         specs: list[CapabilitySpec] | None,
         context: ExecutionContext | None,
         skill_ids: list[int] | None,
-        with_memory: bool = True,
-        memory_query: str = "",
-        attachments: list[Attachment] | None = None,
-    ):
-        """组装 agent。
+        attach: bool = True,
+    ) -> BuiltAgent:
+        """组装 agent —— **能复用就复用**。
+
+        建一张图要一百毫秒上下（十几个工具 + 十来个中间件 + 编译）。同一个
+        会话每轮都要建一次，而这一轮里其实什么都没变：工具集、技能、后端、
+        权限模式都一样。会变的只有提示词里的两块内容（记忆目录、上传件清单），
+        那两块已经挪到调模型时才注（见 ``dynamic_context.py``）—— 所以图可以
+        跨轮复用。
 
         技能与记忆都在这里准备：
 
         - **技能**：数据库里的技能导出成 ``SKILL.md``，交给 deepAgents 的技能
           中间件 —— 由模型按描述自己挑，不再由我们做关键词检索；
         - **记忆**：工作区里的 ``AGENTS.md``，每次会话前确保它存在；
-        - **记忆目录**：每轮召回一次，注入系统提示词（``with_memory=False`` 时跳过）；
-        - **上传件**：工作区里用户传过的材料，列进上下文。
+        - **记忆目录**：每轮召回一次（**不在这里**，在 ``_fill_holder`` 里）；
+        - **上传件**：工作区里用户传过的材料，列进上下文（同上）。
 
         提示词的**装配**交给上下文模块（``app/context/``）—— 它管预算与
         配额。这里只负责把各来源的内容收集齐了交过去。
 
-        ``memory_query`` 是记忆检索用的词；不给就用本轮的 ``message``。
-        恢复挂起的图那一轮没有新的用户输入，调用方会显式传入最后一条用户消息。
+        ``attach=False`` 表示"只借这张图，不接管它的执行上下文" —— 读历史、
+        看待批清单这类**只读**操作用。缓存里的上下文正被某一轮跑着的时候，
+        把它的数据库会话换成这次请求的，会让那一轮的调用记录写到别的请求的
+        会话里去。
         """
         specs = specs or []
         context = context or ExecutionContext.build(workspace)
@@ -660,19 +709,47 @@ class AgentRunner:
             memory_source = f"{MEMORY_ROUTE}/{MEMORY_FILE}"
 
         skills_dir = _skills_dir(session_root)
+        # **技能每次都导出** —— 技能**文件**的内容可能变了（用户改了 SKILL.md），
+        # 而图里存的是技能**清单**，不是文件内容。
         skill_sources = export_skills(specs, skills_dir, skill_ids)
         skill_specs = [spec for spec in specs if spec.kind == KIND_SKILL and spec.enabled]
 
-        memory_block = ""
-        if with_memory:
-            memory_block = await self._memory_block(memory_query or message, context)
-
-        # 策略说明：告诉模型本次哪些工具要人批。它由能力层生成，但**注入到
-        # 上下文里** —— 挤不出去的话模型会反复触发审批。
-        #
         # 信任模式是**会话级**的：用户在审批卡片上点过「本会话内允许执行
         # 命令」之后，这个会话就是 permissive（中档自动放行）。
         trust_mode = resolve_permission_mode(thread_id)
+
+        key = _graph_key(
+            thread_id=thread_id,
+            workspace=workspace,
+            session_root=session_root,
+            specs=specs,
+            trust_mode=trust_mode,
+            model=model,
+            skill_sources=skill_sources,
+            memory_source=memory_source,
+            context=context,
+        )
+        cached = GRAPH_CACHE.get(key)
+        if cached is not None:
+            if attach:
+                # **把每请求都会变的部分换成这次的** —— 数据库会话、能力清单、
+                # 模型。不换的话就会往上一个请求那个已经关掉的会话里写记录。
+                cached.refresh(
+                    session=context.session,
+                    specs=specs,
+                    model=model,
+                    mcp_servers=context.mcp_servers,
+                )
+            return BuiltAgent(
+                agent=cached.agent,
+                skills=skill_specs,
+                holder=cached.holder,
+                context=cached.context,
+            )
+
+        holder = PromptHolder()
+        # 策略说明：告诉模型本次哪些工具要人批。它由能力层生成，但**注入到
+        # 上下文里** —— 挤不出去的话模型会反复触发审批。
         policy_note = build_policy_note(specs, trust_mode)
 
         # 技能知识**不进系统提示词** —— deepAgents 的技能中间件按渐进披露来：
@@ -681,25 +758,27 @@ class AgentRunner:
         #
         # 上传件清单反过来：用户传了文件，agent 得知道在哪。图片本身已经
         # 内联进用户消息了，这里只是告诉 agent 还有哪些**只能读文件**的材料。
-        uploads_note = build_uploads_note(
-            session_root,
-            attachments=attachments,
-            max_entries=settings.uploads_block_max_entries,
-        )
+        #
+        # **记忆目录与上传件清单留占位符** —— 它们每轮都变，编进来这张图就
+        # 不能跨轮复用（agent 会一直看着第一轮的旧记忆）。真正的内容在
+        # ``_fill_holder`` 里填，调模型时才替换进去。
         assembled = build_context_service().assemble(
             ContextRequest(
-                base_prompt=CODE_AGENT_PROMPT,
+                # **按这一轮实际有的能力拼提示词** —— 没绑 git 目录时平台把
+                # git_* 与 delegate_worker 剔掉了，提示词不该再教模型用它们。
+                base_prompt=base_prompt_for(specs),
                 workspace=workspace,
-                memory_catalog=memory_block,
+                memory_catalog=PLACEHOLDER_MEMORY,
                 policy_note=policy_note,
-                uploads_note=uploads_note,
+                uploads_note=PLACEHOLDER_UPLOADS,
                 context_window=model_window(model),
             )
         )
         agent = await build_agent(
             specs=specs,
             context=context,
-            checkpointer=self.checkpointer,
+            # **checkpointer 按请求注入，不编进图里**（见 ``_config``）。
+            checkpointer=None,
             model=model,
             system_prompt=assembled.text,
             thread_id=thread_id,
@@ -707,8 +786,95 @@ class AgentRunner:
             skills=skill_sources or None,
             skills_dir=skills_dir if skill_sources else None,
             memory=[memory_source],
+            prompt_holder=holder,
         )
-        return agent, skill_specs
+        GRAPH_CACHE.put(
+            key,
+            GraphEntry(
+                agent=agent,
+                skills=skill_specs,
+                context=context,
+                holder=holder,
+            ),
+        )
+        return BuiltAgent(
+            agent=agent,
+            skills=skill_specs,
+            holder=holder,
+            context=context,
+        )
+
+
+def _graph_key(
+    *,
+    thread_id: str,
+    workspace: Path,
+    session_root: Path,
+    specs: list[CapabilitySpec],
+    trust_mode: str,
+    model: Any,
+    skill_sources: list[str],
+    memory_source: str,
+    context: ExecutionContext,
+) -> tuple[Any, ...]:
+    """缓存键 —— **必须盖住所有影响图行为的东西**。
+
+    漏掉一项，后果不是"慢一点"，而是"用错了规则"：
+
+    - **权限模式**漏了，用户刚收紧的闸门又被打开；
+    - **能力清单**漏了，新装的能力模型看不见；
+    - **模型**漏了，换了供应商还在用旧的；
+    - **工作区**漏了，文件工具指着别的目录。
+    """
+    return (
+        thread_id,
+        str(workspace),
+        str(session_root),
+        trust_mode,
+        model_identity(model),
+        memory_source,
+        tuple(skill_sources),
+        tuple(
+            (spec.key, spec.kind, bool(spec.enabled), str(spec.risk), spec.source_type)
+            for spec in specs
+        ),
+        context.sandbox_type,
+        context.sandbox_image,
+        context.sandbox_timeout,
+        context.docker_mount,
+        context.max_file_bytes,
+        # **MCP 通道也要进键** —— 工具是按建图时的那份配置造的，
+        # 服务器改了地址或参数却复用旧图，agent 连的就是老地方。
+        tuple(
+            (
+                name,
+                server.transport,
+                server.command,
+                tuple(server.args or ()),
+                server.url,
+                bool(server.enabled),
+            )
+            for name, server in sorted(context.mcp_servers.items())
+        ),
+    )
+
+
+def _last_user_message_of(messages: list[Any]) -> str:
+    """消息列表里最后一条**用户**消息的正文。
+
+    只要用户的消息 —— agent 自己说的话不是记忆检索的词。
+    """
+    for msg in reversed(messages or []):
+        if isinstance(msg, HumanMessage):
+            content = msg.content
+        elif isinstance(msg, dict) and msg.get("type") == "human":
+            content = msg.get("content")
+        else:
+            continue
+        text = _message_text(content)
+        if text.strip():
+            return text
+    return ""
 
 
 def _last_user_index(messages: list[Any]) -> int:
@@ -914,17 +1080,6 @@ def _skills_dir(workspace: Path) -> Path:
     return Path(workspace).parent / ".skills" / Path(workspace).name
 
 
-def _risk_for(name: str, specs: list[CapabilitySpec] | None = None) -> str:
-    """查一个工具的风险等级 —— 审批卡片要按档位告诉人"这次为什么危险"。
-
-    我们的能力从声明里查；deepAgents 的文件工具没有声明，查策略表。
-    """
-    for spec in specs or []:
-        if spec.kind == KIND_TOOL and spec.key == name:
-            return spec.risk
-    return policy_for_tool(name).risk
-
-
 def _interrupts(result: dict[str, Any]) -> list[Any]:
     """从图的结果里取出中断载荷。
 
@@ -962,13 +1117,18 @@ def _pending_entries(
         for item in requests:
             name = item.get("name", "") if isinstance(item, dict) else ""
             args = item.get("args", {}) if isinstance(item, dict) else {}
+            # 风险要按**这次调用的参数**算，不能只报工具的基线档位。
+            # 一条 `rm -rf` 走的也是 `execute` 工具 —— 报「执行命令 · 中档」
+            # 会让人以为只是跑个命令，实际是在删东西。
+            assessment = assess_call(name, args if isinstance(args, dict) else {}, specs)
             entries.append(
                 {
                     "kind": "declared",
                     "tool": name,
                     "arguments": args,
                     # 带上风险等级：前端要按档位（低/中/高）告诉人"这次为什么危险"
-                    "risk": _risk_for(name, specs),
+                    "risk": str(assessment.risk),
+                    "reasons": assessment.reasons,
                     "message": f"工具 {name} 需要人工批准后才能执行",
                 }
             )
@@ -1000,6 +1160,78 @@ def _required_decisions(interrupts: list[Any]) -> int:
         if isinstance(requests, list) and requests:
             count = max(count, len(requests))
     return count
+
+
+def _build_resume_value(
+    interrupts: list[Any],
+    default_decision: str,
+    decisions: list[str] | None,
+    specs: list[CapabilitySpec] | None = None,
+) -> Any:
+    """构造恢复载荷 —— 逐条决定或一刀切。
+
+    **决定数必须等于挂起数**：HITL 校验的是"决定数 = 挂起的调用数"，
+    少给一个就报 "Number of human decisions (1) does not match number of
+    hanging tool calls (2)"，整轮直接失败。
+
+    **逐条决定怎么对应**：待批清单（前端看到的 ``pending``）是按
+    "中断顺序 → 该中断里的条目顺序" 摊平的。这里按同样的顺序把 ``decisions``
+    切回每个中断 —— 所以前端勾第几条，对应的就是清单里的第几条。
+
+    **多个挂起中断时必须按 interrupt id 分别给值**：LangGraph 看到不止一个
+    待答中断就会要求 "you must specify the interrupt id when resuming"，
+    给一个笼统的值它会直接报错。
+
+    Args:
+        interrupts: 当前挂起的全部中断。
+        default_decision: 没给逐条决定时，每个都按它来。
+        decisions: 逐条决定（与待批清单同序）；``None`` 表示一刀切。
+        specs: 能力清单（算风险用）。
+
+    Returns:
+        ``Command(resume=...)`` 的参数。
+
+    Raises:
+        ValueError: ``decisions`` 的条数与挂起数对不上。
+    """
+    if not interrupts:
+        return {"decisions": [{"type": default_decision}]}
+
+    # 每个中断贡献几条待批条目
+    groups: list[tuple[Any, int]] = []
+    total = 0
+    for item in interrupts:
+        count = len(_pending_entries(item, specs))
+        groups.append((item, count))
+        total += count
+
+    if decisions is None:
+        slices = [[default_decision] * count for _, count in groups]
+    else:
+        if len(decisions) != total:
+            raise ValueError(
+                f"决定数（{len(decisions)}）与挂起的调用数（{total}）对不上"
+            )
+        slices = []
+        pos = 0
+        for _, count in groups:
+            slices.append(list(decisions[pos : pos + count]))
+            pos += count
+
+    values = [{"decisions": [{"type": one} for one in group]} for group in slices]
+
+    if len(interrupts) == 1:
+        return values[0]
+
+    # 多个中断：LangGraph 要求按 interrupt id 分别给值
+    # （给一个笼统的值它会报 "you must specify the interrupt id when resuming"）。
+    #
+    # 但同一个节点里的多个 interrupt 共享同一个 id —— 这时按 id 给值会把决定
+    # 发到同一个地方去，宁可退回"一刀切"的写法（那是之前一直能跑通的）。
+    ids = [getattr(item, "id", None) for item, _ in groups]
+    if any(not one for one in ids) or len(set(ids)) != len(ids):
+        return {"decisions": [{"type": default_decision}] * total}
+    return {one: value for one, value in zip(ids, values, strict=True)}
 
 
 def _collect_tool_calls(messages: list[Any]) -> list[dict[str, Any]]:

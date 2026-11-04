@@ -18,6 +18,7 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.permissions import resolve_permission_mode
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.pipeline import execute
 from app.capabilities.execution.redaction import redact
@@ -104,7 +105,8 @@ class InvocationService:
             spec=spec,
             thread_id=record.thread_id or "",
             workspace=context.workspace,
-            trust_mode=settings.capability_trust_mode,
+            # 会话级权限模式 —— 与 agent 路径、直接调用路径同一份口径。
+            trust_mode=resolve_permission_mode(record.thread_id or ""),
             idempotency_key=compute_idempotency_key(spec, arguments, record.thread_id or ""),
             pre_approved=True,
         )
@@ -216,7 +218,6 @@ async def expire_stale_approvals(
         置为过期的记录数。
     """
     from app.db.session import SessionLocal
-    from app.models.invocation import STATUS_EXPIRED
 
     limit = timeout_seconds if timeout_seconds is not None else settings.capability_approval_timeout
     if limit <= 0:

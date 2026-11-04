@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test": "node scripts/test-triggers.mjs && node scripts/test-title.mjs && node scripts/test-commands.mjs && node scripts/test-environments.mjs && node scripts/test-tool-summary.mjs && node scripts/test-capability-risk.mjs && node scripts/test-permission-modes.mjs",
+    "test": "node scripts/test-triggers.mjs && node scripts/test-title.mjs && node scripts/test-commands.mjs && node scripts/test-environments.mjs && node scripts/test-tool-summary.mjs && node scripts/test-capability-risk.mjs && node scripts/test-permission-modes.mjs && node scripts/test-message-window.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

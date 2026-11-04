@@ -124,9 +124,26 @@ def get_chat_model() -> BaseChatModel:
 
     # 厂商名来自环境变量。国产模型要写 `openai`（配 base_url 指到厂商），
     # 写 `deepseek` 会去找没装的 langchain-deepseek 包。
+    # 厂商名来自环境变量。国产模型要写 `openai`（配 base_url 指到厂商），
+    # 找不到就装 langchain-deepseek 包。
+    identity = "env:" + "|".join(
+        [
+            settings.llm_provider,
+            settings.llm_model,
+            str(settings.llm_base_url),
+            str(settings.llm_temperature),
+            str(settings.llm_max_tokens),
+            str(settings.llm_context_window),
+        ]
+    )
+    cached = _MODEL_CACHE.get(identity)
+    if cached is not None:
+        return cached
+
     model = init_chat_model(f"{settings.llm_provider}:{settings.llm_model}", **kwargs)
     model = _apply_context_window(model, settings.llm_context_window)
-    return _apply_vision(model, settings.llm_vision_enabled)
+    model = _apply_vision(model, settings.llm_vision_enabled)
+    return _remember(model, identity)
 
 
 def build_model_for_provider(provider: LLMProvider) -> BaseChatModel:
@@ -139,10 +156,32 @@ def build_model_for_provider(provider: LLMProvider) -> BaseChatModel:
     - ``provider.base_url`` 优先于预设的默认地址（用户在界面上改过就听用户的）；
     - ``provider.default_model`` 为空直接报错 —— 没有模型名没法建模型，早失败
       比跑起来再失败好。
+
+    **同一个配置返回同一个模型对象** —— 模型被编进了图里，图要跨请求复用，
+    模型对象就得稳定（见 ``model_identity``）。配置一变（改了模型名、换了
+    key、调了温度）就是另一个对象，缓存自然失效。
     """
     preset = resolve_preset(provider.provider)
     base_url = provider.base_url or preset.default_base_url or None
     api_key = decrypt_secret(provider.api_key_encrypted)
+
+    identity = "provider:" + "|".join(
+        [
+            str(provider.id),
+            provider.provider,
+            str(base_url),
+            str(provider.api_key_encrypted),
+            str(provider.default_model),
+            str(provider.temperature),
+            str(provider.max_tokens),
+            str(provider.timeout),
+            str(provider.context_window),
+            str(provider.vision_enabled),
+        ]
+    )
+    cached = _MODEL_CACHE.get(identity)
+    if cached is not None:
+        return cached
 
     kwargs: dict[str, Any] = {
         "temperature": provider.temperature,
@@ -166,7 +205,48 @@ def build_model_for_provider(provider: LLMProvider) -> BaseChatModel:
 
     model = init_chat_model(f"{preset.langchain_provider}:{provider.default_model}", **kwargs)
     model = _apply_context_window(model, provider.context_window or preset.context_window)
-    return _apply_vision(model, provider.vision_enabled)
+    model = _apply_vision(model, provider.vision_enabled)
+    return _remember(model, identity)
 
 
-__all__ = ["VISION_PROFILE_KEY", "build_model_for_provider", "get_chat_model", "supports_vision"]
+# 模型对象 → 身份
+#
+# **身份是"这份配置"而不是"这个对象"** —— 换了配置就是另一个身份，
+# 缓存自然失效；配置没变就还是同一个模型对象。
+_MODEL_CACHE: dict[str, BaseChatModel] = {}
+# id(模型) → (模型对象, 身份)
+#
+# **连模型对象一起存着** —— 只存 id 的话，对象被回收后 id 可能被新对象复用，
+# 换个模型却拿到旧身份，缓存就用了错的模型。
+_MODEL_IDENTITIES: dict[int, tuple[BaseChatModel, str]] = {}
+
+
+def _remember(model: BaseChatModel, identity: str) -> BaseChatModel:
+    """记住这个模型对象与它的身份。"""
+    _MODEL_CACHE[identity] = model
+    _MODEL_IDENTITIES[id(model)] = (model, identity)
+    return model
+
+
+def model_identity(model: Any) -> str:
+    """模型的稳定身份。
+
+    **换模型必须重建图** —— 模型对象被编进了图里（模型调用、摘要阈值都指着
+    它）。缓存键里带着身份，换模型就自动重建，不用谁记得去清缓存。
+    """
+    if model is None:
+        return "none"
+    entry = _MODEL_IDENTITIES.get(id(model))
+    if entry is not None and entry[0] is model:
+        return entry[1]
+    # 不是本模块造的（测试里的假模型）—— 按对象身份算，同一个对象永远同一个值
+    return f"adhoc:{id(model)}"
+
+
+__all__ = [
+    "VISION_PROFILE_KEY",
+    "build_model_for_provider",
+    "get_chat_model",
+    "model_identity",
+    "supports_vision",
+]

@@ -37,7 +37,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.locking import TaskLock
-from app.memory.models import SCOPE_LONG_TERM, SOURCE_USER, MemoryEntry, ensure_utc
+from app.memory.models import (
+    SCOPE_LONG_TERM,
+    SOURCE_USER,
+    MemoryEntry,
+    content_hash,
+    ensure_utc,
+)
 from app.memory.session_store import serialized
 from app.rag.models import RagDocument
 
@@ -103,6 +109,11 @@ class LongTermMemoryStore:
             title=entry.title,
             content=entry.content,
             source=f"memory:{entry.source_thread_id}",
+            # **用记忆层自己的哈希**（归一化空白与大小写），不用 RAG 的原始
+            # SHA-256 —— 那样 "用 pnpm" 与 "用  pnpm " 会算成两条记忆。
+            # 这个值落在 ``rag_document.content_hash`` 上（有索引），
+            # 查重就能直接走索引查，不用拉全量再比对。
+            content_hash=content_hash(entry.content),
             meta={
                 "kind": "memory",
                 "memory_kind": entry.kind,
@@ -190,15 +201,49 @@ class LongTermMemoryStore:
 
     @serialized
     async def list_all(self, limit: int = 100) -> list[MemoryEntry]:
-        """列出集合里的全部记忆。"""
+        """列出集合里的全部记忆（最多 ``limit`` 条）。
+
+        **翻页取，不止第一页** —— RAG 的 ``list_documents`` 单页最多 100 条。
+        以前这里只取第一页，调用方以为拿到了 500 条，实际只有 100 条：
+        冲突检测因此漏掉了第 100 条之后的记忆，
+        跟旧记忆矛盾的内容就写进去了。
+        """
         collection_id = await self.collection_id()
         from app.rag.service import RagService
 
         service = RagService(self.session)
-        documents, _total = await service.list_documents(
-            collection_id, page=1, page_size=min(max(1, limit), 100)
+        wanted = max(1, limit)
+        entries: list[MemoryEntry] = []
+        page = 1
+        while len(entries) < wanted:
+            documents, total = await service.list_documents(
+                collection_id, page=page, page_size=min(100, wanted - len(entries))
+            )
+            if not documents:
+                break
+            entries.extend(_to_entry(document) for document in documents)
+            page += 1
+            if len(entries) >= total:
+                break
+        return entries[:wanted]
+
+    @serialized
+    async def find_by_hash(self, digest: str) -> MemoryEntry | None:
+        """按内容哈希找一条（查重用）—— 走 ``rag_document.content_hash`` 索引。
+
+        **不拉全量**：集合里的文档可能有几百条，而 RAG 的 ``list_documents``
+        单页最多 100 条 —— "拉全量再比对"根本查不全，
+        重复内容会被写进去，冲突检测也会失效。
+        """
+        collection_id = await self.collection_id()
+        stmt = select(RagDocument).where(
+            RagDocument.collection_id == collection_id,
+            RagDocument.content_hash == digest,
         )
-        return [_to_entry(document) for document in documents]
+        document = (await self.session.execute(stmt)).scalar_one_or_none()
+        if document is None or not _is_memory_document(document):
+            return None
+        return _to_entry(document)
 
     # ---------- 更新 / 删除 ----------
 
@@ -286,12 +331,16 @@ class _IngestPayload:
         content: str,
         source: str,
         meta: dict[str, Any],
+        content_hash: str = "",
     ) -> None:
         self.title = title
         self.content = content
         self.source = source
         self.format = "text"
         self.meta = meta
+        # 内容哈希。不给就用 RAG 的原始 SHA-256；
+        # 记忆层给的是自己那份（归一化过的）。
+        self.content_hash = content_hash
 
 
 class _SearchPayload:

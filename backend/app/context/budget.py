@@ -1,16 +1,19 @@
 """上下文预算：这次能给多少字符。
 
-## 预算怎么来的
+## 一个窗口怎么分
 
 ```text
 窗口（模型的 max_input_tokens）
-  × 占比（默认 0.5）
-  = 上下文预算
+  ├─ 系统提示词  0.5 × 窗口   ← 提示词、记忆目录、策略说明、上传件清单
+  ├─ 对话历史    0.5 × 窗口   ← 压缩阈值按这个算
+  └─ 余量        0.15 × 窗口  ← 模型输出、工具 schema、框架追加的提示词
 ```
 
-另一半留给**我们控制不了的部分**：模型输出（`max_tokens`）、工具 schema
-（十来个工具的 JSON，几千 token）、deepAgents 自己追加的提示词（文件工具说明、
-虚拟路径映射…）。
+**两个份额必须一起看。** 早先这两块各算各的：系统提示词按 0.5×窗口、
+压缩阈值按 0.85×窗口 —— 一次请求最多能到 1.35×窗口，厂商直接拒。
+
+所以对话的份额是**减出来的**（窗口 − 系统提示词那份），不是另定一个数。
+`compression`（压缩中间件）按同一套比例算阈值。
 
 ## 占比为什么默认 0.5
 
@@ -33,8 +36,29 @@ from app.core.config import settings
 # 宁可保守也别让请求撞上厂商的报错。
 FALLBACK_CONTEXT_WINDOW = 128000
 
-# 上下文占窗口的比例。另一半留给输出与工具 schema。
+# 系统提示词占窗口的比例。另一半留给输出与工具 schema。
 CONTEXT_BUDGET_RATIO = 0.5
+
+# 整个请求（系统提示词 + 对话 + 工具 schema）的上限。
+#
+# 压缩中间件拿**厂商报回来的 total_tokens**（那是整个请求的大小）跟它比，
+# 越线就压缩 —— 这样"真发出去的请求有多大"始终有把尺子。
+TOTAL_REQUEST_FRACTION = 0.85
+
+
+def conversation_budget_ratio(context_budget_ratio: float = CONTEXT_BUDGET_RATIO) -> float:
+    """对话历史能占窗口的多少。
+
+    **窗口减去系统提示词那份** —— 不是另定一个数。早先对话按 0.85×窗口算、
+    系统提示词另占 0.5×窗口，两份预算互不知情，一次请求能到 1.35×窗口。
+
+    Args:
+        context_budget_ratio: 系统提示词占窗口的比例。
+
+    Returns:
+        对话的份额（0 到 1 之间）。
+    """
+    return max(0.0, min(1.0, 1.0 - context_budget_ratio))
 
 
 def resolve_window(context_window: int) -> int:
@@ -89,7 +113,9 @@ def budget_from_settings(context_window: int = 0) -> int:
 __all__ = [
     "CONTEXT_BUDGET_RATIO",
     "FALLBACK_CONTEXT_WINDOW",
+    "TOTAL_REQUEST_FRACTION",
     "budget_for_window",
     "budget_from_settings",
+    "conversation_budget_ratio",
     "resolve_window",
 ]

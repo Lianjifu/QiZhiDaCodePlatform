@@ -35,6 +35,9 @@ OVERFLOW_COMPACT = "compact"
 
 OVERFLOW_POLICIES = (OVERFLOW_DROP, OVERFLOW_TRUNCATE, OVERFLOW_COMPACT)
 
+# 截断标记。**它的长度要算进预算** —— 标记自己占位置，不能让它把预算撑破。
+_TRUNCATION_NOTE = "\n…（内容过长，已截断，剩余 {n} 字符）"
+
 
 @dataclass
 class ContextBlock:
@@ -97,6 +100,10 @@ class ContextBlock:
         """返回截断到 ``limit`` 字符的副本。
 
         截断时保留**头部** —— 规矩、说明这类内容通常写在开头，砍尾比砍头好。
+
+        **上限按渲染后的长度算** —— 标题与"已截断"的标记都占位置，得先给
+        它们留出来。留不下就是留不下：装配器要保证拼出来的提示词不超预算，
+        否则厂商会拒掉整个请求（这一轮对话直接失败）。
         """
         body = self.content.strip()
         if limit <= 0:
@@ -110,14 +117,32 @@ class ContextBlock:
                 required=self.required,
                 notes=[*self.notes, f"截断到 {limit} 字符"],
             )
-        if len(body) <= limit:
+        # 标题也占位置（标题 + 一个换行）
+        overhead = len(self.title) + 1 if self.title else 0
+        room = limit - overhead
+        if room <= 0:
+            return ContextBlock(
+                key=self.key,
+                content="",
+                priority=self.priority,
+                title=self.title,
+                overflow=self.overflow,
+                unit=self.unit,
+                required=self.required,
+                notes=[*self.notes, f"截断到 {limit} 字符"],
+            )
+        if len(body) <= room:
             return self
-        kept = body[:limit]
-        # 留个标记，让模型知道后面被截了 —— 静默截断会让它以为看到的是全部
-        note = f"\n…（内容过长，已截断，剩余 {len(body) - limit} 字符）"
+        # 标记本身要占位置 —— 先给它留够，再放正文
+        keep = max(0, room - len(_TRUNCATION_NOTE))
+        note = _TRUNCATION_NOTE.format(n=max(0, len(body) - keep))
+        # 数字的位数变了会让标记变长 —— 再对齐一次
+        if keep + len(note) > room:
+            keep = max(0, room - len(note))
+            note = _TRUNCATION_NOTE.format(n=max(0, len(body) - keep))
         return ContextBlock(
             key=self.key,
-            content=kept + note,
+            content=body[:keep] + note,
             priority=self.priority,
             title=self.title,
             overflow=self.overflow,

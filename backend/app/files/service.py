@@ -208,7 +208,9 @@ class FileService:
 
     # ---------- 读取 ----------
 
-    def list_files(self, *, include_uploads: bool = True, include_dirs: bool = False) -> list[FileEntry]:
+    def list_files(
+        self, *, include_uploads: bool = True, include_dirs: bool = False
+    ) -> list[FileEntry]:
         """列出工作区里的文件（上传件 + agent 的产物）。
 
         只列工作区里的东西 —— 平台产物（``.artifacts/``）在工作区**外面**，

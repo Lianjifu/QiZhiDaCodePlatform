@@ -31,10 +31,13 @@ class _Window:
 
     样本是 ``(时间戳, 是否失败)`` 的队列；``opened_until`` 是熔断打开的截止
     时间（0 表示没打开）。
+
+    **慢调用单独记**（``degraded``）：它不是失败。
     """
 
     samples: deque[tuple[float, bool]] = field(default_factory=deque)
     opened_until: float = 0.0
+    degraded: int = 0
 
     def prune(self, now: float, window: float) -> None:
         """丢掉窗口外的旧样本。"""
@@ -83,15 +86,20 @@ class CircuitBreaker:
     def record(self, key: str, ok: bool, duration_ms: int) -> None:
         """记一次调用结果，必要时打开熔断。
 
-        慢调用也算失败的一部分：调用成功但慢到不可接受，对 agent 来说
-        跟失败没区别 —— 一样会把时间耗光。
+        **慢不等于失败**。一次成功但慢的调用（比如 ``run_python`` 正常跑 6 秒）
+        照样把活干完了 —— 把它记成失败，五次正常执行就能把能力误熔断，
+        agent 后面每次调它都被快速失败，比慢更糟。
+
+        所以慢调用单独记一笔（``degraded``），只用于事后观察，**不参与错误率**。
+        熔断只对**真失败**开：能力真的坏了才该快速失败。
         """
         now = time.monotonic()
         with self._lock:
             window = self._windows.setdefault(key, _Window())
             window.prune(now, self.window_seconds)
-            degraded = ok and duration_ms > self.latency_ms
-            window.samples.append((now, not ok or degraded))
+            if ok and duration_ms > self.latency_ms:
+                window.degraded += 1
+            window.samples.append((now, not ok))
             # 样本不够就不判定 —— 一次失败就熔断太敏感
             if len(window.samples) < self.min_samples:
                 return
@@ -118,6 +126,8 @@ class CircuitBreaker:
                 "samples": len(window.samples),
                 "error_rate": failures / len(window.samples) if window.samples else 0.0,
                 "open": bool(window.opened_until and now < window.opened_until),
+                # 慢调用单独报 —— 它不参与错误率，但值得知道
+                "degraded": window.degraded,
             }
 
 

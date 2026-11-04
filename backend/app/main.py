@@ -18,11 +18,11 @@ from fastapi.responses import JSONResponse
 from app.api.router import api_router
 from app.capabilities.backends.container_pool import cleanup_stale_containers, get_pool
 from app.core.config import settings
-from app.services.invocation import expire_stale_approvals
 from app.core.exceptions import AppError
 from app.core.logging import setup_logging
 from app.db.session import close_db, init_db
 from app.schemas.common import ErrorDetail
+from app.services.invocation import expire_stale_approvals
 
 logger = logging.getLogger(__name__)
 

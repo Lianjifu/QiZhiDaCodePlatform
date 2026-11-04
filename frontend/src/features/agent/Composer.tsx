@@ -20,6 +20,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 
 import { listCommands, listProviders, listWorkspaceTree, uploadFile } from '../../api/resources'
 import { ArrowUpIcon, AtIcon, PaperclipIcon, PlusIcon, SlashIcon, StopIcon } from '../../components/icons'
+import { useConfirm } from '../../components/ui/useConfirm'
 import { humanSize } from '../../lib/format'
 import type { LLMProvider, SlashCommand, WorkspaceFile } from '../../types/api'
 import ContextUsageIndicator from '../sessions/ContextUsageIndicator'
@@ -89,6 +90,7 @@ export default forwardRef<ComposerHandle, {
   const [treeLoading, setTreeLoading] = useState(false)
   const [trigger, setTrigger] = useState<Trigger | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
+  const { confirm, dialog: confirmDialog } = useConfirm()
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -327,7 +329,13 @@ export default forwardRef<ComposerHandle, {
       if (fileRef.current) fileRef.current.value = ''
     }
     if (failed.length > 0) {
-      window.alert(`有 ${failed.length} 个文件没传上去：\n${failed.join('\n')}`)
+      // **不用 window.alert** —— 原生框的样式跟平台没关系，还会阻塞整页。
+      await confirm({
+        title: '有文件没传上去',
+        description: `有 ${failed.length} 个文件没传上去：${failed.join('；')}`,
+        confirmText: '知道了',
+        cancelText: '关闭',
+      })
     }
   }
 
@@ -604,6 +612,7 @@ export default forwardRef<ComposerHandle, {
           </div>
         </div>
       </div>
+      {confirmDialog}
     </div>
   )
 })

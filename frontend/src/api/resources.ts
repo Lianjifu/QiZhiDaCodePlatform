@@ -186,14 +186,29 @@ export function pendingApprovals(threadId: string): Promise<AgentChatResult['pen
   return api.get<AgentChatResult['pending']>(`/agent/${threadId}/pending`)
 }
 
-/** 批准挂起的调用，图继续跑。 */
-export function approve(threadId: string): Promise<AgentChatResult> {
-  return api.post<AgentChatResult>(`/agent/${threadId}/approve`)
+/**
+ * 批准挂起的调用，图继续跑。
+ *
+ * `decisions` 逐条给决定（一条挂起的调用一个，顺序与待批清单一致）——
+ * 不给就是全部批准。
+ */
+export function approve(
+  threadId: string,
+  decisions?: ('approve' | 'reject')[],
+): Promise<AgentChatResult> {
+  return api.post<AgentChatResult>(`/agent/${threadId}/approve`, { decisions })
 }
 
-/** 拒绝挂起的调用。 */
-export function reject(threadId: string): Promise<AgentChatResult> {
-  return api.post<AgentChatResult>(`/agent/${threadId}/reject`)
+/**
+ * 拒绝挂起的调用。
+ *
+ * `decisions` 逐条给决定 —— 不给就是全部拒绝。
+ */
+export function reject(
+  threadId: string,
+  decisions?: ('approve' | 'reject')[],
+): Promise<AgentChatResult> {
+  return api.post<AgentChatResult>(`/agent/${threadId}/reject`, { decisions })
 }
 
 /** 这个会话的权限模式。 */

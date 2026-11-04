@@ -144,6 +144,26 @@ async def test_run_python_reports_nonzero_exit(ctx):
 
 
 @pytest.mark.asyncio
+async def test_run_python_deletes_its_temp_script(ctx):
+    """临时脚本跑完必须删掉。
+
+    它落在**工作区里**（容器只挂载工作区，写在别处容器看不见）——
+    不删就会一直堆着，而且会被 ``git_commit`` 一起提交进用户的仓库。
+    """
+    await make_run_python(ctx)("print('hi')")
+    leftovers = [p.name for p in ctx.workspace.glob("_agent_*.py")]
+    assert not leftovers, f"临时脚本没删：{leftovers}"
+
+
+@pytest.mark.asyncio
+async def test_run_python_deletes_temp_script_even_on_failure(ctx):
+    """脚本**跑炸了**也要删 —— 失败路径最容易漏。"""
+    await make_run_python(ctx)("raise RuntimeError('boom')")
+    leftovers = [p.name for p in ctx.workspace.glob("_agent_*.py")]
+    assert not leftovers, f"临时脚本没删：{leftovers}"
+
+
+@pytest.mark.asyncio
 async def test_run_python_can_read_workspace_files(ctx):
     (ctx.workspace / "data.txt").write_text("42", encoding="utf-8")
     out = await make_run_python(ctx)("print(open('data.txt').read().strip())")

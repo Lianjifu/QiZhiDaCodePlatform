@@ -93,9 +93,9 @@ class PermissionMode(StrEnum):
 
     - ``AUTO``（默认）—— **按风险档位**：低档自动放行，中档与高档要人批；
     - ``MANUAL`` —— 任何会改东西的操作都要人批（只读不问）；
-    - ``ACCEPT_EDITS`` —— 文件编辑自动批准，执行命令 / 联网 / 破坏性照旧问；
+    - ``ACCEPT_EDITS`` —— 中档（执行命令、联网）也自动放行，只有破坏性要人批；
     - ``PLAN`` —— 只读：写类与执行类工具**不暴露给模型**，只能读与规划；
-    - ``BYPASS`` —— 全放行（含破坏性）。
+    - ``BYPASS`` —— 跳过人工确认（含破坏性）。
 
     模式是**会话级**的（见 ``app/agents/permissions.py``），全局配置
     ``CAPABILITY_TRUST_MODE`` 只是默认值。
@@ -200,11 +200,15 @@ def approval_decision(
 
     **判定按权限模式走**（``normalize_mode``）：
 
-    - ``bypass`` —— 全放行；
+    - ``bypass`` —— 跳过**人工确认**（不问人），但安全判定照跑照记；
     - ``plan`` —— 只读模式：只有只读的能力放行，其余一律要人批；
     - ``manual`` —— 只读放行，其余（写 / 执行 / 联网 / 破坏）都要人批；
     - ``accept_edits`` —— 中档（执行命令、联网）也自动放行，只有破坏性要人批；
     - ``auto``（默认）—— 按**风险档位**：低档自动放行，中档与高档要人批。
+
+    **「跳过人工确认」不等于「不做安全判定」**：绕过权限模式下 SSRF、
+    破坏性命令照样要**算出来、记下来**（调用记录的 ``risk`` 与
+    ``decision_reason`` 里能看到）。判定结果只是不再拿去拦人。
 
     Args:
         permission: 能力声明的权限要求。
@@ -219,7 +223,11 @@ def approval_decision(
     mode = normalize_mode(trust_mode)
     permission = permission or PermissionLevel.NONE
 
-    # 绕过权限：什么都放行 —— 用户明确选的。
+    # 绕过权限：跳过**人工确认** —— 用户明确选的。
+    #
+    # 但不是「什么都不管」：能力声明成 admin 的、参数命中破坏性规则的，
+    # 判定结果已经算出来了（调用记录里有），只是不再拿它去拦人。
+    # 「不问人」和「不判定」是两件事 —— 后者会让这类调用**静默**发生。
     if mode == PermissionMode.BYPASS:
         return APPROVAL_APPROVED
 

@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import asyncio
-
 import logging
 from datetime import UTC, datetime
 
@@ -187,6 +186,21 @@ class MemoryService:
             return None
         return await store.get(item_id)
 
+    async def read_any(self, item_id: str) -> MemoryEntry | None:
+        """按 id 取一条记忆，**不限会话** —— 管理接口用。
+
+        ``read`` 是「本会话的那条」；这个是「id 指的那条」。
+        管理接口的路径里只有 id，没有会话 —— 用 ``read`` 的话永远 404。
+        """
+        scope = _scope_of(item_id)
+        if scope == SCOPE_LONG_TERM:
+            if self.long_term_store is None:
+                return None
+            return await self.long_term_store.get(item_id)
+        if self._session_store is None:
+            return None
+        return await self._session_store.get_any(item_id)
+
     async def list_all(
         self,
         *,
@@ -332,6 +346,20 @@ class MemoryService:
             return False
         return await store.forget(item_id)
 
+    async def forget_any(self, item_id: str) -> bool:
+        """按 id 删一条记忆，**不限会话** —— 管理接口用。
+
+        同 {@link read_any}：管理接口的路径里只有 id。
+        """
+        scope = _scope_of(item_id)
+        if scope == SCOPE_LONG_TERM:
+            if self.long_term_store is None:
+                return False
+            return await self.long_term_store.forget(item_id)
+        if self._session_store is None:
+            return False
+        return await self._session_store.forget_any(item_id)
+
     async def forget_thread(self, thread_id: str) -> int:
         """删掉一个会话的全部短期记忆。
 
@@ -374,11 +402,13 @@ class MemoryService:
         return "当前没有可用的记忆存储（缺少数据库会话）。"
 
     async def _find_by_hash(self, store: MemoryStore, digest: str) -> MemoryEntry | None:
-        """按内容哈希找已有记忆。"""
-        for entry in await store.list_all(limit=500):
-            if content_hash(entry.content) == digest:
-                return entry
-        return None
+        """按内容哈希找已有记忆。
+
+        **走存储层的索引查询** —— 不在这里"拉全量再比对"。
+        长期记忆集合可能有几百条，而 RAG 的列表接口单页只给 100 条：
+        拉全量根本拉不全，重复内容会被写进去。
+        """
+        return await store.find_by_hash(digest)
 
     async def _find_conflicts(
         self,

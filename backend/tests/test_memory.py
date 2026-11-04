@@ -504,20 +504,20 @@ async def test_resume_keeps_the_memory_catalog(session, tmp_path):
         # 先跑一轮，把用户消息写进 checkpoint
         await runner.run("pnpm 包管理器怎么用的？", "t-resume", tmp_path, context=context)
 
-        # 恢复那条路径：先造一次图读出最后一条用户消息，再带着目录重造
-        agent, _skills = await runner._build(
-            "",
+        # 恢复那条路径：造一次图，从图的状态里读出最后一条用户消息
+        built = await runner._build(
             "t-resume",
             tmp_path,
             specs=[],
             context=context,
             skill_ids=None,
-            with_memory=False,
         )
-        query = await runner._last_user_message(agent, "t-resume")
+        query = await runner._last_user_message(built.agent, "t-resume")
         assert "pnpm" in query
 
-        block = await runner._memory_block(query, context)
+        # 目录由 holder 带进提示词（不在编译期写死 —— 每轮都变）
+        await runner._fill_holder(built.holder, query, built.context, None)
+        block = built.holder.memory_catalog
 
     assert "<memory_catalog>" in block
     assert "pnpm" in block
@@ -595,3 +595,137 @@ async def test_long_term_memory_requires_configured_collection(session):
             scope="long_term",
         )
     assert "MEMORY_COLLECTION_NAME" in str(exc.value)
+
+
+async def test_长期记忆超过一百条仍然查得出重复(session):
+    """集合里超过 100 条之后，查重**不能失效**。
+
+    之前查重靠"拉全量再比对"，而 RAG 的列表接口单页只给 100 条 ——
+    第 101 条往后根本比不到。
+
+    这里特意用**归一化后相同、正文不同**的两条（大小写与空白不同）：
+    完全一样的正文 RAG 自己那层就拦住了，测不出问题 ——
+    真正会漏的是"看着像同一条、字节却不同"的那种。
+    """
+    from app.memory.long_term_store import LongTermMemoryStore
+    from app.memory.models import content_hash
+    from app.memory.service import MemoryService
+
+    await _make_collection(session, "mem-many")
+    store = LongTermMemoryStore(session, "mem-many")
+    service = MemoryService(session=session, thread_id=THREAD, long_term_store=store)
+
+    # 塞够 100 条，把"要查的那条"挤到第 101 条之后
+    # 标签各自不同 —— 同类型同标签的旧记忆会被**冲突检测**拦下，
+    # 那样测的就不是查重了
+    for index in range(105):
+        await service.remember(
+            content=f"第 {index} 条无关的记忆：部署脚本在 scripts/ 目录下",
+            kind="fact",
+            tags=[f"条目{index}"],
+            scope="long_term",
+        )
+
+    # 再写一遍最早那条 —— **空白不同但归一化后相同**，
+    # 应当被认出来，而不是新增一条
+    before = await _collection_size(session, "mem-many")
+    first = await service.remember(
+        content="第  0  条无关的记忆：部署脚本在 scripts/ 目录下",
+        kind="fact",
+        tags=["条目0"],
+        scope="long_term",
+    )
+    after = await _collection_size(session, "mem-many")
+    assert after == before, "同内容被写成了新的一条"
+    assert first.id == _id_of(await store.find_by_hash(content_hash(first.content)))
+
+
+async def _collection_size(session, name: str) -> int:
+    """集合里现在有几篇文档 —— 用来验证"没有多写一条"。"""
+    from sqlalchemy import func, select
+
+    from app.rag.models import RagCollection, RagDocument
+
+    collection_id = (
+        await session.execute(select(RagCollection.id).where(RagCollection.name == name))
+    ).scalar_one()
+    total = await session.execute(
+        select(func.count())
+        .select_from(RagDocument)
+        .where(RagDocument.collection_id == collection_id)
+    )
+    return int(total.scalar_one())
+
+
+def _id_of(entry) -> str:
+    """取记忆的 id（``None`` 安全）。"""
+    return entry.id if entry is not None else ""
+
+
+async def test_长期记忆查重走索引而不是拉全量(session):
+    """``find_by_hash`` 必须查得到 —— 索引上的值要与记忆层同口径。"""
+    from app.memory.long_term_store import LongTermMemoryStore
+    from app.memory.models import content_hash
+    from app.memory.service import MemoryService
+
+    await _make_collection(session, "mem-hash")
+    store = LongTermMemoryStore(session, "mem-hash")
+    service = MemoryService(session=session, thread_id=THREAD, long_term_store=store)
+
+    await service.remember(
+        content="这个项目用 pnpm 装依赖",
+        kind="convention",
+        tags=["依赖"],
+        scope="long_term",
+    )
+    # 大小写与空白不同 —— 记忆层认它是同一条
+    found = await store.find_by_hash(content_hash("这个项目用  PNPM  装依赖"))
+    assert found is not None, "归一化之后查不到"
+    assert "pnpm" in found.content
+
+
+async def test_管理接口能按_id_跨会话找到记忆(session):
+    """按 id 找记忆不该受会话限制 —— 管理接口的路径里只有 id。
+
+    之前用「本会话的那条」去查，会话内的记忆**永远 404** ——
+    列表能看见、点进去找不到。
+    """
+    writer = MemoryService(session=session, thread_id="t-writer")
+    created = await writer.remember(content="项目改用 npm 管理依赖", kind=KIND_PREFERENCE)
+    item_id = created.id
+
+    # 管理用的服务没有绑定会话（thread_id 为空）
+    admin = MemoryService(session=session, thread_id="")
+    found = await admin.read_any(item_id)
+    assert found is not None
+    assert found.content == "项目改用 npm 管理依赖"
+
+    # 删也要能删掉
+    assert await admin.forget_any(item_id) is True
+    assert await admin.read_any(item_id) is None
+
+
+# ---------------------------------------------------------------- HTTP 层
+
+
+@pytest.mark.asyncio
+async def test_记忆详情与删除接口能拿到会话内的记忆(app, client, session):
+    """HTTP 层：``GET/DELETE /memory/{id}`` 对会话内记忆要能查到。
+
+    之前这两个接口对会话内记忆**必然 404** —— 列表能看见、点进去找不到、
+    也删不掉。agent 记错了要能删，这条兜底是坏的。
+    """
+    writer = MemoryService(session=session, thread_id="t-http-memory")
+    created = await writer.remember(content="接口要能删掉这条", kind=KIND_PREFERENCE)
+    item_id = created.id
+
+    detail = await client.get(f"/api/v1/memory/{item_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["data"]["content"] == "接口要能删掉这条"
+
+    deleted = await client.delete(f"/api/v1/memory/{item_id}")
+    assert deleted.status_code == 200, deleted.text
+
+    # 删掉了就真的没了
+    again = await client.get(f"/api/v1/memory/{item_id}")
+    assert again.status_code == 404

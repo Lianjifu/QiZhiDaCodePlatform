@@ -12,8 +12,7 @@ from typing import Any
 
 import pytest
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.outputs import ChatResult
 
 from app.agents.runner import AgentRunner
 from app.api.deps import get_agent_service

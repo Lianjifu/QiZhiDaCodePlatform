@@ -55,7 +55,7 @@ class TaskLock:
             self._owner = None
             self._lock.release()
 
-    async def __aenter__(self) -> "TaskLock":
+    async def __aenter__(self) -> TaskLock:
         await self.acquire()
         return self
 

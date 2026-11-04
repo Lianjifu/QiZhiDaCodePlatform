@@ -23,6 +23,8 @@ export interface ConfirmRequest {
   description: string
   /** 确认按钮上的字 */
   confirmText?: string
+  /** 取消按钮上的字 —— 只是通知一下的时候写成「关闭」比「取消」顺眼 */
+  cancelText?: string
   /** 危险操作：按钮与图标用危险色 */
   danger?: boolean
 }
@@ -50,6 +52,7 @@ export function useConfirm(): {
       title={pending.title}
       description={pending.description}
       confirmText={pending.confirmText}
+      cancelText={pending.cancelText}
       danger={pending.danger}
       onConfirm={() => {
         pending.resolve(true)

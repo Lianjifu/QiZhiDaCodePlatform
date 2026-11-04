@@ -1,6 +1,6 @@
 """编码助手的请求/响应模型。"""
 
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -195,8 +195,8 @@ class SessionPermissionIn(BaseModel):
     mode: str = Field(
         default="default",
         description=(
-            "auto（按风险档位）/ manual（每次改动都问）/ accept_edits（文件编辑自动）"
-            "/ plan（只读）/ bypass（全放行）/ default（恢复全局默认）"
+            "auto（按风险档位）/ manual（每次改动都问）/ accept_edits（中档自动）"
+            "/ plan（只读）/ bypass（跳过人工确认）/ default（恢复全局默认）"
         ),
     )
 
@@ -208,6 +208,27 @@ class SessionPermissionOut(BaseModel):
     permission_mode: str = Field(description="设置之后的实际模式")
     session_override: bool = Field(
         default=False, description="是不是这个会话自己设的（不是全局默认）"
+    )
+    allow_bypass: bool = Field(
+        default=False,
+        description="平台有没有开 bypass 总闸（没开的话前端该把这一项标成不可选）",
+    )
+
+
+class AgentDecisionIn(BaseModel):
+    """逐条审批决定。
+
+    **一条挂起的调用一个决定**，按待批清单的顺序（与前端看到的 ``pending``
+    一致）。不传 = 全部按这个接口的默认动作处理。
+    """
+
+    decisions: list[Literal["approve", "reject"]] | None = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "逐条决定：每条挂起的调用一个，'approve' 或 'reject'。"
+            "不传 = 全部批准（或全部拒绝，取决于调的是哪个接口）"
+        ),
     )
 
 
@@ -348,7 +369,9 @@ class SessionStatusOut(BaseModel):
     outputs: list[OutputFileOut] = Field(default_factory=list, description="产出与上传件")
     changes: ChangesOut = Field(default_factory=ChangesOut)
     connectors: list[ConnectorOut] = Field(default_factory=list, description="接进来的东西")
-    collaboration: CollaborationOut = Field(default_factory=CollaborationOut, description="协作状态")
+    collaboration: CollaborationOut = Field(
+        default_factory=CollaborationOut, description="协作状态"
+    )
     tasks: list[RunningTaskOut] = Field(default_factory=list, description="正在跑的工具调用")
     finished_tasks: int = Field(default=0, description="这个会话跑完过多少个工具调用")
     updated_at: str = Field(default="", description="这份状态是什么时候读的")

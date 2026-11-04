@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import tempfile
 import time
@@ -20,6 +21,8 @@ from typing import Any
 
 from app.capabilities.errors import CapabilityError, ErrorCode
 from app.capabilities.execution.context import ExecutionContext
+
+logger = logging.getLogger(__name__)
 
 
 def make_run_python(context: ExecutionContext) -> Callable[[str], Awaitable[dict[str, Any]]]:
@@ -49,25 +52,31 @@ def make_run_python(context: ExecutionContext) -> Callable[[str], Awaitable[dict
 
         started = time.perf_counter()
         script = _write_script(code, context.workspace)
-        if context.sandbox_type == "local":
-            # local 模式没有隔离，只适合本地开发
-            exit_code, output = await _run_local(script, context)
-        else:
-            sandbox = DockerSandbox(
-                context.workspace,
-                image=context.sandbox_image,
-                mount=context.docker_mount,
-                timeout=context.sandbox_timeout,
-            )
-            try:
-                response = await sandbox.aexecute(
-                    f"python {context.docker_mount.rstrip('/')}/{script.name}",
+        try:
+            if context.sandbox_type == "local":
+                # local 模式没有隔离，只适合本地开发
+                exit_code, output = await _run_local(script, context)
+            else:
+                sandbox = DockerSandbox(
+                    context.workspace,
+                    image=context.sandbox_image,
+                    mount=context.docker_mount,
                     timeout=context.sandbox_timeout,
                 )
-            except RuntimeError as exc:
-                raise CapabilityError(str(exc), code=ErrorCode.EXECUTION_ERROR) from exc
-            exit_code = response.exit_code if response.exit_code is not None else -1
-            output = response.output or ""
+                try:
+                    response = await sandbox.aexecute(
+                        f"python {context.docker_mount.rstrip('/')}/{script.name}",
+                        timeout=context.sandbox_timeout,
+                    )
+                except RuntimeError as exc:
+                    raise CapabilityError(str(exc), code=ErrorCode.EXECUTION_ERROR) from exc
+                exit_code = response.exit_code if response.exit_code is not None else -1
+                output = response.output or ""
+        finally:
+            # **临时脚本必须删** —— 它落在工作区里（容器只挂载工作区，
+            # 写在别处容器看不见），不删就会一直堆着，而且会被
+            # ``git_commit`` 一起提交进用户的仓库。
+            _remove_script(script)
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         return {
@@ -112,6 +121,19 @@ def _write_script(code: str, workspace: Path) -> Path:
     with handle:
         handle.write(code)
     return Path(handle.name)
+
+
+def _remove_script(script: Path) -> None:
+    """删掉临时脚本。
+
+    **删不掉也不该让整轮失败** —— 脚本执行完了，剩下的只是一个
+    没人要的垃圾文件。为它抛异常会让模型以为执行失败了，
+    于是重跑一遍 —— 越跑垃圾越多。
+    """
+    try:
+        script.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("临时脚本删不掉：%s", script)
 
 
 def _format(exit_code: int, output: str) -> str:

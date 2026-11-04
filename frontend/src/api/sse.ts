@@ -14,6 +14,21 @@
 
 import { ApiError } from './client'
 
+/**
+ * 流被截断 —— 响应在 `[DONE]` 之前就结束了。
+ *
+ * **为什么要单独一个类型**：断流和"后端报错了"是两回事 ——
+ * 后端报错会推一帧 `error` 再推一帧 `done`，断流则什么帧都没有。
+ * 前端得能分辨这两种情况，才知道该不该把还在转圈的工具块标成失败
+ * （后端报错时那些块本来就会有结果）。
+ */
+export class StreamInterruptedError extends Error {
+  constructor(message = '流式连接中断') {
+    super(message)
+    this.name = 'StreamInterruptedError'
+  }
+}
+
 /** 从一段原始文本里取出所有 data 载荷。 */
 function extractData(frame: string): string[] {
   return frame
@@ -25,6 +40,8 @@ function extractData(frame: string): string[] {
 
 /**
  * 读一条 SSE 流，逐帧产出。
+ *
+ * **流被截断时抛 {@link StreamInterruptedError}** —— 收到 `[DONE]` 才算正常结束。
  *
  * @param response  已经 fetch 过的响应。
  * @param parse     把一帧的载荷转成对象；默认按 JSON 解析。
@@ -72,6 +89,9 @@ export async function* readSSE<T>(
       if (payload === '[DONE]') return
       yield parse(payload)
     }
+    // **走到这儿说明没收到 [DONE]** —— 后端正常收尾一定会发它。
+    // 静默返回的话前端会以为这一轮正常结束，工具卡片永远停在「进行中」。
+    throw new StreamInterruptedError()
   } finally {
     reader.releaseLock()
   }

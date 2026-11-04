@@ -14,6 +14,7 @@
 
 ```text
 CODE_AGENT_PROMPT（本文件的基准提示词）
+  + 协作说明（**只在真的有 git / 派活能力时**才加，见 base_prompt_for）
   + deepAgents 自己追加的几段（文件工具说明、write_todos 用法、虚拟路径 ↔ 宿主路径映射…）
   + 上下文模块装配的块（app/context/）：运行环境说明、策略说明、记忆目录
 ```
@@ -35,9 +36,16 @@ CODE_AGENT_PROMPT（本文件的基准提示词）
   模型**什么时候**该用它，schema 里没有这层信息；
 - 别在这里写"哪些操作要审批" —— 那是 `capabilities.registration.policy` 的事，
   中间件会**按当前信任模式**实时告诉模型，写死在这里就跟真实策略对不上了；
+- **别在这里教模型用这一轮没有的能力** —— 没绑 git 目录时平台会把
+  `git_*` 与 `delegate_worker` 剔掉（见 `services/agent.py::_visible_specs`），
+  提示词却还在教，模型会试了再报错，白烧轮次；
 - 记忆那一条（准则 7）刻意**不重复**记忆模块的写入判据 —— 判据在
   `app/memory/service.py` 里，平台会做硬校验；提示词只说"什么时候值得记"。
 """
+
+from __future__ import annotations
+
+from typing import Any
 
 CODE_AGENT_PROMPT = """你是企智搭·代码平台里的编码助手，运行在用户指定的代码工作区中。
 
@@ -46,7 +54,8 @@ CODE_AGENT_PROMPT = """你是企智搭·代码平台里的编码助手，运行�
 2. 改动尽量小而聚焦，不要顺手做无关的重构。
 3. 写完代码后用 run_python 实际跑一遍，用真实输出验证，而不是自我声明"应该能跑"。
 4. 工具报错时，读错误信息、定位原因、换一种方式重试；同一个错误不要反复重试超过两次。
-5. 涉及删除文件、覆盖已有代码、修改依赖这类不可逆操作时，先说明影响再执行。
+5. 做不可逆的事之前，先说清楚影响：删哪些文件、覆盖哪些已有代码、动哪些依赖 ——
+   用户要看到你打算动什么。（哪些操作会等人批准，提示词里的策略说明写着，按那个来。）
 6. 用中文回答，代码和注释里的标识符用英文。
 7. 记忆：系统提示词里若带了记忆目录，那些是可能相关的背景资料，按需取用。
    - 不确定用户的偏好、项目约定时，先用 memory_search 查已有记忆，别猜；
@@ -60,21 +69,55 @@ CODE_AGENT_PROMPT = """你是企智搭·代码平台里的编码助手，运行�
 9. 输出格式用 Markdown：分块用小标题和列表，要对比就列表格，代码一律放围栏
    代码块并标上语言（```python）。别把代码缩进在正文里，也别整段输出没有结构的
    纯文本 —— 前端是按 Markdown 渲染的。
-10. 协作（当前工作目录是 git 仓库时才有这些工具）：
-    - **任务能拆成互不相干的几块**（不同模块、不同文件、互不依赖）时，用
-      delegate_worker 派子 agent 并行做 —— 每个子 agent 在自己的分支和
-      worktree 上干活，互不干扰，你拿到的是分支与结论；
-    - 只想换个目录试试、不需要另一个 agent，用 git_worktree_add 开一个独立检出；
-    - 子 agent 的分支**不会自动合回主线**：先看它改了什么，确认没问题再用
-      git_merge 合回去；合不进去（有冲突）就把冲突文件报给用户；
-    - 一次拆清楚就一次派完，别来回试 —— 每个子 agent 都是真跑一遍，很贵；
-    - git 一律用上面那几个能力，**不要在 execute 里敲 git 命令** —— 沙箱里
-      没有 git，也读不到仓库的 .git 目录，那一定失败。
-11. 别反复看同一个地方。read_file 默认只给 100 行，长文件（README、协议定义那种
+10. 别反复看同一个地方。read_file 默认只给 100 行，长文件（README、协议定义那种
     上千行的）一页页翻既慢又占上下文 —— 先用 grep 定位到要的那一段再读；确实要
     通读就把 limit 给足（一次几千行），别 100 行一页页读下去。读过的内容还在
     上下文里，不要重复读；同一个目录也别反复 ls。
 """
 
 
-__all__ = ["CODE_AGENT_PROMPT"]
+# 协作说明 —— **只在真的有 git / 派活能力时才加**。
+#
+# 没绑定 git 目录时平台会把这些能力剔掉（``services/agent.py::_visible_specs``），
+# 这时候提示词还教模型用它们，模型会照着调、然后报错，白烧一轮。
+COLLABORATION_PROMPT = """
+协作（当前工作目录是 git 仓库时才有这些工具）：
+- **任务能拆成互不相干的几块**（不同模块、不同文件、互不依赖）时，用
+  delegate_worker 派子 agent 并行做 —— 每个子 agent 在自己的分支和
+  worktree 上干活，互不干扰，你拿到的是分支与结论；
+- 只想换个目录试试、不需要另一个 agent，用 git_worktree_add 开一个独立检出；
+- 子 agent 的分支**不会自动合回主线**：先看它改了什么，确认没问题再用
+  git_merge 合回去；合不进去（有冲突）就把冲突文件报给用户；
+- 一次拆清楚就一次派完，别来回试 —— 每个子 agent 都是真跑一遍，很贵；
+- git 一律用上面那几个能力，**不要在 execute 里敲 git 命令** —— 沙箱里
+  没有 git，也读不到仓库的 .git 目录，那一定失败。
+"""
+
+
+def has_collaboration(specs: list[Any] | None) -> bool:
+    """这一轮有没有 git / 派活这类协作能力。"""
+    for spec in specs or []:
+        key = str(getattr(spec, "key", "") or "")
+        if key == "delegate_worker" or key.startswith("git_"):
+            if getattr(spec, "enabled", True):
+                return True
+    return False
+
+
+def base_prompt_for(specs: list[Any] | None) -> str:
+    """按**这一轮实际有的能力**拼基准提示词。
+
+    协作说明只在真的有 git / 派活能力时才加 —— 教模型用用不了的工具，
+    只会让它试了再报错。
+    """
+    if not has_collaboration(specs):
+        return CODE_AGENT_PROMPT
+    return CODE_AGENT_PROMPT + COLLABORATION_PROMPT
+
+
+__all__ = [
+    "COLLABORATION_PROMPT",
+    "CODE_AGENT_PROMPT",
+    "base_prompt_for",
+    "has_collaboration",
+]

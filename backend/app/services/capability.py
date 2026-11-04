@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.permissions import resolve_permission_mode
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.pipeline import execute
 from app.capabilities.intent.resolver import resolve
@@ -26,6 +27,7 @@ from app.capabilities.registration.spec import (
 )
 from app.core.config import settings
 from app.core.exceptions import NotFoundError, ValidationError
+from app.core.workspace import resolve_workspace
 from app.repositories.mcp_server import MCPServerRepository
 from app.schemas.capability import (
     CapabilityInvokeOut,
@@ -96,7 +98,7 @@ class CapabilityService:
             raise ValidationError(f"{key} 不是可直接调用的原子能力")
 
         specs = await self.load()
-        context = await self._build_context(workspace, [spec])
+        context = await self._build_context(workspace, [spec], thread_id)
         context.thread_id = thread_id or ""
         # 参数校验交给执行层（权威校验）：失败会带着 SCHEMA_INVALID 落进调用记录，
         # 而不是在这里抛出去变成 500
@@ -105,7 +107,9 @@ class CapabilityService:
             specs,
             thread_id=thread_id or "",
             workspace=context.workspace,
-            trust_mode=settings.capability_trust_mode,
+            # **会话级权限模式** —— 与 agent 路径同一份口径。
+            # 读全局配置的话，用户在会话里选了「手动」，直接调接口却还是全局那档。
+            trust_mode=resolve_permission_mode(thread_id or ""),
             validate=False,
         )
         result = await execute(intent, context)
@@ -144,7 +148,10 @@ class CapabilityService:
         )
 
     async def _build_context(
-        self, workspace: str | Path | None, specs: list[CapabilitySpec]
+        self,
+        workspace: str | Path | None,
+        specs: list[CapabilitySpec],
+        thread_id: str | None = None,
     ) -> ExecutionContext:
         """执行上下文：带上要用到的 MCP 供给通道。"""
         mcp_servers = {}
@@ -156,7 +163,16 @@ class CapabilityService:
             server = await repo.get_by_name(name)
             if server is not None and server.enabled:
                 mcp_servers[server.name] = server
-        context = ExecutionContext.build(workspace or settings.workspace_root, mcp_servers)
+        # 落点：**会话的工作区**，不是平台工作区根目录。
+        # 根目录是所有会话目录的父目录 —— 在那儿执行命令，
+        # 一条 `rm -rf` 就能删掉**别的会话**的工作区。
+        if workspace:
+            target = Path(workspace)
+        elif thread_id:
+            target = resolve_workspace(thread_id)
+        else:
+            target = Path(settings.workspace_root)
+        context = ExecutionContext.build(target, mcp_servers)
         context.session = self.session
         return context
 

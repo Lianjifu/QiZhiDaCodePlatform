@@ -62,6 +62,53 @@ class RecordingModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self.reply))])
 
 
+class ParallelDeleteModel(BaseChatModel):
+    """第一次返回**两个并行**的 ``delete``，之后回文本。
+
+    用 ``delete`` 而不是 ``execute``：删除在本地跑，测试不依赖 docker；
+    而且删文件是**破坏性（高档）** —— 一定挂起等人批，
+    逐条批完能直接看**哪个文件真被删了**。
+    """
+
+    reply: str = "都删完了。"
+    seen: list[list[Any]] = []
+
+    @property
+    def _llm_type(self) -> str:
+        return "parallel-delete"
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> ParallelDeleteModel:
+        return self
+
+    def _generate(
+        self,
+        messages: list[Any],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.seen.append(list(messages))
+        if len(self.seen) == 1:
+            calls = [
+                {
+                    "name": "delete",
+                    "args": {"file_path": "a.txt"},
+                    "id": "call_1",
+                    "type": "tool_call",
+                },
+                {
+                    "name": "delete",
+                    "args": {"file_path": "b.txt"},
+                    "id": "call_2",
+                    "type": "tool_call",
+                },
+            ]
+            return ChatResult(
+                generations=[ChatGeneration(message=AIMessage(content="", tool_calls=calls))]
+            )
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self.reply))])
+
+
 class ParallelToolModel(BaseChatModel):
     """第一次返回**两个并行**的 tool_call，之后回文本。
 
@@ -467,8 +514,12 @@ async def test_one_call_one_approval(app, client, session) -> None:
 async def test_param_risk_still_gates_tools_that_need_no_approval(
     app, client, session, monkeypatch
 ) -> None:
-    """平时不用人批的工具，碰到破坏性命令时要单独拎出来问一次。"""
-    monkeypatch.setattr(settings, "capability_trust_mode", "permissive")
+    """平时不用人批的工具，碰到破坏性命令时要单独拎出来问一次。
+
+    ``accept_edits`` 下 ``execute`` 不用人批（中档自动放行）——
+    但一条 ``rm -rf`` 是破坏性的，要单独问。
+    """
+    monkeypatch.setattr(settings, "capability_trust_mode", "accept_edits")
 
     thread_id = "t-param-only"
     model = RecordingModel(
@@ -481,6 +532,210 @@ async def test_param_risk_still_gates_tools_that_need_no_approval(
     resp = await client.post(API + "/chat", json={"message": "删个目录", "thread_id": thread_id})
     data = resp.json()["data"]
     assert data["status"] == "pending_approval"
-    # permissive 下 execute 不用人批 —— 这一轮是参数级规则拦下来的
+    # accept_edits 下 execute 不用人批 —— 这一轮是参数级规则拦下来的
     assert data["pending"][0]["kind"] == "param_risk"
     assert data["pending"][0]["risk"] == "destructive"
+
+
+@pytest.mark.asyncio
+async def test_bypass_mode_does_not_interrupt_on_param_risk(
+    app, client, session, monkeypatch
+) -> None:
+    """绕过权限模式的承诺是「不会有人工审批」—— 参数级规则也不能挂起。
+
+    判定仍然要跑（结果落进调用记录），只是不再拿它去拦人。
+    """
+    monkeypatch.setattr(settings, "capability_trust_mode", "bypass")
+    monkeypatch.setattr(settings, "capability_allow_bypass", True)
+
+    thread_id = "t-bypass-param"
+    model = RecordingModel(
+        tool_name="execute",
+        tool_args={"command": "rm -rf /tmp/qzd-canary"},
+        reply="好",
+    )
+    _override(app, model, session)
+
+    resp = await client.post(API + "/chat", json={"message": "删个目录", "thread_id": thread_id})
+    data = resp.json()["data"]
+    assert data["status"] == "completed", "绕过权限模式不该挂起等人批"
+    assert not data.get("pending")
+
+
+# ---------- 阶段 0：参数级风险规则的回归测试 ----------
+
+
+def test_参数级规则覆盖源码参数() -> None:
+    """``run_python`` 的参数叫 ``code`` —— 破坏性内容不能从它眼皮底下溜过去。
+
+    只按 ``command`` 匹配的话，一段 ``shutil.rmtree("/")`` 完全逃逸。
+    """
+    from app.capabilities.execution.risk import assess_call
+
+    destructive = assess_call("run_python", {"code": "import shutil; shutil.rmtree('/')"})
+    assert destructive.risk == "destructive"
+    assert destructive.require_admin
+    assert destructive.threat
+
+    # 正常的代码不该被当成危险
+    benign = assess_call("run_python", {"code": "print(sum(range(10)))"})
+    assert not benign.threat
+    assert benign.risk != "destructive"
+
+
+def test_参数级规则覆盖命令参数() -> None:
+    """shell 命令里的破坏性特征照样要命中。"""
+    from app.capabilities.execution.risk import assess_call
+
+    hit = assess_call("execute", {"command": "rm -rf /tmp/x"})
+    assert hit.risk == "destructive"
+    assert hit.require_admin
+
+    # 内网地址 = SSRF 面
+    ssrf = assess_call("web_fetch", {"url": "http://169.254.169.254/latest/meta-data/"})
+    assert ssrf.risk == "destructive"
+    assert ssrf.require_admin
+
+
+def test_审批卡片按参数算风险而不是工具基线() -> None:
+    """一条 ``rm -rf`` 走的也是 ``execute`` 工具 —— 卡片不能报「中档 · 执行命令」。
+
+    报错了人就会以为只是跑个命令，实际是在删东西。
+    """
+    from app.agents.runner import _pending_entries
+
+    payload = {
+        "action_requests": [
+            {"name": "execute", "args": {"command": "rm -rf /tmp/x"}},
+            {"name": "execute", "args": {"command": "ls -la"}},
+        ]
+    }
+    entries = _pending_entries(payload)
+    assert entries[0]["risk"] == "destructive", "破坏性命令要报高档"
+    assert entries[0]["reasons"], "要说明为什么危险"
+    # 普通命令还是中档
+    assert entries[1]["risk"] == "execute"
+
+
+def test_auto模式可以显式设置() -> None:
+    """``auto`` 是五个模式之一 —— 不能被当成「恢复默认」。
+
+    全局配置是 bypass 时，用户选「自动（按风险档位）」必须真的拿到 auto。
+    """
+    from app.agents.permissions import resolve_permission_mode, set_permission_mode
+
+    thread_id = "t-explicit-auto"
+    try:
+        assert set_permission_mode(thread_id, "auto") == "auto"
+        assert resolve_permission_mode(thread_id) == "auto"
+        # 恢复默认要走 default
+        assert set_permission_mode(thread_id, "default") in (
+            "auto",
+            "manual",
+            "accept_edits",
+            "plan",
+            "bypass",
+        )
+    finally:
+        from app.agents.permissions import clear_permission_mode
+
+        clear_permission_mode(thread_id)
+
+
+def test_直接调能力走会话级权限模式() -> None:
+    """直接调接口的路径也要认会话的模式 —— 与 agent 路径同一份口径。"""
+    from app.agents.permissions import (
+        clear_permission_mode,
+        resolve_permission_mode,
+        set_permission_mode,
+    )
+
+    thread_id = "t-invoke-mode"
+    try:
+        set_permission_mode(thread_id, "manual")
+        assert resolve_permission_mode(thread_id) == "manual"
+    finally:
+        clear_permission_mode(thread_id)
+
+
+# ---------- 逐条审批 ----------
+
+
+@pytest.mark.asyncio
+async def test_逐条审批可以只批其中一条(app, client, session) -> None:
+    """一轮里并行挂起好几个调用时，可以**逐条**批 —— 不必全批或全拒。
+
+    HITL 的决定是**按条**给的：``decisions[i]`` 对应待批清单的第 i 条。
+    这里批第一条、拒第二条 —— **只有第一个文件真被删掉**。
+    """
+    thread_id = "t-partial-approve"
+    workspace = resolve_workspace(thread_id)
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "a.txt").write_text("A", encoding="utf-8")
+    (workspace / "b.txt").write_text("B", encoding="utf-8")
+
+    model = ParallelDeleteModel(reply="处理完了")
+    _override(app, model, session)
+
+    resp = await client.post(API + "/chat", json={"message": "删两个文件", "thread_id": thread_id})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["status"] == "pending_approval"
+    assert len(data["pending"]) == 2, data["pending"]
+    # 清单的顺序要跟决定一一对应
+    assert [item["arguments"]["file_path"] for item in data["pending"]] == [
+        "a.txt",
+        "b.txt",
+    ]
+
+    # 第一条批准、第二条拒绝
+    approve = await client.post(
+        f"{API}/{thread_id}/approve", json={"decisions": ["approve", "reject"]}
+    )
+    assert approve.status_code == 200, approve.text
+    assert approve.json()["data"]["status"] == "completed"
+
+    # **只删了被批准的那个** —— 这才是逐条审批的意义
+    assert not (workspace / "a.txt").exists(), "被批准的那条应该执行了"
+    assert (workspace / "b.txt").exists(), "被拒绝的那条不该执行"
+
+
+@pytest.mark.asyncio
+async def test_逐条审批条数对不上会报错(app, client, session) -> None:
+    """决定数与挂起数对不上时要明确报错 —— 静默截断会批错东西。"""
+    thread_id = "t-bad-decisions"
+    model = ParallelToolModel(reply="跑完了")
+    _override(app, model, session)
+
+    resp = await client.post(API + "/chat", json={"message": "跑两条命令", "thread_id": thread_id})
+    assert resp.status_code == 200, resp.text
+
+    approve = await client.post(
+        f"{API}/{thread_id}/approve", json={"decisions": ["approve"]}
+    )
+    assert approve.status_code >= 400, approve.text
+
+
+# ---------- 删除会话 ----------
+
+
+@pytest.mark.asyncio
+async def test_删除会话清掉工作区与记忆(app, client, session) -> None:
+    """删会话要把痕迹抹干净：工作区目录没了，接口也不再报 404 之外的错。
+
+    checkpoint / 权限文件 / 绑定 / 短期记忆 / 工作区目录 —— 一次清完。
+    """
+    thread_id = "t-delete-session"
+    workspace = resolve_workspace(thread_id)
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "产物.txt").write_text("东西", encoding="utf-8")
+
+    resp = await client.delete(f"{API}/{thread_id}/session")
+    assert resp.status_code == 200, resp.text
+    removed = resp.json()["data"]
+    assert removed["workspace"] is True, removed
+    assert not workspace.exists(), "工作区目录应该被删掉"
+
+    # 再删一次不该炸（目录已经没了）
+    again = await client.delete(f"{API}/{thread_id}/session")
+    assert again.status_code == 200, again.text

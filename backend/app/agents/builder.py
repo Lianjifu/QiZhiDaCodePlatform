@@ -42,6 +42,7 @@ from typing import Any
 from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models import BaseChatModel
 
+from app.agents.dynamic_context import DynamicContextMiddleware, PromptHolder
 from app.capabilities.backends.assembly import build_backend
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.tooling import build_tools
@@ -84,6 +85,7 @@ async def build_agent(
     memory: list[str] | None = None,
     subagents: list[Any] | None = None,
     allow_interrupt: bool = True,
+    prompt_holder: PromptHolder | None = None,
 ) -> Any:
     """组装 deep agent。
 
@@ -107,6 +109,8 @@ async def build_agent(
             交互界面，挂起就永远等不到人批。关掉之后 worker 里的破坏性命令
             也无人拦 —— 防线只剩"自己的 worktree + 断网沙箱"这一层物理隔离。
             同时 worker 也不带 checkpointer（挂起要靠它才能恢复）。
+        prompt_holder: 每轮变化的那两块提示词内容（记忆目录、上传件清单）。
+            给了就把它们留成占位符，等调模型时再填 —— 这样这张图可以跨轮复用。
 
     Returns:
         编译好的图（``CompiledStateGraph``），用法与 ``create_agent`` 一致：
@@ -142,6 +146,13 @@ async def build_agent(
     )
     # TodoListMiddleware 提供 write_todos —— deepAgents 的规划能力。
     middleware: list[Any] = [governance, TodoListMiddleware()]
+
+    # 每轮变化的内容（记忆目录、上传件清单）：提示词里留占位符，调模型时再填。
+    #
+    # **放在治理中间件前面** —— 列表里越靠前越外层，先填占位符，
+    # 治理中间件追加策略说明时看到的就是填好的提示词。
+    if prompt_holder is not None:
+        middleware.insert(0, DynamicContextMiddleware(prompt_holder))
 
     backend = build_backend(context, skills_dir)
 

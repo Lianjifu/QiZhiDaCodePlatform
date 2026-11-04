@@ -56,6 +56,8 @@ export interface SessionPermission {
   permission_mode: string
   /** 是不是这个会话自己设的（不是全局默认） */
   session_override: boolean
+  /** 平台有没有开 bypass 总闸 —— 没开的话「绕过权限」这一项不可选 */
+  allow_bypass: boolean
 }
 
 export interface AgentChatResult {

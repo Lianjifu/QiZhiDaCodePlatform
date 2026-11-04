@@ -12,9 +12,9 @@
 ======================  ====================================================
 ``auto``（默认）        按风险档位：低档自动，中档与高档要人批
 ``manual``              只读不问，其余任何操作都要人批
-``accept_edits``        文件编辑自动，执行命令 / 联网 / 破坏性照旧问
+``accept_edits``        中档自动（执行命令、联网），只有破坏性要人批
 ``plan``                只读：写类与执行类工具不暴露给模型
-``bypass``              全放行（含破坏性）
+``bypass``              跳过人工确认（含破坏性）
 ======================  ====================================================
 
 **存文件而不是建表**：跟绑定关系同一个理由（``app/environments/store.py``）——
@@ -56,15 +56,41 @@ def resolve_permission_mode(thread_id: str) -> str:
     会话有覆盖就用覆盖的，没有就用全局配置。
 
     Args:
-        thread_id: 会话 ID。
+        thread_id: 会话 ID。**空串**表示"没有会话上下文"
+            （直接调能力的接口可以不带 thread_id）—— 那就只用全局配置。
 
     Returns:
         ``auto`` / ``manual`` / ``accept_edits`` / ``plan`` / ``bypass``。
     """
+    if not thread_id or not thread_id.strip():
+        # 没有会话就没有会话级覆盖 —— 走全局默认。
+        # （工作区目录名要求 thread_id 非空，这里不能去查文件。）
+        return _global_mode()
     override = _read(thread_id)
     if override:
+        # **会话里存的 bypass 也要过总闸** —— 总闸可能是后来才关上的
+        # （之前开着，写了一堆 bypass 会话，然后运维把闸关了）。
+        if override == PermissionMode.BYPASS and not settings.capability_allow_bypass:
+            logger.warning("会话 %s 存的是 bypass，但总闸关着 —— 退回全局默认", thread_id)
+            return _global_mode()
         return override
-    return normalize_mode(settings.capability_trust_mode)
+    return _global_mode()
+
+
+def _global_mode() -> str:
+    """全局默认模式。
+
+    **bypass 要过总闸** —— 配置里写了 bypass 也得看
+    ``capability_allow_bypass``。没开就退回 auto 并记一笔：静默忽略会让
+    运维以为已经放开了。
+    """
+    mode = normalize_mode(settings.capability_trust_mode)
+    if mode == PermissionMode.BYPASS and not settings.capability_allow_bypass:
+        logger.warning(
+            "全局配置要求 bypass，但 capability_allow_bypass 是关的 —— 退回 auto"
+        )
+        return PermissionMode.AUTO
+    return mode
 
 
 def set_permission_mode(thread_id: str, mode: str | None) -> str:
@@ -72,21 +98,33 @@ def set_permission_mode(thread_id: str, mode: str | None) -> str:
 
     Args:
         thread_id: 会话 ID。
-        mode: 模式名；``None`` / ``"default"`` / ``"auto"`` 恢复默认
-            （``auto`` 显式写出来也按"恢复默认"处理 —— 全局配置可能不是 auto）。
+        mode: 模式名；``None`` / ``""`` / ``"default"`` 恢复全局默认。
 
     Returns:
         设置之后的实际模式。
 
     Raises:
         ValueError: 给了不支持的取值。
+
+    Note:
+        **``"auto"`` 是显式写出来的，不是"恢复默认"。** 它是五个模式之一 ——
+        全局配置可能是 ``bypass``，那时候把会话设成 ``auto`` 必须是
+        "按风险档位"，而不是"跟随全局"。混为一谈的话，用户选了更严的模式，
+        实际拿到的是更宽的。
     """
     text = str(mode or "").strip().lower()
-    if text in ("", "default", "auto"):
+    if text in ("", "default"):
         clear_permission_mode(thread_id)
-        return normalize_mode(settings.capability_trust_mode)
+        return _global_mode()
     if text not in PermissionMode:
         raise ValueError(f"不支持的权限模式：{mode!r}")
+    if text == PermissionMode.BYPASS and not settings.capability_allow_bypass:
+        # **明确拒绝，不静默忽略** —— 静默忽略的话，界面上显示"已切换到
+        # bypass"，实际却还在按 auto 走，用户以为放开了其实没放开。
+        raise ValueError(
+            "bypass 模式没有开启（配置项 capability_allow_bypass）。"
+            "它会跳过人工确认，包括破坏性操作 —— 需要显式打开。"
+        )
     path = permission_path(thread_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(

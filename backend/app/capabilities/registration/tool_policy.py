@@ -75,15 +75,20 @@ TOOL_POLICIES: dict[str, ToolPolicy] = {
     "glob": ToolPolicy(risk=RiskLevel.READ, permission=PermissionLevel.NONE, idempotent=True),
     "grep": ToolPolicy(risk=RiskLevel.READ, permission=PermissionLevel.NONE, idempotent=True),
     # 写类：**低档**，自动放行（改错了能改回来）
+    #
+    # **不幂等** —— 同样的参数写第二次，结果不一样：
+    # 第一次写进去的内容会被第二次覆盖，而 ``edit_file`` 的第二次调用
+    # 会因为"文件已变"报错。声明成幂等的话，执行层会拿上一次的**旧结果**
+    # 直接返回，把那个错误吞掉 —— agent 以为改成功了，其实文件没动。
     "write_file": ToolPolicy(
         risk=RiskLevel.WRITE,
         permission=PermissionLevel.NONE,
-        idempotent=True,
+        idempotent=False,
     ),
     "edit_file": ToolPolicy(
         risk=RiskLevel.WRITE,
         permission=PermissionLevel.NONE,
-        idempotent=True,
+        idempotent=False,
     ),
     # 删除：**高档**，永远要人批，不管信任模式。
     # 写文件能靠再写一遍补救，删掉的回不来 —— 不可重试（删了就是删了）。

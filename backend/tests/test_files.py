@@ -487,7 +487,7 @@ async def test_archive_of_empty_workspace_is_404(app, client) -> None:
 def test_write_text_creates_file(workspace: Path) -> None:
     service = FileService(workspace)
     size = service.write_text("/notes.md", "# 标题\n\n正文")
-    assert size == len("# 标题\n\n正文".encode("utf-8"))
+    assert size == len("# 标题\n\n正文".encode())
     assert (workspace / "notes.md").read_text(encoding="utf-8") == "# 标题\n\n正文"
 
 

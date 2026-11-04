@@ -42,6 +42,17 @@ class MemoryStore(Protocol):
         """列出全部（管理接口用）。"""
         ...
 
+    async def find_by_hash(self, digest: str) -> MemoryEntry | None:
+        """按内容哈希找一条（查重用）。
+
+        **必须走数据库索引** —— 不能"拉全量再在 Python 里比对"。
+        长期记忆有几百条时，全量拉取既慢又会被存储层的返回上限截断
+        （RAG 的 ``list_documents`` 单页最多 100 条），
+        查重与冲突检测会**双双失效**：重复内容写进去，
+        跟旧记忆矛盾的内容也拦不住。
+        """
+        ...
+
     async def touch(self, item_id: str) -> None:
         """命中即重新激活：刷新使用次数与最后召回时间。"""
         ...

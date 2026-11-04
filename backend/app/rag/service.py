@@ -159,7 +159,9 @@ class RagService:
         if len(content) > limit:
             raise ValidationError(f"文档太长（{len(content)} 字），上限 {limit} 字，请切分后再入库")
 
-        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        content_hash = getattr(payload, "content_hash", None) or hashlib.sha256(
+            content.encode("utf-8")
+        ).hexdigest()
         existing = await self._find_by_hash(collection_id, content_hash)
         if existing is not None:
             # 内容一样，不重复切、不重复向量化

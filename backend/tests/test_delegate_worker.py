@@ -18,6 +18,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
+from app.capabilities.errors import CapabilityError
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.registration.builtin.delegate import make_delegate_worker
 from app.core.config import settings
@@ -143,7 +144,7 @@ async def test_空任务要报错(repo):
     context = ExecutionContext.build(repo)
     context.model = WritingModel()
     delegate = make_delegate_worker(context)
-    with pytest.raises(Exception):
+    with pytest.raises(CapabilityError):
         await delegate(task="   ")
 
 

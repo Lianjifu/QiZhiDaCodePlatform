@@ -60,24 +60,32 @@ def build_backend(context: ExecutionContext, skills_dir: Path | None = None) -> 
     """
     workspace = context.workspace
     default = _sandbox_backend(context, workspace)
-    routes: dict[str, Any] = {"/": FilesystemBackend(root_dir=workspace)}
+    # **virtual_mode=True 显式写出来** —— 它是框架的默认值，不写也安全，
+    # 但这里写出来是为了让"路径越界被挡住"这件事**写在代码里**而不是
+    # "碰巧是默认行为"。升级框架改了默认值的话，这一行会先挡下来。
+    routes: dict[str, Any] = {
+        "/": FilesystemBackend(root_dir=workspace, virtual_mode=True)
+    }
     if skills_dir is not None:
         # 技能目录挂在工作区外面：agent 的文件工具只看得见工作区里的东西，
         # 改不到这些导出文件。
-        routes[SKILLS_ROUTE] = FilesystemBackend(root_dir=skills_dir)
+        routes[SKILLS_ROUTE] = FilesystemBackend(root_dir=skills_dir, virtual_mode=True)
     # 上传件：绑了工作目录之后，agent 的根目录是**用户的仓库** ——
     # 上传件绝不能落进仓库里。所以它们留在会话自己的目录，以 ``/uploads``
     # 路由挂给 agent（模型看到的路径跟从前一样）。
     uploads = _uploads_route(context)
     if uploads is not None:
-        routes[UPLOADS_ROUTE] = FilesystemBackend(root_dir=uploads)
+        routes[UPLOADS_ROUTE] = FilesystemBackend(root_dir=uploads, virtual_mode=True)
     # 记忆文件同理：留在会话目录，以 /.memory 挂给 agent
     if uploads is not None:
         routes[MEMORY_ROUTE] = FilesystemBackend(
-            root_dir=Path(context.session_workspace or context.workspace)
+            root_dir=Path(context.session_workspace or context.workspace),
+            virtual_mode=True,
         )
     # 产物目录（对话历史外置）同样挂在工作区外面 —— 见 _artifacts_root。
-    routes[ARTIFACTS_ROUTE] = FilesystemBackend(root_dir=_artifacts_dir(context))
+    routes[ARTIFACTS_ROUTE] = FilesystemBackend(
+        root_dir=_artifacts_dir(context), virtual_mode=True
+    )
     # 包一层：补上 `ls("/")` 看不到子路由的问题（见 platform_backend.py）
     return PlatformBackend(
         CompositeBackend(

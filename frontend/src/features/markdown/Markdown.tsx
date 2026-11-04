@@ -94,34 +94,66 @@ const components: Components = {
 }
 
 export default function Markdown({ children }: { children: string }) {
-  return (
-    <div className="md">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[
-          [
-            rehypeHighlight,
-            {
-              // 常见的别名 —— `tsx` 当成 typescript 高亮，`vue` 当成 xml
-              aliases: {
-                tsx: 'typescript',
-                jsx: 'javascript',
-                vue: 'xml',
-                svelte: 'xml',
-                py: 'python',
-                sh: 'bash',
-                zsh: 'bash',
-                yml: 'yaml',
-                md: 'markdown',
-              },
-              plainText: ['plaintext', 'text', 'txt'],
+  return <div className="md">{renderMarkdown(children)}</div>
+}
+
+/**
+ * 解析结果缓存。
+ *
+ * **Markdown 解析是这条链路上最贵的一步** —— 解析 + 语法高亮，一段长代码
+ * 能到几十毫秒。历史消息的内容**永远不变**，每次重渲染都重解析一遍纯属浪费。
+ *
+ * 缓存的是**渲染好的 React 元素**（不是 HTML 字符串）：元素是不可变的描述符，
+ * 复用同一棵树在不同位置渲染完全安全 —— 组件自己的状态（复制按钮那个"已复制"）
+ * 仍然按位置各自独立。
+ *
+ * 缓存按内容做键 —— 内容一样就是同一棵树。流式输出时每来一个字都是新内容，
+ * 所以要**限量**：满了就丢最旧的（流式的中间版本最没用）。
+ */
+const CACHE_LIMIT = 80
+const cache = new Map<string, ReactNode>()
+
+function renderMarkdown(content: string): ReactNode {
+  const cached = cache.get(content)
+  if (cached) {
+    // 命中就挪到最新（LRU）—— 正在看的内容别被挤掉
+    cache.delete(content)
+    cache.set(content, cached)
+    return cached
+  }
+  const tree = (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[
+        [
+          rehypeHighlight,
+          {
+            // 常见的别名 —— `tsx` 当成 typescript 高亮，`vue` 当成 xml
+            aliases: {
+              tsx: 'typescript',
+              jsx: 'javascript',
+              vue: 'xml',
+              svelte: 'xml',
+              py: 'python',
+              sh: 'bash',
+              zsh: 'bash',
+              yml: 'yaml',
+              md: 'markdown',
             },
-          ],
-        ]}
-        components={components}
-      >
-        {children}
-      </ReactMarkdown>
-    </div>
+            plainText: ['plaintext', 'text', 'txt'],
+          },
+        ],
+      ]}
+      components={components}
+    >
+      {content}
+    </ReactMarkdown>
   )
+  cache.set(content, tree)
+  while (cache.size > CACHE_LIMIT) {
+    const oldest = cache.keys().next().value
+    if (oldest === undefined) break
+    cache.delete(oldest)
+  }
+  return tree
 }
