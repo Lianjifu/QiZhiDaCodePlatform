@@ -262,3 +262,13 @@ export function SparkIcon(props: IconProps) {
     </Svg>
   )
 }
+
+/** 侧栏：左边一栏 + 一条竖线（折叠 / 展开都用它，靠外面的容器调转方向）。 */
+export function PanelLeftIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.75" />
+      <path d="M6.25 2.75v10.5" />
+    </Svg>
+  )
+}

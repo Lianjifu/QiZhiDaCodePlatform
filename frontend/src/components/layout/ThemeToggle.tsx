@@ -21,7 +21,7 @@ function Icon({ mode }: { mode: ThemeMode }) {
   return <AutoIcon className={className} />
 }
 
-export default function ThemeToggle() {
+export default function ThemeToggle({ compact = false }: { compact?: boolean }) {
   const { mode, setMode } = useTheme()
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -42,14 +42,22 @@ export default function ThemeToggle() {
         type="button"
         onClick={() => setOpen((value) => !value)}
         title="切换主题"
-        className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+        className={[
+          'flex items-center gap-2.5 rounded-lg text-sm text-ink-muted transition-colors hover:bg-hover hover:text-ink',
+          // **紧凑模式** —— 侧栏折起来的时候只剩一个图标
+          compact ? 'mx-auto h-9 w-9 justify-center' : 'w-full px-2.5 py-2',
+        ].join(' ')}
       >
         <Icon mode={mode} />
-        <span>{OPTIONS.find((option) => option.mode === mode)?.label}</span>
+        {compact ? null : <span>{OPTIONS.find((option) => option.mode === mode)?.label}</span>}
       </button>
 
       {open && (
-        <div className="absolute bottom-full left-0 mb-1 w-40 overflow-hidden rounded-lg border border-line bg-overlay shadow-lg">
+        <div
+          className={[
+            'absolute bottom-full left-0 mb-1 w-40 overflow-hidden rounded-lg border border-line bg-overlay shadow-lg',
+          ].join(' ')}
+        >
           {OPTIONS.map((option) => (
             <button
               key={option.mode}

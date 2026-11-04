@@ -14,6 +14,7 @@ import {
   FolderIcon,
   LayersIcon,
   MoonIcon,
+  PanelLeftIcon,
   PlugIcon,
   PlusIcon,
   SearchIcon,
@@ -65,6 +66,12 @@ const MODULES: NavItem[] = [
   },
 ]
 
+/** 侧栏折叠状态存在哪儿 —— 刷新页面不该把用户的布局弹回去。 */
+const SIDEBAR_KEY = 'qzd.sidebar.collapsed'
+
+/** 折叠后那条窄轨的宽度。 */
+const RAIL_WIDTH = 'w-14'
+
 export default function AppShell() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -73,6 +80,15 @@ export default function AppShell() {
   const [searchOpen, setSearchOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
+  /**
+   * 侧栏折叠没折叠。
+   *
+   * 窄屏下那一栏会把对话挤没 —— 折叠起来就只剩一条图标轨。
+   * 状态记在 localStorage 里：布局是用户自己的选择，刷新不该弹回去。
+   */
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem(SIDEBAR_KEY) === '1',
+  )
   /**
    * 状态面板看哪个会话。
    *
@@ -117,16 +133,31 @@ export default function AppShell() {
    */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() !== 'k' || !(event.metaKey || event.ctrlKey)) return
       const target = event.target as HTMLElement | null
       const tag = target?.tagName?.toLowerCase()
-      if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return
-      event.preventDefault()
-      setPaletteOpen((value) => !value)
+      const typing = tag === 'input' || tag === 'textarea' || target?.isContentEditable
+      if (event.metaKey || event.ctrlKey) {
+        // ⌘B —— 折叠 / 展开侧栏
+        if (event.key.toLowerCase() === 'b' && !typing) {
+          event.preventDefault()
+          setCollapsed((value) => !value)
+          return
+        }
+        // ⌘K —— 命令面板
+        if (event.key.toLowerCase() === 'k' && !typing) {
+          event.preventDefault()
+          setPaletteOpen((value) => !value)
+        }
+      }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [])
+
+  // 记住折叠状态
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0')
+  }, [collapsed])
 
   /** 命令清单 —— 面板里按关键词过滤。 */
   const commands = useMemo<PaletteCommand[]>(
@@ -177,6 +208,13 @@ export default function AppShell() {
         action: () => navigate('/providers'),
       },
       {
+        id: 'toggle-sidebar',
+        title: collapsed ? '展开侧栏' : '折叠侧栏',
+        hint: '⌘B',
+        icon: <PanelLeftIcon className="h-3.5 w-3.5" />,
+        action: () => setCollapsed((value) => !value),
+      },
+      {
         id: 'toggle-panel',
         title: '会话状态面板',
         hint: '打开右侧那一列',
@@ -205,122 +243,198 @@ export default function AppShell() {
         action: () => setMode('system'),
       },
     ],
-    [activeThread, create, navigate, setMode],
+    [activeThread, collapsed, create, navigate, setMode],
   )
+
+  /** 模块入口的跳转地址 —— 文件是按会话隔离的，要带上当前会话。 */
+  const moduleTo = (to: string) =>
+    to === '/files' && activeThread ? `/files?thread=${activeThread}` : to
 
   return (
     <div className="flex h-screen overflow-hidden bg-base">
-      <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-sunken">
-        {/* 产品头 */}
-        <div className="flex items-center gap-2.5 px-4 pb-2 pt-4">
-          <div
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-sm font-semibold text-accent-text"
-            style={{ background: 'var(--brand-gradient)' }}
-          >
-            智
-          </div>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-medium text-ink">企智搭·代码平台</div>
-          </div>
-        </div>
-
-        <div className="px-3 pb-3">
-          <button
-            type="button"
-            onClick={handleCreate}
-            className="flex w-full items-center gap-2 rounded-lg bg-raised px-2.5 py-2 text-sm font-medium text-ink shadow-1 transition-colors hover:bg-hover"
-          >
-            <PlusIcon className="h-4 w-4" />
-            <span>新建会话</span>
-          </button>
-          {searchOpen ? (
-            <div className="mt-2 px-1">
-              <input
-                autoFocus
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape') {
-                    setQuery('')
-                    setSearchOpen(false)
-                  }
-                }}
-                placeholder="搜会话标题…"
-                className="w-full rounded-lg border border-line bg-base px-2.5 py-1.5 text-sm text-ink outline-none placeholder:text-ink-faint"
-              />
-            </div>
-          ) : (
+      <aside
+        className={[
+          'flex shrink-0 flex-col border-r border-line bg-sunken transition-[width] duration-200',
+          collapsed ? RAIL_WIDTH : 'w-64',
+        ].join(' ')}
+      >
+        {collapsed ? (
+          /* 折叠态：一条图标轨 —— 只留入口，标题和会话列表都收起来 */
+          <div className="flex flex-1 flex-col items-center gap-1 py-3">
             <button
               type="button"
-              onClick={() => setSearchOpen(true)}
-              className="mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+              title="展开侧栏（⌘B）"
+              onClick={() => setCollapsed(false)}
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+            >
+              <PanelLeftIcon className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="新建会话"
+              onClick={handleCreate}
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+            >
+              <PlusIcon className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="搜索"
+              // 搜索框在展开态才有 —— 点了先把侧栏展开
+              onClick={() => {
+                setCollapsed(false)
+                setSearchOpen(true)
+              }}
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-hover hover:text-ink"
             >
               <SearchIcon className="h-4 w-4" />
-              <span>搜索</span>
-              <span className="flex-1" />
-              <kbd className="rounded border border-line px-1.5 py-0.5 text-[10px] text-ink-faint">
-                ⌘K
-              </kbd>
             </button>
-          )}
-        </div>
-
-        {/* 模块入口 */}
-        <nav className="px-3 pb-3">
-          <div className="mb-1 px-2.5 text-[11px] font-medium tracking-wide text-ink-faint">
-            工作区
+            <div className="my-1 h-px w-6 bg-line" />
+            {MODULES.map((item) => (
+              <NavLink
+                key={item.to}
+                to={moduleTo(item.to)}
+                end={item.to === '/chat'}
+                title={item.label}
+                className={({ isActive }) =>
+                  [
+                    'flex h-9 w-9 items-center justify-center rounded-lg transition-colors',
+                    isActive ? 'bg-hover text-ink' : 'text-ink-faint hover:bg-hover hover:text-ink',
+                  ].join(' ')
+                }
+              >
+                {item.icon}
+              </NavLink>
+            ))}
           </div>
-          {MODULES.map((item) => (
-            <NavLink
-              key={item.to}
-              // 文件是按会话隔离的 —— 从会话里点「文件」要把当前会话带过去，
-              // 不然看到的是另一个会话的工作区
-              to={item.to === '/files' && activeThread ? `/files?thread=${activeThread}` : item.to}
-              end={item.to === '/chat'}
-              className={({ isActive }) =>
-                [
-                  'flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors',
-                  isActive ? 'bg-hover text-ink' : 'text-ink-muted hover:bg-hover hover:text-ink',
-                ].join(' ')
-              }
-            >
-              <span className="shrink-0 text-ink-faint">{item.icon}</span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium">{item.label}</span>
-                <span className="block truncate text-[11px] text-ink-faint">{item.hint}</span>
-              </span>
-            </NavLink>
-          ))}
-        </nav>
+        ) : (
+          <>
+            {/* 产品头 */}
+            <div className="flex items-center gap-2.5 px-4 pb-2 pt-4">
+              <div
+                className="flex h-7 w-7 items-center justify-center rounded-lg text-sm font-semibold text-accent-text"
+                style={{ background: 'var(--brand-gradient)' }}
+              >
+                智
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-ink">企智搭·代码平台</div>
+              </div>
+              <button
+                type="button"
+                title="折叠侧栏（⌘B）"
+                onClick={() => setCollapsed(true)}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-hover hover:text-ink"
+              >
+                <PanelLeftIcon className="h-4 w-4" />
+              </button>
+            </div>
 
-        {/* 会话列表 */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-2">
-          {pinnedShown.length > 0 && (
-            <SessionGroup
-              title="已置顶"
-              items={pinnedShown}
-              activeThread={activeThread}
-              onSelect={(threadId) => navigate(`/chat/${threadId}`)}
-              onTogglePin={togglePin}
-              onRemove={handleRemove}
-            />
-          )}
-          <SessionGroup
-            title="对话和任务"
-            items={othersShown}
-            activeThread={activeThread}
-            onSelect={(threadId) => navigate(`/chat/${threadId}`)}
-            onTogglePin={togglePin}
-            onRemove={handleRemove}
-          />
-          {pinnedShown.length === 0 && othersShown.length === 0 && query.trim() ? (
-            <div className="px-2 py-1 text-xs text-ink-faint">没有匹配的会话</div>
-          ) : null}
-        </div>
+            <div className="px-3 pb-3">
+              <button
+                type="button"
+                onClick={handleCreate}
+                className="flex w-full items-center gap-2 rounded-lg bg-raised px-2.5 py-2 text-sm font-medium text-ink shadow-1 transition-colors hover:bg-hover"
+              >
+                <PlusIcon className="h-4 w-4" />
+                <span>新建会话</span>
+              </button>
+              {searchOpen ? (
+                <div className="mt-2 px-1">
+                  <input
+                    autoFocus
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        setQuery('')
+                        setSearchOpen(false)
+                      }
+                    }}
+                    placeholder="搜会话标题…"
+                    className="w-full rounded-lg border border-line bg-base px-2.5 py-1.5 text-sm text-ink outline-none placeholder:text-ink-faint"
+                  />
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setSearchOpen(true)}
+                  className="mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+                >
+                  <SearchIcon className="h-4 w-4" />
+                  <span>搜索</span>
+                  <span className="flex-1" />
+                  <kbd className="rounded border border-line px-1.5 py-0.5 text-[10px] text-ink-faint">
+                    ⌘K
+                  </kbd>
+                </button>
+              )}
+            </div>
 
-        <div className="border-t border-line p-2">
-          <ThemeToggle />
-        </div>
+            {/* 模块入口 */}
+            <nav className="px-3 pb-3">
+              <div className="mb-1 px-2.5 text-[11px] font-medium tracking-wide text-ink-faint">
+                工作区
+              </div>
+              {MODULES.map((item) => (
+                <NavLink
+                  key={item.to}
+                  // 文件是按会话隔离的 —— 从会话里点「文件」要把当前会话带过去，
+                  // 不然看到的是另一个会话的工作区
+                  to={moduleTo(item.to)}
+                  end={item.to === '/chat'}
+                  className={({ isActive }) =>
+                    [
+                      'flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors',
+                      isActive ? 'bg-hover text-ink' : 'text-ink-muted hover:bg-hover hover:text-ink',
+                    ].join(' ')
+                  }
+                >
+                  <span className="shrink-0 text-ink-faint">{item.icon}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium">{item.label}</span>
+                    <span className="block truncate text-[11px] text-ink-faint">{item.hint}</span>
+                  </span>
+                </NavLink>
+              ))}
+            </nav>
+
+            {/* 会话列表 */}
+            <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-2">
+              {pinnedShown.length > 0 && (
+                <SessionGroup
+                  title="已置顶"
+                  items={pinnedShown}
+                  activeThread={activeThread}
+                  onSelect={(threadId) => navigate(`/chat/${threadId}`)}
+                  onTogglePin={togglePin}
+                  onRemove={handleRemove}
+                />
+              )}
+              <SessionGroup
+                title="对话和任务"
+                items={othersShown}
+                activeThread={activeThread}
+                onSelect={(threadId) => navigate(`/chat/${threadId}`)}
+                onTogglePin={togglePin}
+                onRemove={handleRemove}
+              />
+              {pinnedShown.length === 0 && othersShown.length === 0 && query.trim() ? (
+                <div className="px-2 py-1 text-xs text-ink-faint">没有匹配的会话</div>
+              ) : null}
+            </div>
+
+            <div className="border-t border-line p-2">
+              <ThemeToggle />
+            </div>
+          </>
+        )}
+
+        {collapsed ? (
+          <div className="border-t border-line p-1.5">
+            <ThemeToggle compact />
+          </div>
+        ) : null}
       </aside>
 
       <main className="min-w-0 flex-1 overflow-hidden bg-base">
