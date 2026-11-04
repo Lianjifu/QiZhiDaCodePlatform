@@ -74,3 +74,32 @@ def test_百分比对得上():
     assert usage.used == 1000
     assert usage.percent == round(1000 / LIMIT * 100, 1)
     assert usage.free == LIMIT - 1000
+
+
+# ---------------------------------------------------------------- 改动量汇总
+
+
+async def test_改动量在数据库里加(session):
+    """状态面板每 30 秒问一次 —— 改动量别再把几百条记录拉回 Python 翻。
+
+    顺带修掉一个不准的地方：以前只取最近 500 条，超出的改动量就漏了。
+    """
+    from app.models.invocation import Invocation
+    from app.repositories.invocation import InvocationRepository
+
+    repo = InvocationRepository(session)
+    for added, removed in ((3, 1), (5, 2), (7, 4)):
+        session.add(
+            Invocation(
+                thread_id="t-sum",
+                capability_key="write_file",
+                arguments={},
+                payload={},
+                result={"diff": {"added": added, "removed": removed}},
+            )
+        )
+    await session.commit()
+
+    assert await repo.sum_changes("t-sum") == (15, 7)
+    # 别的会话不算数
+    assert await repo.sum_changes("t-other") == (0, 0)

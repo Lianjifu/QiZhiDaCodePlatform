@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import Integer, func, select
 
 from app.models.invocation import Invocation
 from app.repositories.base import BaseRepository
@@ -121,3 +121,35 @@ class InvocationRepository(BaseRepository[Invocation]):
         records = list(result.scalars().all())
         records.reverse()
         return records
+
+    async def sum_changes(self, thread_id: str | None) -> tuple[int, int]:
+        """这个会话的改动量合计（新增行数, 删除行数）。
+
+        **在数据库里加** —— 状态面板每 30 秒问一次，改动量藏在
+        ``result.diff`` 里；把几百条记录拉回 Python 再逐条翻 JSON，
+        拉回来的每一行还带着 payload，白白序列化一大圈。
+        """
+        stmt = select(
+            func.coalesce(
+                func.sum(
+                    func.cast(
+                        func.json_extract(Invocation.result, "$.diff.added"),
+                        Integer,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    func.cast(
+                        func.json_extract(Invocation.result, "$.diff.removed"),
+                        Integer,
+                    )
+                ),
+                0,
+            ),
+        )
+        if thread_id:
+            stmt = stmt.where(Invocation.thread_id == thread_id)
+        row = (await self.session.execute(stmt)).one()
+        return int(row[0] or 0), int(row[1] or 0)

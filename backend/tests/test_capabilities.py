@@ -1251,3 +1251,35 @@ async def test_update_http_tool_still_requires_parameters_schema(client: AsyncCl
 
     bad = await client.put(f"{TOOLS}/{tool_id}", json={"parameters": {}})
     assert bad.status_code == 422
+
+
+def test_export_skills_内容没变就不重写(tmp_path):
+    """每次请求都要导出技能 —— 内容没变就别动磁盘。
+
+    以前是把整个目录 rmtree 掉再重写一遍，每个请求都付这份磁盘开销。
+    """
+    specs = [_skill("code-review", ["代码"], knowledge="逐行检查。")]
+    skills_dir = tmp_path / "skills"
+    export_skills(specs, skills_dir)
+
+    target = skills_dir / "code-review" / "SKILL.md"
+    stamp = target.stat().st_mtime_ns
+    export_skills(specs, skills_dir)
+    assert target.stat().st_mtime_ns == stamp, "内容没变却重写了"
+
+    # 内容变了就得重写
+    export_skills([_skill("code-review", ["代码"], knowledge="改过了。")], skills_dir)
+    assert "改过了。" in target.read_text(encoding="utf-8")
+
+
+def test_export_skills_多余的技能目录要清掉(tmp_path):
+    """技能没了或停了 —— 残留的目录会让模型看到已经不存在的技能。"""
+    skills_dir = tmp_path / "skills"
+    export_skills(
+        [_skill("code-review", ["代码"]), _skill("deploy", ["部署"])], skills_dir
+    )
+    assert (skills_dir / "deploy").exists()
+
+    export_skills([_skill("code-review", ["代码"])], skills_dir)
+    assert (skills_dir / "code-review").exists()
+    assert not (skills_dir / "deploy").exists()

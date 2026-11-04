@@ -188,30 +188,6 @@ def collect_outputs(workspace: Path, *, limit: int = 50) -> list[OutputFileOut]:
     ]
 
 
-def sum_changes(records: list[Any]) -> ChangesOut:
-    """把一批调用记录里的改动量加起来。
-
-    改动量是治理中间件执行前后比对文件算出来的，挂在调用记录的 ``result.diff``
-    里 —— 这里只负责汇总。
-    """
-    added = 0
-    removed = 0
-    for record in records:
-        result = getattr(record, "result", None)
-        if not isinstance(result, dict):
-            continue
-        diff = result.get("diff")
-        if not isinstance(diff, dict):
-            continue
-        value = diff.get("added")
-        if isinstance(value, int):
-            added += value
-        value = diff.get("removed")
-        if isinstance(value, int):
-            removed += value
-    return ChangesOut(added=added, removed=removed)
-
-
 def build_environment(
     *,
     thread_id: str,
@@ -318,5 +294,4 @@ __all__ = [
     "build_status",
     "collect_outputs",
     "estimate_tokens",
-    "sum_changes",
 ]

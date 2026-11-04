@@ -31,7 +31,6 @@ from app.agents.status import (
     build_environment,
     build_status,
     collect_outputs,
-    sum_changes,
 )
 from app.agents.tasks import REGISTRY
 from app.agents.turn_lock import turn_lock
@@ -53,6 +52,7 @@ from app.schemas.agent import (
     AgentForkOut,
     AgentHistoryOut,
     AgentStreamChunk,
+    ChangesOut,
     CollaborationOut,
     RunningTaskOut,
     SessionStatusOut,
@@ -859,13 +859,17 @@ class AgentService:
 
                 providers: list[Any] = []
                 servers: list[Any] = []
-                records: list[Any] = []
+                # **改动量在数据库里加** —— 状态面板每 30 秒问一次，
+                # 把几百条调用记录拉回 Python 再逐条翻 JSON 太浪费了
+                # （每行还带着 payload）。
+                changes = ChangesOut()
                 if self.session is not None:
                     providers = await LLMProviderRepository(self.session).list_all()
                     servers = await MCPServerRepository(self.session).list_all()
-                    records = await InvocationRepository(self.session).list_recent(
-                        thread_id, limit=500
+                    added, removed = await InvocationRepository(self.session).sum_changes(
+                        thread_id
                     )
+                    changes = ChangesOut(added=added, removed=removed)
 
                 running, finished = REGISTRY.snapshot(thread_id)
                 return build_status(
@@ -879,7 +883,7 @@ class AgentService:
                     ),
                     context=usage,
                     outputs=collect_outputs(session_workspace),
-                    changes=sum_changes(records),
+                    changes=changes,
                     connectors=build_connectors(providers=providers, mcp_servers=servers),
                     collaboration=self._collaboration(thread_id, agent_workspace),
                     tasks=[

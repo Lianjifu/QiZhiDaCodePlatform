@@ -40,7 +40,7 @@ def export_skills(
 
     Args:
         specs: 统一能力清单（只取 ``kind=skill`` 的部分）。
-        skills_dir: 导出目录（会被清空重建）。
+        skills_dir: 导出目录。
         skill_ids: 显式指定的技能 id（数据库主键）。给了就只导出这几个，
             不给就导出全部启用的技能 —— 让模型自己按描述挑。
 
@@ -54,18 +54,36 @@ def export_skills(
             shutil.rmtree(skills_dir, ignore_errors=True)
         return []
 
-    if skills_dir.exists():
-        shutil.rmtree(skills_dir, ignore_errors=True)
     skills_dir.mkdir(parents=True, exist_ok=True)
-
+    keep: set[str] = set()
     for spec in wanted:
         slug = _slugify(spec.key)
         if not slug:
             logger.warning("技能 %s 的名字转不出合法目录名，已跳过", spec.key)
             continue
+        keep.add(slug)
         target = skills_dir / slug
+        content = render_skill_md(spec, slug)
+        path = target / "SKILL.md"
+        # **内容没变就别写** —— 以前每次都把整个目录 rmtree 掉再重写一遍，
+        # 那是每个请求都要付的磁盘开销（技能正文还不小）。
+        try:
+            if path.read_text(encoding="utf-8") == content:
+                continue
+        except OSError:
+            pass  # 文件不存在或读不了 → 下面写
         target.mkdir(parents=True, exist_ok=True)
-        (target / "SKILL.md").write_text(render_skill_md(spec, slug), encoding="utf-8")
+        path.write_text(content, encoding="utf-8")
+
+    # **多余的删掉** —— 上一次的残留会让模型看到已经不存在的技能
+    # （技能没了、停了，或者这次只导出其中几个）。
+    for entry in skills_dir.iterdir():
+        if entry.name in keep:
+            continue
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
 
     return [SKILLS_ROUTE]
 
