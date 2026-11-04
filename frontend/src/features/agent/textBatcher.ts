@@ -13,10 +13,26 @@ export interface Scheduler {
   cancel(handle: number): void
 }
 
-/** 浏览器里的调度器：一帧一次。 */
+/**
+ * 浏览器里的调度器：一帧一次。
+ *
+ * **没有 requestAnimationFrame 就退化成 setTimeout** —— 后台标签页里 rAF
+ * 不会触发（那段正好不用渲染），但测试环境与老浏览器里可能压根没有这个 API。
+ */
 export const frameScheduler: Scheduler = {
-  schedule: (callback) => requestAnimationFrame(callback),
-  cancel: (handle) => cancelAnimationFrame(handle),
+  schedule: (callback) => {
+    if (typeof requestAnimationFrame === 'function') {
+      return requestAnimationFrame(callback)
+    }
+    return window.setTimeout(callback, 16)
+  },
+  cancel: (handle) => {
+    if (typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(handle)
+      return
+    }
+    window.clearTimeout(handle)
+  },
 }
 
 export class TextBatcher {
