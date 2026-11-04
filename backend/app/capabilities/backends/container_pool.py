@@ -70,9 +70,16 @@ import re
 import shutil
 import subprocess
 import time
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# 探活结果的缓存时长（秒）
+#
+# **只是省掉连续调用之间的重复探活** —— 探活是一次 docker 子进程
+# （二十多毫秒），一轮对话里跑几条命令就是几次进程启动。
+# 几秒钟足够短：容器真被外部删了，紧接着的 docker exec 会失败，
+# 那时再重建也来得及。
+PROBE_TTL_SECONDS = 5.0
 
 # 容器名前缀：平台重启后按它清理残留
 CONTAINER_PREFIX = "qzd-sbx-"
@@ -123,6 +130,35 @@ class ContainerPool:
         self._locks: dict[str, asyncio.Lock] = {}
         # 会话 → 最后使用时间（单调时钟）
         self._last_used: dict[str, float] = {}
+        # 容器名 → (活着吗, 挂载的工作区, 探活时间)
+        #
+        # **探活要起一个 docker inspect 子进程**（二十多毫秒），而每次执行
+        # 命令之前都要探一次 —— 一轮对话里跑五条命令就是五次进程启动，
+        # 白花掉上百毫秒。这里记一小会儿（几秒），省掉连续调用之间的重复探活。
+        self._probes: dict[str, tuple[bool, str | None, float]] = {}
+
+    def probe_result(self, name: str) -> tuple[bool, str | None] | None:
+        """最近一次探活的结果（还在有效期内才给）。
+
+        Returns:
+            ``(活着吗, 挂载的工作区)``；没有记录或已过期就返回 None
+            —— 调用方这时该真的去探一次。
+        """
+        record = self._probes.get(name)
+        if record is None:
+            return None
+        running, workspace, checked_at = record
+        if time.monotonic() - checked_at > PROBE_TTL_SECONDS:
+            return None
+        return running, workspace
+
+    def remember_probe(self, name: str, running: bool, workspace: str | None) -> None:
+        """记下这次探活的结果。"""
+        self._probes[name] = (running, workspace, time.monotonic())
+
+    def forget_probe(self, name: str) -> None:
+        """忘掉某个容器的探活结果（重建之后旧结果就没用了）。"""
+        self._probes.pop(name, None)
 
     def lock_for(self, session_id: str) -> asyncio.Lock:
         """取会话的执行锁（不存在就建）。"""
@@ -262,39 +298,26 @@ def cleanup_stale_containers() -> list[str]:
     return removed
 
 
-def container_exists(name: str) -> bool:
-    """容器还在不在。"""
-    if shutil.which("docker") is None:
-        return False
-    try:
-        completed = subprocess.run(  # noqa: S603
-            ["docker", "inspect", "-f", "{{.State.Running}}", name],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return completed.returncode == 0 and completed.stdout.strip() == "true"
+def inspect_container(name: str, mount: str = "/workspace") -> tuple[bool, str | None]:
+    """一次问清楚：容器在跑吗？挂载的工作区是哪儿？
 
-
-def container_workspace(name: str, mount: str = "/workspace") -> Path | None:
-    """从容器上读出它挂载的工作区路径。
-
-    复用容器时需要知道"这个容器对应哪个工作区" —— 容器名只带会话标识，
-    挂载点得从 docker 那里问。
+    **一次 inspect 就够** —— 以前是两个（一个问状态、一个问挂载），每个都是
+    一次 docker 子进程启动（二十多毫秒）。执行命令前要探活，一轮对话里跑
+    五条命令就是十次进程启动，白花掉几百毫秒。
 
     Args:
         name: 容器名。
         mount: 容器内的挂载点。
 
     Returns:
-        宿主上的工作区路径；问不到返回 None。
+        ``(在跑吗, 宿主上的工作区路径)``。容器不存在就是 ``(False, None)``。
     """
     if shutil.which("docker") is None:
-        return None
-    template = '{{range .Mounts}}{{if eq .Destination "' + mount + '"}}{{.Source}}{{end}}{{end}}'
+        return False, None
+    template = (
+        "{{.State.Running}}"
+        "|{{range .Mounts}}{{if eq .Destination \"" + mount + "\"}}{{.Source}}{{end}}{{end}}"
+    )
     try:
         completed = subprocess.run(  # noqa: S603
             ["docker", "inspect", "-f", template, name],
@@ -304,9 +327,13 @@ def container_workspace(name: str, mount: str = "/workspace") -> Path | None:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
-    source = completed.stdout.strip()
-    return Path(source) if source else None
+        return False, None
+    if completed.returncode != 0:
+        return False, None
+    raw = completed.stdout.strip()
+    running_text, _, workspace = raw.partition("|")
+    running = running_text.strip() == "true"
+    return running, (workspace.strip() or None)
 
 
 __all__ = [
@@ -314,9 +341,8 @@ __all__ = [
     "KEEPALIVE_COMMAND",
     "ContainerPool",
     "cleanup_stale_containers",
-    "container_exists",
     "container_name",
-    "container_workspace",
     "get_pool",
+    "inspect_container",
     "remove_container",
 ]

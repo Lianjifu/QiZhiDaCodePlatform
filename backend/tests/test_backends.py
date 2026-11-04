@@ -12,11 +12,13 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from app.capabilities.backends import sandbox_backend
 from app.capabilities.backends.assembly import ARTIFACTS_ROUTE, SKILLS_ROUTE, build_backend
 from app.capabilities.backends.container_pool import (
     CONTAINER_PREFIX,
@@ -268,3 +270,70 @@ def test_container_reuse_preserves_installed_packages(tmp_path):
     finally:
         remove_container(name)
         shutil.rmtree(workspace, ignore_errors=True)
+
+
+# ---------------------------------------------------------------- 沙箱提速
+
+
+def test_挂载预检按工作区与镜像只做一次(monkeypatch, tmp_path):
+    """预检要起一个一次性容器（docker run --rm）—— 同一个工作区不用反复验。
+
+    ``run_python`` 每次调用都新建一个 DockerSandbox 实例，预检要是按实例算，
+    每条命令都得白起一个容器（三百毫秒上下）。
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sandbox_backend.subprocess, "run", fake_run)
+    monkeypatch.setattr(sandbox_backend, "_MOUNT_OK", set())
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    for _ in range(3):
+        DockerSandbox(workspace, session_id="t-mount").execute("echo hi")
+
+    checks = [argv for argv in calls if "--rm" in argv]
+    assert len(checks) == 1, f"预检跑了 {len(checks)} 次，应该只跑一次"
+
+
+def test_探活结果短时间复用(monkeypatch, tmp_path):
+    """探活是一次 docker inspect（三十毫秒）—— 连续几条命令不该各探一次。"""
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, stdout="true|/ws", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sandbox_backend.subprocess, "run", fake_run)
+    monkeypatch.setattr(sandbox_backend, "_MOUNT_OK", {("dummy", "dummy")})
+    pool = ContainerPool()
+    monkeypatch.setattr(sandbox_backend, "get_pool", lambda: pool)
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sandbox = DockerSandbox(workspace, session_id="t-probe")
+    for _ in range(3):
+        sandbox.execute("echo hi")
+
+    probes = [argv for argv in calls if argv[:2] == ["docker", "inspect"]]
+    assert len(probes) <= 1, f"探活跑了 {len(probes)} 次，连续调用应该只探一次"
+
+
+def test_容器没了的报错认得出来():
+    """认错了会把命令跑两遍 —— 副作用也就跑两遍。"""
+    from app.capabilities.backends.sandbox_backend import _container_gone
+
+    def done(code: int, stderr: str):
+        return subprocess.CompletedProcess(["docker"], code, stdout="", stderr=stderr)
+
+    # docker daemon 自己的报错 → 容器没了
+    assert _container_gone(done(1, "Error response from daemon: No such container: x"))
+    assert _container_gone(done(1, "Error response from daemon: Container x is not running"))
+    # **命令自己打的那句话不算** —— 认错了命令就跑两遍
+    assert not _container_gone(done(1, "No such container"))
+    assert not _container_gone(done(2, "command not found"))

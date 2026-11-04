@@ -135,8 +135,14 @@ class CapabilityMiddleware(AgentMiddleware):
                 overrides["tools"] = kept
 
         note = self._policy_note()
-        if note:
-            base = request.system_message.text if request.system_message else ""
+        base = request.system_message.text if request.system_message else ""
+        # **别重复** —— 策略说明已经在上下文装配（app/context/）里进过一次
+        # 提示词了。这里再追加一遍，模型会看到同一段话两遍，白费 token
+        # 还让人以为有两种规则。
+        #
+        # 内容不一样时才追加（allowed_tool_keys 变了的话，两边算出来的
+        # 说明会不同 —— 那时以这里这份为准，它知道本次允许的工具集）。
+        if note and note not in base:
             overrides["system_message"] = SystemMessage(content=f"{base}\n\n{note}".strip())
 
         if not overrides:

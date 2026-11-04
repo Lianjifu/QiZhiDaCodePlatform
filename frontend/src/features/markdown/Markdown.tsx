@@ -15,7 +15,7 @@
  * **原始 HTML 不渲染** —— 不挂 `rehype-raw`，模型输出的 `<script>` 只会变成
  * 一段文字。这是刻意的：助手消息的内容来自模型，而模型会被诱导输出 HTML。
  */
-import { isValidElement, type ReactNode } from 'react'
+import { isValidElement, useEffect, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
@@ -94,7 +94,59 @@ const components: Components = {
 }
 
 export default function Markdown({ children }: { children: string }) {
-  return <div className="md">{renderMarkdown(children)}</div>
+  // **流式时别每帧都重解析** —— 解析 + 语法高亮是这条链路上最贵的一步，
+  // 长回答流式输出时每帧重解析一遍，光解析就够主线程忙上好几秒。
+  const text = useThrottledText(children, STREAM_PARSE_INTERVAL_MS)
+  return <div className="md">{renderMarkdown(text)}</div>
+}
+
+/** 流式期间重解析的最小间隔（毫秒）。 */
+const STREAM_PARSE_INTERVAL_MS = 120
+
+/**
+ * 节流后的文本 —— 变化快时不必每次都跟着变。
+ *
+ * **是节流不是防抖**：防抖要等"安静下来"才更新，流式输出一直有增量，
+ * 防抖会让提示词一直停在旧内容上。节流是"最多每 N 毫秒更新一次"，
+ * 末尾一定还会补一次（内容不再变时定时器会触发）。
+ */
+function useThrottledText(text: string, intervalMs: number): string {
+  const [value, setValue] = useState(text)
+  /** 上一次真正更新是什么时候 */
+  const lastRunRef = useRef(0)
+  /** 还没触发的定时器 */
+  const timerRef = useRef<number | null>(null)
+  /** 最新要显示的内容（定时器触发时用它） */
+  const pendingRef = useRef(text)
+
+  useEffect(() => {
+    pendingRef.current = text
+    if (text === value) return
+    const wait = Math.max(0, intervalMs - (Date.now() - lastRunRef.current))
+    if (wait === 0) {
+      lastRunRef.current = Date.now()
+      setValue(text)
+      return
+    }
+    if (timerRef.current !== null) return
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null
+      lastRunRef.current = Date.now()
+      setValue(pendingRef.current)
+    }, wait)
+    // **故意不在 cleanup 里清定时器** —— 清了就少了"最后一帧"，
+    // 流结束时的最后几个字会留在旧内容上。
+  }, [text, value, intervalMs])
+
+  // 组件没了就别再更新了
+  useEffect(
+    () => () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
+    },
+    [],
+  )
+
+  return value
 }
 
 /**

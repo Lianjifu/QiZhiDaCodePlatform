@@ -99,6 +99,10 @@ def _replace_placeholders(
                 new_text = new_text.replace(token, value)
         if new_text != text:
             changed = True
+            # **空块直接丢掉** —— 记忆目录与上传件清单为空时（这一轮没有
+            # 记忆、没传附件），留着空块就是提示词里几行空行。
+            if not new_text.strip():
+                continue
             blocks.append({**block, "text": new_text})
         else:
             blocks.append(block)

@@ -25,6 +25,7 @@ import {
   streamChat,
 } from '../../api/resources'
 import type { AgentStreamChunk, PendingApproval, ToolCall } from '../../types/api'
+import { TextBatcher } from './textBatcher'
 import { isFailedResult } from './toolSummary'
 
 /**
@@ -212,6 +213,13 @@ interface Turn {
   controller: AbortController
   /** 用户主动中断了 */
   aborted: boolean
+  /**
+   * 这一轮的文本攒批器。
+   *
+   * **挂在轮次上，不放在共享的 ref 里** —— 用户叫停之后立刻再发一条时，
+   * 共享的 ref 已经被新一轮接管，旧轮攒着的字就没人刷了（会丢）。
+   */
+  batcher: TextBatcher | null
 }
 
 export function useChat() {
@@ -232,7 +240,7 @@ export function useChat() {
    */
   const busyRef = useRef(false)
 
-  /** 往某条消息上打补丁 —— **不看轮次**，收尾时用。 */
+  /** 往这条消息上打补丁 —— **不看轮次**，收尾时用。 */
   const patchMessage = useCallback(
     (messageId: string, patch: (message: ChatMessage) => ChatMessage) => {
       setMessages((prev) => {
@@ -261,12 +269,8 @@ export function useChat() {
     (turn: Turn, event: AgentStreamChunk) => {
       switch (event.type) {
         case 'text':
-          if (event.text) {
-            patchTurnAssistant(turn, (message) => ({
-              ...message,
-              content: message.content + event.text,
-            }))
-          }
+          // **攒着一起上** —— 每帧都 setState 的话，长回答会重渲染上百次
+          if (event.text) turn.batcher?.push(event.text)
           break
         case 'tool_call':
           if (event.tool_call) {
@@ -320,6 +324,8 @@ export function useChat() {
           if (event.error && currentTurnRef.current?.token === turn.token) setError(event.error)
           break
         case 'done':
+          // **先把攒着的字刷上去** —— 不然最后几个字要等下一帧才出现
+          turn.batcher?.flush()
           patchTurnAssistant(turn, (message) => ({
             ...message,
             status: event.status === 'pending_approval' ? 'pending_approval' : 'completed',
@@ -391,15 +397,28 @@ export function useChat() {
       messageId,
       controller: new AbortController(),
       aborted: false,
+      // **这一轮的攒批器** —— 增量先进它，到帧再一起上
+      batcher: null,
     }
+    // **模型吐字很快 —— 一个 token 一帧。** 每帧都 setState 一次，就是每帧都
+    // 重渲染一遍整条消息，Markdown 也要重解析一次。攒到下一帧再一起上：
+    // 人眼看不出差别，渲染次数少一个数量级。
+    turn.batcher = new TextBatcher((text) => {
+      patchTurnAssistant(turn, (message) => ({
+        ...message,
+        content: message.content + text,
+      }))
+    })
     currentTurnRef.current = turn
     busyRef.current = true
     setBusy(true)
     return turn
-  }, [])
+  }, [patchTurnAssistant])
 
   /** 一轮收尾 —— **只有当前轮能收**，否则会把新一轮的状态一起抹掉。 */
   const finishTurn = useCallback((turn: Turn) => {
+    // **攒着的字要刷出去** —— 用户叫停或流断了，收到的那部分得留在屏幕上
+    turn.batcher?.flush()
     if (currentTurnRef.current?.token !== turn.token) return
     currentTurnRef.current = null
     busyRef.current = false

@@ -67,10 +67,9 @@ from deepagents.backends.protocol import (
 
 from app.capabilities.backends.container_pool import (
     KEEPALIVE_COMMAND,
-    container_exists,
     container_name,
-    container_workspace,
     get_pool,
+    inspect_container,
     remove_container,
 )
 
@@ -80,6 +79,21 @@ except ImportError as exc:  # pragma: no cover
     raise ImportError("缺少 deepagents 依赖，请先安装：pip install 'deepagents==0.7.32'") from exc
 
 logger = logging.getLogger(__name__)
+
+# (工作区, 镜像) → 挂载预检已通过
+#
+# **进程级共享** —— 预检要起一个一次性容器（docker run --rm），
+# 同一份工作区 + 同一个镜像的结果不会变。
+_MOUNT_OK: set[tuple[str, str]] = set()
+
+# docker daemon 自己报错的固定开头
+#
+# **只认这一行开头** —— 命令自己往 stderr 打的话不算。认错了会把命令
+# 跑两遍，副作用也就跑两遍。
+_DOCKER_DAEMON_ERROR = "Error response from daemon"
+
+# 容器没了时 daemon 会说的那几句话
+_CONTAINER_GONE_MARKERS = ("no such container", "is not running")
 
 # 单次执行输出的最大字符数：命令可能打印巨量内容，全塞进模型上下文会挤爆它
 _MAX_OUTPUT = 20000
@@ -93,6 +107,22 @@ _FILE_METHODS_UNSUPPORTED = (
     "原因：基类把虚拟路径原样塞进容器命令，而我们的工作区挂在 {mount} —— "
     "虚拟路径在容器里不存在。文件操作由宿主侧的 FilesystemBackend 负责。"
 )
+
+
+def _container_gone(completed: subprocess.CompletedProcess[str]) -> bool:
+    """这次 exec 是不是因为容器没了才失败的。
+
+    **只看 docker daemon 自己的报错**（``Error response from daemon: …``）——
+    命令自己往 stderr 打 "no such container"（比如在脚本里 grep 这句话）
+    不算，那不是容器没了；认错了会**把命令跑两遍**（副作用也就跑两遍）。
+
+    退出码不靠谱：``docker exec`` 对"容器不存在"给的是 1，不是 125。
+    """
+    detail = (completed.stderr or "").strip()
+    if not detail.startswith(_DOCKER_DAEMON_ERROR):
+        return False
+    lowered = detail.lower()
+    return any(marker in lowered for marker in _CONTAINER_GONE_MARKERS)
 
 
 class DockerSandbox(BaseSandbox):
@@ -139,6 +169,7 @@ class DockerSandbox(BaseSandbox):
         self.memory = memory
         self.cpus = cpus
         self.pids_limit = pids_limit
+        # 挂载预检的结果 —— **进程级共享**，见 ``_MOUNT_OK``。
         self._mount_ok: bool | None = None
 
     @property
@@ -206,34 +237,50 @@ class DockerSandbox(BaseSandbox):
 
         script = self._write_script(command)
         try:
-            name = self._ensure_container()
-            get_pool().touch(self.session_id)
-            argv = [
-                "docker",
-                "exec",
-                # 每次都回到工作区根 —— 容器是常驻的，上一轮的 cd 会留在里面
-                "-w",
-                self.mount,
-                name,
-                "sh",
-                f"{self.mount}/{script.name}",
-            ]
             limit = timeout or self.timeout
-            try:
-                completed = subprocess.run(  # noqa: S603
-                    argv,
-                    capture_output=True,
-                    text=True,
-                    timeout=limit,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired:
+            for attempt in (1, 2):
+                name = self._ensure_container()
+                get_pool().touch(self.session_id)
+                argv = [
+                    "docker",
+                    "exec",
+                    # 每次都回到工作区根 —— 容器是常驻的，上一轮的 cd 会留在里面
+                    "-w",
+                    self.mount,
+                    name,
+                    "sh",
+                    f"{self.mount}/{script.name}",
+                ]
+                try:
+                    completed = subprocess.run(  # noqa: S603
+                        argv,
+                        capture_output=True,
+                        text=True,
+                        timeout=limit,
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired:
+                    return ExecuteResponse(
+                        output=f"执行超时（>{limit}s），已终止",
+                        exit_code=None,
+                        truncated=False,
+                    )
+                output = (completed.stdout or "") + (completed.stderr or "")
+                # **容器在探活之后被删了**（外部清理、机器重启）——
+                # 探活结果有几秒的缓存期，这段时间里容器没了是可能的。
+                # 忘掉缓存重建一次，别让 agent 拿到一句莫名其妙的
+                # "No such container" 就以为命令失败了。
+                if attempt == 1 and _container_gone(completed):
+                    logger.info("沙箱容器 %s 没了，重建后重试", name)
+                    get_pool().forget_probe(name)
+                    remove_container(name)
+                    continue
                 return ExecuteResponse(
-                    output=f"执行超时（>{limit}s），已终止",
-                    exit_code=None,
-                    truncated=False,
+                    output=self._truncate(output),
+                    exit_code=completed.returncode,
+                    truncated=len(output) > _MAX_OUTPUT,
                 )
-            output = (completed.stdout or "") + (completed.stderr or "")
+            # 两轮都走到这儿 —— 理论上不会（第二轮一定 return）
             return ExecuteResponse(
                 output=self._truncate(output),
                 exit_code=completed.returncode,
@@ -249,6 +296,11 @@ class DockerSandbox(BaseSandbox):
 
         探活发现容器没了（被外部清理、机器重启）就重建。
 
+        **探活结果先看缓存** —— 每次执行命令前都要探一次活，而探活是
+        一次 docker 子进程（二十多毫秒）。一轮对话里跑几条命令就是几次
+        进程启动，全是白花的钱。缓存几秒钟就够：容器被外部删掉的话，
+        紧接着的 ``docker exec`` 会失败，那时报错重试也来得及。
+
         Returns:
             容器名。
 
@@ -256,13 +308,21 @@ class DockerSandbox(BaseSandbox):
             RuntimeError: 容器建不起来。
         """
         name = container_name(self.session_id)
-        if container_exists(name):
+        pool = get_pool()
+        cached = pool.probe_result(name)
+        if cached is not None:
+            running, mounted = cached
+            if running and mounted is not None and Path(mounted).resolve() == self.workspace:
+                return name
+        else:
+            running, mounted = inspect_container(name, self.mount)
+            pool.remember_probe(name, running, mounted)
+            if running and mounted is not None and Path(mounted).resolve() == self.workspace:
+                return name
+        if running:
             # 复用的容器可能挂载着**别的工作区**（平台重启前建的、或者
             # 工作区被重新分配过）。挂载不对的话，agent 写的文件会落到
             # 别人的目录里 —— 静默但危险。校验不过就重建。
-            mounted = container_workspace(name, self.mount)
-            if mounted is not None and mounted.resolve() == self.workspace:
-                return name
             logger.info(
                 "沙箱容器 %s 挂载的工作区不对（%s ≠ %s），重建",
                 name,
@@ -270,6 +330,7 @@ class DockerSandbox(BaseSandbox):
                 self.workspace,
             )
             remove_container(name)
+            pool.forget_probe(name)
         # 常驻容器占内存 —— 太多的话先回收最久没用的
         get_pool().enforce_capacity()
         argv = [
@@ -314,6 +375,10 @@ class DockerSandbox(BaseSandbox):
             remove_container(name)
             raise RuntimeError(f"创建沙箱容器失败: {detail}")
         logger.info("会话 %s 的沙箱容器已创建: %s", self.session_id, name)
+        # **记下"它活着，而且挂的是这个工作区"** —— 刚才那次探活问的是
+        # "还没建的时候"，记下来的"没有"马上就过期了。下一条命令要是照着
+        # 那条过期记录走，就会去建第二个同名容器（docker 直接报重名）。
+        pool.remember_probe(name, True, str(self.workspace))
         return name
 
     async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
@@ -383,7 +448,15 @@ class DockerSandbox(BaseSandbox):
         Raises:
             RuntimeError: 工作区没有挂进容器。
         """
-        if self._mount_ok:
+        # **预检结果按 (工作区, 镜像) 共享** —— 预检要起一个一次性容器
+        # （docker run --rm，三百毫秒上下）。同一个工作区 + 同一个镜像，
+        # 挂进去的结果不会变，没必要每次命令都再起一个容器验一遍。
+        #
+        # 之前这个标记只在**实例**上，而 ``run_python`` 每次调用都新建一个
+        # DockerSandbox —— 于是每条命令都白起一个容器。
+        cache_key = (str(self.workspace), self.image)
+        if self._mount_ok or cache_key in _MOUNT_OK:
+            self._mount_ok = True
             return
 
         marker = self.workspace / _MOUNT_CHECK_FILE
@@ -426,6 +499,7 @@ class DockerSandbox(BaseSandbox):
                 f"或把该目录加入 docker 的共享列表。"
             )
         self._mount_ok = True
+        _MOUNT_OK.add(cache_key)
 
     def _safe_path(self, path: str) -> Path:
         """把相对路径解析到工作区内。

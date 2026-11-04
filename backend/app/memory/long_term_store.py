@@ -183,8 +183,12 @@ class LongTermMemoryStore:
                 best[document_id] = hit
 
         entries: list[MemoryEntry] = []
+        # **一次把文档全取回来** —— 一条一条查是 N+1：命中的文档有十几条时，
+        # 每轮召回就要多打十几次数据库。召回在**每一轮**之前跑（等模型回话
+        # 的那段时间），这十几次往返直接加在首字延迟上。
+        documents = await self._get_documents(list(best))
         for document_id, hit in best.items():
-            document = await self._get_document(document_id)
+            document = documents.get(document_id)
             if document is None:
                 continue
             entry = _to_entry(document)
@@ -299,6 +303,18 @@ class LongTermMemoryStore:
         return (
             await self.session.execute(select(RagDocument).where(RagDocument.id == document_id))
         ).scalar_one_or_none()
+
+    async def _get_documents(self, document_ids: list[int]) -> dict[int, RagDocument]:
+        """一次取多篇文档。
+
+        召回每轮都要跑，一篇一篇查就是 N+1 次往返 —— 命中的文档有十几条时，
+        那十几次往返全加在首字延迟上。
+        """
+        if not document_ids:
+            return {}
+        stmt = select(RagDocument).where(RagDocument.id.in_(document_ids))
+        rows = (await self.session.execute(stmt)).scalars().all()
+        return {row.id: row for row in rows}
 
     async def _update_meta(
         self,

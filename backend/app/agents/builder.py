@@ -39,6 +39,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from deepagents.middleware.memory import MemoryMiddleware
 from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models import BaseChatModel
 
@@ -54,6 +55,15 @@ from app.context.skills_quota import QuotaSkillsMiddleware
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# 工作区说明进提示词用的模板（**同名替换**框架那份记忆中间件时用）。
+#
+# 只放内容，不放"怎么用记忆"的指南 —— 框架默认那份有四千多字符，每次请求
+# 都带着走；而且它教模型用 edit_file 写记忆，跟我们自己的 memory_write
+# 规则冲突。工作区说明本身（AGENTS.md）是要的 —— 那是项目规矩。
+WORKSPACE_RULES_PROMPT = """<workspace_rules>
+{agent_memory}
+</workspace_rules>"""
 
 # 通用子代理的名字与说明。模型按 description 决定什么时候派活给它。
 GENERAL_SUBAGENT_NAME = "general"
@@ -178,6 +188,27 @@ async def build_agent(
                 backend=backend,
                 sources=skills,
                 max_skills=settings.context_max_skills_in_prompt,
+            )
+        )
+
+    # 记忆中间件：**同名替换**框架默认的那份，只留工作区说明。
+    #
+    # 框架默认的 `MEMORY_SYSTEM_PROMPT` 有四千多字符（约一千 token），**每次
+    # 请求都带** —— 而且它教模型「用 edit_file 更新记忆」，跟我们自己的
+    # `memory_write` 规则（`app/agents/prompts.py` 准则 7）直接打架。
+    #
+    # 只留 `{agent_memory}` 那一段：工作区说明（AGENTS.md）还是要进提示词的，
+    # 那是项目规矩；只是不用再附带一份跟我们重复（还矛盾）的使用指南。
+    #
+    # 按名字替换（deepAgents 的 `_apply_custom_middleware`）—— 位置不变，
+    # 只是内容换了。
+    if memory:
+        middleware.append(
+            MemoryMiddleware(
+                backend=backend,
+                sources=memory,
+                add_cache_control=True,
+                system_prompt=WORKSPACE_RULES_PROMPT,
             )
         )
 
