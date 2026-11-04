@@ -79,7 +79,7 @@ async def test_subagent_tool_calls_are_recorded(session) -> None:
 
     model = SequencedModel(
         steps=[
-            ("task", {"description": "读一下 a.txt", "subagent_type": "general"}),
+            ("task", {"description": "读一下 a.txt", "subagent_type": "general-purpose"}),
             ("read_file", {"file_path": "a.txt"}),
         ]
     )

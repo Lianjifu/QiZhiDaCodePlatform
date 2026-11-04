@@ -65,8 +65,46 @@ WORKSPACE_RULES_PROMPT = """<workspace_rules>
 {agent_memory}
 </workspace_rules>"""
 
+# `write_todos` 的说明 —— **比框架默认那份短得多**。
+#
+# 框架默认的说明有三千八百多字符（近一千 token），是纯英文的通用建议，
+# 而这个说明**每次请求都要带**。功能留���，话说到位就行：什么时候用、
+# 状态怎么标、清单是整份替换、答案要写在最后一次写清单之后。
+#
+# 这里的每一条都是"模型用错这个工具"的真实原因，不是凑字数的规矩。
+TODO_TOOL_DESCRIPTION = """维护一份任务清单，把复杂的多步工作拆成有先后顺序的待办，用来跟踪进度。
+
+## 什么时候用
+- 任务有三步以上、彼此有依赖 → 列清单；
+- 三步以内、或者只是问答 → **别用**，直接做（列清单只是浪费时间）。
+
+## 怎么用
+- 每条的状态：`pending`（没开始）/ `in_progress`（正在做）/ `completed`（做完了）；
+- 开始做之前把当前那条标成 `in_progress`，**做完立刻**标 `completed`，别攒着一起标；
+- 只有真的做完了才标 `completed` —— 卡住了就留着 `in_progress`，或者新加一条写清楚要解决什么；
+- `todos` 是**完整**的列表，每次调用都替换整份 —— 没变的条目也要一起带上；
+- 不相关的条目直接删掉，已经完成的不要改。
+
+## 收尾
+`write_todos` 只管记事，不负责给答案。用户要的结果要写在
+**最后一次 `write_todos` 之后的那条回复**里。"""
+
+# `write_todos` 的系统提示 —— 工具说明已经讲透了，这里只留一句提醒。
+TODO_SYSTEM_PROMPT = """## `write_todos`
+复杂的多步任务用它列清单、跟踪进度；简单任务别用。
+清单只管记事 —— 最终答案写在最后一次写清单之后的回复里。"""
+
 # 通用子代理的名字与说明。模型按 description 决定什么时候派活给它。
-GENERAL_SUBAGENT_NAME = "general"
+#
+# **名字就用框架默认那个（"general-purpose"）** —— deepAgents 认这个名字：
+# 调用方自己提供了同名子代理，它就不再加自己那份默认的
+# （见 ``create_deep_agent`` 里的 "unless ... the caller already supplied
+# their own"）。
+#
+# 不这么做的后果：模型会看到**两个**差不多的子代理，随手挑到框架那个 ——
+# 而框架那个**不带我们的治理中间件**（参数级风险判定、调用留痕都缺），
+# 同一个工具在子代理里跑就绕过了参数级的检查，调用记录也不进库。
+GENERAL_SUBAGENT_NAME = "general-purpose"
 GENERAL_SUBAGENT_DESCRIPTION = (
     "通用子代理：适合需要独立上下文的复杂子任务（多文件调研、批量改造、"
     "长链路的排查）。它有自己的工具预算和上下文，不与主 agent 共享历史。"
@@ -155,7 +193,16 @@ async def build_agent(
         interrupt_enabled=allow_interrupt,
     )
     # TodoListMiddleware 提供 write_todos —— deepAgents 的规划能力。
-    middleware: list[Any] = [governance, TodoListMiddleware()]
+    #
+    # **说明换成我们自己那份短的** —— 框架默认那份三千八百多字符，每次请求
+    # 都带着走（见 TODO_TOOL_DESCRIPTION 的理由）。
+    middleware: list[Any] = [
+        governance,
+        TodoListMiddleware(
+            system_prompt=TODO_SYSTEM_PROMPT,
+            tool_description=TODO_TOOL_DESCRIPTION,
+        ),
+    ]
 
     # 每轮变化的内容（记忆目录、上传件清单）：提示词里留占位符，调模型时再填。
     #
