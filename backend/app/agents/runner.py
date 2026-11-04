@@ -55,6 +55,7 @@ from langgraph.graph.message import RemoveMessage
 from app.agents.builder import build_agent
 from app.agents.llm import get_chat_model, supports_vision
 from app.agents.prompts import CODE_AGENT_PROMPT
+from app.agents.permissions import resolve_permission_mode
 from app.capabilities.backends.assembly import MEMORY_ROUTE
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.intent.middleware import build_policy_note
@@ -668,7 +669,11 @@ class AgentRunner:
 
         # 策略说明：告诉模型本次哪些工具要人批。它由能力层生成，但**注入到
         # 上下文里** —— 挤不出去的话模型会反复触发审批。
-        policy_note = build_policy_note(specs, settings.capability_trust_mode)
+        #
+        # 信任模式是**会话级**的：用户在审批卡片上点过「本会话内允许执行
+        # 命令」之后，这个会话就是 permissive（中档自动放行）。
+        trust_mode = resolve_permission_mode(thread_id)
+        policy_note = build_policy_note(specs, trust_mode)
 
         # 技能知识**不进系统提示词** —— deepAgents 的技能中间件按渐进披露来：
         # 提示词里只有技能的名字和描述，模型觉得相关了才去读正文。
@@ -698,7 +703,7 @@ class AgentRunner:
             model=model,
             system_prompt=assembled.text,
             thread_id=thread_id,
-            trust_mode=settings.capability_trust_mode,
+            trust_mode=trust_mode,
             skills=skill_sources or None,
             skills_dir=skills_dir if skill_sources else None,
             memory=[memory_source],

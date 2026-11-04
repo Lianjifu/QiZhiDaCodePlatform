@@ -127,9 +127,11 @@ class Settings(BaseSettings):
     web_search_api_key: str = ""
 
     # ---- 能力治理 ----
-    # 信任模式：strict（按声明逐条审批）| balanced（读写放行、执行/联网需确认）
-    #           | permissive（只有破坏性操作需确认）
-    capability_trust_mode: str = "balanced"
+    # 权限模式（默认值；会话级可以覆盖 —— 见 app/agents/permissions.py）：
+    #   auto（按风险档位）| manual（每次改动都问）| accept_edits（文件编辑自动）
+    #   | plan（只读）| bypass（全放行）
+    # 老名字还认：strict→manual、balanced→auto、permissive→bypass
+    capability_trust_mode: str = "auto"
     # 能力没声明超时时的兜底（秒）
     capability_default_timeout: int = 30
     # 审批请求超时自动拒绝（秒）

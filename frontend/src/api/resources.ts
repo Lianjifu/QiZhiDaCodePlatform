@@ -24,6 +24,7 @@ import type {
   PagedList,
   ProviderPreset,
   ProviderTestResult,
+  SessionPermission,
   SessionStatus,
   Skill,
   SlashCommand,
@@ -193,6 +194,19 @@ export function approve(threadId: string): Promise<AgentChatResult> {
 /** 拒绝挂起的调用。 */
 export function reject(threadId: string): Promise<AgentChatResult> {
   return api.post<AgentChatResult>(`/agent/${threadId}/reject`)
+}
+
+/** 这个会话的权限模式。 */
+export function getSessionPermission(threadId: string): Promise<SessionPermission> {
+  return api.get<SessionPermission>(`/agent/${threadId}/permission`)
+}
+
+/** 设置这个会话的权限模式。 */
+export function setSessionPermission(
+  threadId: string,
+  mode: string,
+): Promise<SessionPermission> {
+  return api.post<SessionPermission>(`/agent/${threadId}/permission`, { mode })
 }
 
 /** 斜杠命令清单（输入框敲 `/` 时弹的那份）。 */

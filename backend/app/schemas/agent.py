@@ -189,6 +189,28 @@ class AgentHistoryOut(BaseModel):
     messages: list[AgentHistoryMessage] = Field(default_factory=list, description="历史消息")
 
 
+class SessionPermissionIn(BaseModel):
+    """设置会话级权限模式的参数。"""
+
+    mode: str = Field(
+        default="default",
+        description=(
+            "auto（按风险档位）/ manual（每次改动都问）/ accept_edits（文件编辑自动）"
+            "/ plan（只读）/ bypass（全放行）/ default（恢复全局默认）"
+        ),
+    )
+
+
+class SessionPermissionOut(BaseModel):
+    """会话级权限模式的结果。"""
+
+    thread_id: str = Field(description="会话 ID")
+    permission_mode: str = Field(description="设置之后的实际模式")
+    session_override: bool = Field(
+        default=False, description="是不是这个会话自己设的（不是全局默认）"
+    )
+
+
 class AgentRegenerateIn(BaseModel):
     """重新生成的参数。
 

@@ -13,16 +13,21 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from app.agents.commands import COMMANDS
+from app.agents.permissions import resolve_permission_mode
 from app.agents.runner import AgentRunResult
 from app.api.deps import get_agent_service
+from app.capabilities.registration.policy import normalize_mode
+from app.core.config import settings
 from app.schemas.agent import (
     AgentChatOut,
     AgentChatRequest,
     AgentForkIn,
     AgentForkOut,
-    AgentRegenerateIn,
     AgentHistoryOut,
+    AgentRegenerateIn,
     PendingApprovalOut,
+    SessionPermissionIn,
+    SessionPermissionOut,
     SessionStatusOut,
     SlashCommandOut,
     ToolCallOut,
@@ -158,6 +163,55 @@ async def reject(
     """拒绝挂起的调用：工具不执行，agent 收到拒绝消息后继续。"""
     result = await service.reject(thread_id)
     return ResponseModel[AgentChatOut](data=_to_out(result))
+
+
+@router.get(
+    "/{thread_id}/permission",
+    response_model=ResponseModel[SessionPermissionOut],
+    summary="查看会话级权限模式",
+)
+async def get_permission(
+    thread_id: str,
+    service: ServiceDep,
+) -> ResponseModel[SessionPermissionOut]:
+    """这个会话当前用的权限模式。
+
+    界面上那个模式选择器靠它显示当前值（默认值来自全局配置）。
+    """
+    mode = resolve_permission_mode(thread_id)
+    return ResponseModel[SessionPermissionOut](
+        data=SessionPermissionOut(
+            thread_id=thread_id,
+            permission_mode=mode,
+            session_override=mode != normalize_mode(settings.capability_trust_mode),
+        )
+    )
+
+
+@router.post(
+    "/{thread_id}/permission",
+    response_model=ResponseModel[SessionPermissionOut],
+    summary="设置会话级权限模式",
+)
+async def set_permission(
+    thread_id: str,
+    payload: SessionPermissionIn,
+    service: ServiceDep,
+) -> ResponseModel[SessionPermissionOut]:
+    """切换这个会话的权限模式。
+
+    语义对齐 Claude Code 的权限模式：``auto``（按风险档位）/ ``manual``
+    （每次改动都问）/ ``accept_edits``（文件编辑自动）/ ``plan``（只读）/
+    ``bypass``（全放行）。只影响这个会话，全局配置与别的会话都不动。
+    """
+    mode = service.set_session_permission(thread_id, payload.mode)
+    return ResponseModel[SessionPermissionOut](
+        data=SessionPermissionOut(
+            thread_id=thread_id,
+            permission_mode=mode,
+            session_override=mode != normalize_mode(settings.capability_trust_mode),
+        )
+    )
 
 
 @router.get(

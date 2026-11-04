@@ -209,6 +209,15 @@ export function AutoIcon(props: IconProps) {
   )
 }
 
+export function ShieldIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M8 1.8 2.8 3.6v4.1c0 3 2.2 5.6 5.2 6.5 3-0.9 5.2-3.5 5.2-6.5V3.6z" />
+      <path d="M5.9 8 7.4 9.5l3-3.4" />
+    </Svg>
+  )
+}
+
 export function RefreshIcon(props: IconProps) {
   return (
     <Svg {...props}>

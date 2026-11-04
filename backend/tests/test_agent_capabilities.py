@@ -269,30 +269,46 @@ def test_execution_artifact_marks_pending_approval() -> None:
 @pytest.mark.parametrize(
     ("permission", "risk", "mode", "expected"),
     [
-        # 低档（只读、写入）：自动放行 —— 改错了能改回来
-        ("none", "read", "balanced", "approved"),
-        ("none", "read", "strict", "approved"),
+        # auto（默认）：按风险档位 —— 低档自动放行，中高档要人批
+        ("none", "read", "auto", "approved"),
+        ("none", "write", "auto", "approved"),
+        ("none", "execute", "auto", "pending"),
+        ("none", "network", "auto", "pending"),
+        ("none", "destructive", "auto", "pending"),
+        # manual：只读不问，其余都要人批
+        ("none", "read", "manual", "approved"),
+        ("none", "write", "manual", "pending"),
+        ("none", "execute", "manual", "pending"),
+        # plan（只读）：只有只读放行
+        ("none", "read", "plan", "approved"),
+        ("none", "write", "plan", "pending"),
+        # bypass：全放行
+        ("none", "execute", "bypass", "approved"),
+        ("none", "destructive", "bypass", "approved"),
+        # 显式声明"要人确认"：运营额外要求
+        ("confirm", "read", "auto", "pending"),
+        ("confirm", "write", "auto", "pending"),
+        # 管理员放行：bypass 是"全放行"，也一起放（用户明确选的）
+        ("admin", "read", "bypass", "approved"),
+        # 老名字仍然认（配置里的老值不用改）
         ("none", "write", "balanced", "approved"),
-        ("none", "write", "strict", "approved"),
-        # 中档（执行命令、联网）：strict / balanced 要人批，permissive 放行
-        ("none", "execute", "balanced", "pending"),
-        ("none", "network", "balanced", "pending"),
-        ("none", "execute", "strict", "pending"),
+        ("none", "write", "strict", "pending"),
         ("none", "execute", "permissive", "approved"),
-        # 高档（破坏性）：永远要人批，permissive 也不放过
-        ("none", "destructive", "balanced", "pending"),
-        ("none", "destructive", "permissive", "pending"),
-        # 显式声明"要人确认"：运营额外要求，permissive 才放宽
-        ("confirm", "read", "balanced", "pending"),
-        ("confirm", "write", "balanced", "pending"),
-        ("confirm", "read", "permissive", "approved"),
-        # 管理员放行：谁也放宽不了
-        ("admin", "read", "permissive", "pending"),
-        ("admin", "read", "strict", "pending"),
     ],
 )
 def test_approval_decision(permission: str, risk: str, mode: str, expected: str) -> None:
     assert approval_decision(permission, risk, mode) == expected
+
+
+def test_accept_edits_只拦破坏性() -> None:
+    """接受编辑模式：文件编辑与命令都自动过，只有破坏性要人批。"""
+    from app.capabilities.registration.policy import approval_decision as decide
+
+    assert decide("none", "write", "accept_edits") == "approved"
+    assert decide("none", "execute", "accept_edits") == "approved"
+    assert decide("none", "network", "accept_edits") == "approved"
+    # 不可逆的仍然要人批
+    assert decide("none", "destructive", "accept_edits") == "pending"
 
 
 def test_低档不需要审批_中高档才需要() -> None:
@@ -310,15 +326,28 @@ def test_文件工具的审批按风险档位() -> None:
     """deepAgents 的文件工具：低档自动放行，中档（执行命令）与高档（删除）要人批。"""
     from app.capabilities.registration.tool_policy import approval_tool_names
 
-    balanced = approval_tool_names("balanced")
-    assert "execute" in balanced  # 中档
-    assert "delete" in balanced  # 高档
-    assert "write_file" not in balanced  # 低档：改错了能改回来
-    assert "read_file" not in balanced
+    auto = approval_tool_names("auto")
+    assert "execute" in auto  # 中档
+    assert "delete" in auto  # 高档
+    assert "write_file" not in auto  # 低档：改错了能改回来
+    assert "read_file" not in auto
 
-    permissive = approval_tool_names("permissive")
-    assert "execute" not in permissive  # 中档被放宽
-    assert "delete" in permissive  # 高档：不可逆，谁也不放过
+    # 手动模式：写类也要人批
+    manual = approval_tool_names("manual")
+    assert "write_file" in manual
+    assert "edit_file" in manual
+    assert "read_file" not in manual
+
+    # 接受编辑：文件编辑与命令都自动，只有删除这种破坏性的要人批
+    accept = approval_tool_names("accept_edits")
+    assert "write_file" not in accept
+    assert "edit_file" not in accept
+    assert "execute" not in accept
+    assert "delete" in accept
+
+    # 绕过权限：什么都不问
+    bypass = approval_tool_names("bypass")
+    assert not bypass
 
 
 def test_出厂能力的风险档位() -> None:
@@ -347,16 +376,19 @@ def test_policy_note_lists_capabilities_needing_approval() -> None:
     assert "人工批准" in note
 
 
-def test_policy_note_respects_trust_mode() -> None:
-    """信任模式决定哪些工具要人批 —— 提示词里的口径必须和实际拦截的一致。"""
-    # 文件工具的审批按映射表 + 信任模式算：permissive 只拦破坏性，strict 连中档都拦。
-    permissive = CapabilityMiddleware([], trust_mode="permissive")._policy_note()
-    assert "execute" not in permissive
-    assert "delete" in permissive  # 破坏性：permissive 也不放过
-    strict = CapabilityMiddleware([], trust_mode="strict")._policy_note()
-    assert "execute" in strict
-    # 低档的写文件在 strict 下也自动放行 —— 只有中高档才要审批
-    assert "write_file" not in strict
+def test_policy_note_respects_permission_mode() -> None:
+    """权限模式决定哪些工具要人批 —— 提示词里的口径必须和实际拦截的一致。"""
+    auto = CapabilityMiddleware([], trust_mode="auto")._policy_note()
+    assert "execute" in auto
+    assert "write_file" not in auto
+
+    manual = CapabilityMiddleware([], trust_mode="manual")._policy_note()
+    assert "execute" in manual
+    assert "write_file" in manual  # 手动模式：写类也要人批
+
+    bypass = CapabilityMiddleware([], trust_mode="bypass")._policy_note()
+    assert "execute" not in bypass
+    assert "delete" not in bypass  # 绕过权限：什么都不问
 
 
 def test_policy_note_counts_exposed_capabilities() -> None:

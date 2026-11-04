@@ -19,7 +19,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.capabilities.registration.policy import PermissionLevel, RiskLevel, needs_approval
+from app.capabilities.registration.policy import (
+    PermissionLevel,
+    RiskLevel,
+    needs_approval,
+    normalize_mode,
+)
+
+# 只读的工具 —— ``plan``（只读）模式下只有它们暴露给模型
+READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset({"ls", "read_file", "glob", "grep"})
 
 # deepAgents 的文件工具名（由 FilesystemMiddleware 注册）
 FS_TOOL_NAMES: frozenset[str] = frozenset(
@@ -119,7 +127,7 @@ def approval_tool_names(trust_mode: str) -> set[str]:
     高档（删除）要人批。信任模式只能**放宽中档**，放宽不了高档 ——
     删除是不可逆的，permissive 也不放过。
     """
-    mode = (trust_mode or "balanced").lower()
+    mode = normalize_mode(trust_mode)
     return {
         name
         for name, policy in TOOL_POLICIES.items()
@@ -171,6 +179,7 @@ def approval_required_tools(
 
 __all__ = [
     "FS_TOOL_NAMES",
+    "READ_ONLY_TOOL_NAMES",
     "SUPERSEDED_BUILTIN_TOOLS",
     "TOOL_POLICIES",
     "ToolPolicy",

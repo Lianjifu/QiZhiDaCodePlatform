@@ -17,6 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.checkpointer import open_checkpointer
 from app.agents.llm import build_model_for_provider
+from app.agents.permissions import (
+    clear_permission_mode,
+    resolve_permission_mode,
+    set_permission_mode,
+)
 from app.agents.runner import MEMORY_FILE, STATUS_FAILED, AgentRunner, AgentRunResult, model_window
 from app.agents.status import (
     build_collaboration,
@@ -411,6 +416,25 @@ class AgentService:
                 logger.exception("读取待审批列表失败 thread_id=%s", thread_id)
                 raise AgentError(_readable_error(exc)) from exc
 
+    def set_session_permission(self, thread_id: str, mode: str | None) -> str:
+        """设置这个会话的权限模式。
+
+        Args:
+            thread_id: 会话 ID。
+            mode: ``auto`` / ``manual`` / ``accept_edits`` / ``plan`` /
+                ``bypass``；``None`` / ``"default"`` 恢复全局默认。
+
+        Returns:
+            设置之后的实际模式。
+
+        Raises:
+            AgentError: 给了不支持的取值。
+        """
+        try:
+            return set_permission_mode(thread_id, mode)
+        except ValueError as exc:
+            raise AgentError(str(exc)) from exc
+
     async def approve(self, thread_id: str) -> AgentRunResult:
         """批准挂起的调用，恢复图继续跑。
 
@@ -508,6 +532,8 @@ class AgentService:
             except Exception as exc:
                 logger.exception("清空会话失败 thread_id=%s", thread_id)
                 raise AgentError(_readable_error(exc)) from exc
+        # 会话级权限模式也一并清掉 —— 会话都没了，放行的口径不该留着
+        clear_permission_mode(thread_id)
 
     async def regenerate(
         self,
@@ -680,7 +706,7 @@ class AgentService:
                         workspace=agent_workspace,
                         model=model_name,
                         provider=provider_name,
-                        trust_mode=settings.capability_trust_mode,
+                        trust_mode=resolve_permission_mode(thread_id),
                     ),
                     context=usage,
                     outputs=collect_outputs(session_workspace),

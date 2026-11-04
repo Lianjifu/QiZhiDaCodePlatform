@@ -179,6 +179,7 @@ GET  /api/v1/agent/commands         斜杠命令清单（输入框敲 `/` 弹的
 DELETE /api/v1/agent/{thread_id}    清空会话的对话记录（工作区文件不删）
 POST /api/v1/agent/{thread_id}/regenerate  重新生成上一轮（SSE，帧格式同 /stream）
 POST /api/v1/agent/{thread_id}/fork        从某条消息分支出新会话
+GET/POST /api/v1/agent/{thread_id}/permission  权限模式（会话级）
 ```
 
 ### 重新生成 与 分支
@@ -262,7 +263,7 @@ WEB_SEARCH_PROVIDER=""       # tavily | serper | bing（联网搜索用）
 WEB_SEARCH_API_KEY=""        # 对应服务商的 API Key
 DB_AUTO_CREATE_TABLES=false  # 用了 Alembic 就必须关掉
 
-CAPABILITY_TRUST_MODE="balanced"   # strict | balanced | permissive
+CAPABILITY_TRUST_MODE="auto"       # auto | manual | accept_edits | plan | bypass
 CAPABILITY_APPROVAL_TIMEOUT=300    # 审批请求超时自动拒绝（秒）
 ```
 
@@ -433,7 +434,19 @@ deepAgents 迁移的方案与决策见 [`docs/plans/agent-migration-deepagents.m
 | `risk` | read / write / execute / network / destructive | 最坏能造成什么 |
 | `permission` | none / confirm / admin | 谁能放行这次调用 |
 
-**审批按风险档位判**（用户定的口径：**只有中高档才需要审批**）：
+**审批按权限模式判**（用户定的口径：**只有中高档才需要审批**）。模式是**会话级**
+的 —— 输入框底部那个选择器随时能切（存在后端的文件里，别的进程也看得见）；
+`CAPABILITY_TRUST_MODE` 只是默认值。
+
+| 模式 | 行为 | 谁适合 |
+| --- | --- | --- |
+| `auto`（默认） | 按风险档位：低档自动放行，中档与高档要人批 | 日常 |
+| `manual` | 任何会改东西的操作都要人批（只读不问） | 生产、评审 |
+| `accept_edits` | 文件编辑与命令都自动放行，只有破坏性要人批 | 读代码、跑命令 |
+| `plan` | 只读：写类与执行类工具**不暴露给模型**，只能读与规划 | 先看方案 |
+| `bypass` | 全放行（含破坏性） | 本地开发 |
+
+风险档位（`auto` 模式下的判定依据）：
 
 | 档位 | 风险等级 | 要不要人批 |
 | --- | --- | --- |
@@ -442,16 +455,10 @@ deepAgents 迁移的方案与决策见 [`docs/plans/agent-migration-deepagents.m
 | 高 | destructive | **永远**要人批 —— 不可逆 |
 
 `permission` 是档位之上的两个口子：`confirm` = 运营额外要求人确认，
-`admin` = 管理员放行（信任模式放宽不了）。出厂能力的 `permission` 一律 `none`
+`admin` = 管理员放行。出厂能力的 `permission` 一律 `none`
 —— 档位说了算，声明不重复表达一遍。
 
-信任模式（`CAPABILITY_TRUST_MODE`）只决定**中档**放不放心行：
-
-| 模式 | 放行范围 | 用途 |
-| --- | --- | --- |
-| `strict` | 中高档要人批；标了 `confirm` 的低档能力也要人批 | 生产 |
-| `balanced`（默认） | 中高档要人批 | 默认 |
-| `permissive` | 只有高档要人批（中档也放行） | 本地开发 |
+老配置名还认：`strict`→`manual`、`balanced`→`auto`、`permissive`→`bypass`。
 
 **不可逆的操作归高档**，不管信任模式：删文件（`delete`）、删 worktree
 （`git_worktree_remove`）、合并分支（`git_merge`）。派子 agent
@@ -611,6 +618,8 @@ GET    /api/v1/skills/{id}/preview      预览挂载后带来哪些能力、什�
 GET    /api/v1/agent/{thread_id}/pending  待审批的调用
 POST   /api/v1/agent/{thread_id}/approve 批准挂起的调用，恢复图
 POST   /api/v1/agent/{thread_id}/reject  拒绝挂起的调用，恢复图
+GET    /api/v1/agent/{thread_id}/permission  这个会话的权限模式
+POST   /api/v1/agent/{thread_id}/permission  改权限模式（auto/manual/accept_edits/plan/bypass）
 ```
 
 对话时用 `skill_ids` 指定要挂载的技能；不传则导出全部启用的技能，由模型按

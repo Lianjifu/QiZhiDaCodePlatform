@@ -82,8 +82,55 @@ class PermissionLevel(StrEnum):
     """
 
     NONE = "none"  # 自动放行
-    CONFIRM = "confirm"  # 需要人确认（信任模式可以放宽这一档）
-    ADMIN = "admin"  # 需要管理员（信任模式**放宽不了**这一档）
+    CONFIRM = "confirm"  # 需要人确认
+    ADMIN = "admin"  # 需要管理员（只有"绕过权限"模式会放它）
+
+
+class PermissionMode(StrEnum):
+    """权限模式 —— 这一轮（或这个会话）怎么决定"要不要人批"。
+
+    词汇对齐 Claude Code 的权限模式，语义也是同一套：
+
+    - ``AUTO``（默认）—— **按风险档位**：低档自动放行，中档与高档要人批；
+    - ``MANUAL`` —— 任何会改东西的操作都要人批（只读不问）；
+    - ``ACCEPT_EDITS`` —— 文件编辑自动批准，执行命令 / 联网 / 破坏性照旧问；
+    - ``PLAN`` —— 只读：写类与执行类工具**不暴露给模型**，只能读与规划；
+    - ``BYPASS`` —— 全放行（含破坏性）。
+
+    模式是**会话级**的（见 ``app/agents/permissions.py``），全局配置
+    ``CAPABILITY_TRUST_MODE`` 只是默认值。
+    """
+
+    AUTO = "auto"
+    MANUAL = "manual"
+    ACCEPT_EDITS = "accept_edits"
+    PLAN = "plan"
+    BYPASS = "bypass"
+
+
+# 老配置值 → 新模式。
+#
+# 早先只有三档信任模式（strict / balanced / permissive）。保留老名字能用的，
+# 但语义按新模式走 —— 其中 ``permissive`` 现在等于 ``bypass``（全放行），
+# 比从前宽：从前它还拦着破坏性操作。
+_LEGACY_MODES: dict[str, str] = {
+    "strict": PermissionMode.MANUAL,
+    "balanced": PermissionMode.AUTO,
+    "permissive": PermissionMode.BYPASS,
+}
+
+
+def normalize_mode(mode: str) -> str:
+    """把任意模式取值归一成权限模式。
+
+    认得的老名字（strict / balanced / permissive）会映射到对应的新模式；
+    认不出来的按 ``auto``（按风险档位）—— 宁可多问一次，也不要因为一个错字
+    变成"全放行"。
+    """
+    text = str(mode or "").strip().lower()
+    if text in PermissionMode:
+        return text
+    return _LEGACY_MODES.get(text, PermissionMode.AUTO)
 
 
 # 数据出口的目标是谁定的 —— 决定这个能力是不是"模型能操控的出口"。
@@ -151,46 +198,58 @@ def approval_decision(
     "哪些能力会要人批"。两处各写一套规则，迟早会对不上 ——
     模型被告知"直接放行"，实际却被拦下，就是这么来的。
 
-    **判定按风险档位走**（``risk_tier``）：低档自动放行，中档与高档要人批。
+    **判定按权限模式走**（``normalize_mode``）：
 
-    判定顺序是有意的：
-
-    1. ``permission=admin`` —— 谁也放宽不了；
-    2. ``require_admin`` / ``always`` —— 参数级规则命中不可逆操作、
-       或工具被显式标成"永远要人批"；
-    3. ``permission=confirm`` —— 运营显式要求人确认（strict / balanced 要批，
-       permissive 放宽）；
-    4. 风险档位 —— 高档永远要批；中档 strict / balanced 要批、permissive 放行；
-       低档自动放行。
+    - ``bypass`` —— 全放行；
+    - ``plan`` —— 只读模式：只有只读的能力放行，其余一律要人批；
+    - ``manual`` —— 只读放行，其余（写 / 执行 / 联网 / 破坏）都要人批；
+    - ``accept_edits`` —— 中档（执行命令、联网）也自动放行，只有破坏性要人批；
+    - ``auto``（默认）—— 按**风险档位**：低档自动放行，中档与高档要人批。
 
     Args:
         permission: 能力声明的权限要求。
         risk: 本次调用的风险等级（可以是参数级规则上调后的值）。
-        trust_mode: 会话信任模式（strict / balanced / permissive）。
+        trust_mode: 权限模式（老名字 strict / balanced / permissive 也认）。
         require_admin: 参数级规则是否要求管理员放行。
+        always: 无论模式都要人批（不可逆的操作）。
 
     Returns:
         ``approved``（直接放行）或 ``pending``（挂起等人工审批）。
     """
+    mode = normalize_mode(trust_mode)
     permission = permission or PermissionLevel.NONE
+
+    # 绕过权限：什么都放行 —— 用户明确选的。
+    if mode == PermissionMode.BYPASS:
+        return APPROVAL_APPROVED
+
     if permission == PermissionLevel.ADMIN:
         return APPROVAL_PENDING
     if always or require_admin:
         return APPROVAL_PENDING
 
-    mode = (trust_mode or "balanced").lower()
+    # 只读模式：写类与执行类根本不该走到判定这一步（工具没暴露给模型），
+    # 真走到了也不放行。
+    if mode == PermissionMode.PLAN:
+        return APPROVAL_APPROVED if risk == RiskLevel.READ else APPROVAL_PENDING
+
+    # 手动模式：只读不问，其余都要人批。
+    if mode == PermissionMode.MANUAL:
+        return APPROVAL_APPROVED if risk == RiskLevel.READ else APPROVAL_PENDING
+
+    # 运营显式要求人确认（能力声明里的 confirm）。
     if permission == PermissionLevel.CONFIRM:
-        # 显式声明"要人确认"：信任模式只能放宽这一档
-        return APPROVAL_APPROVED if mode == "permissive" else APPROVAL_PENDING
+        return APPROVAL_PENDING
 
     tier = risk_tier(risk)
-    if tier == RiskTier.HIGH:
-        # 破坏性：不可逆，谁也不能自动放行
+
+    # 接受编辑：文件编辑与命令都自动放行，只有破坏性（不可逆）要人批。
+    if mode == PermissionMode.ACCEPT_EDITS:
+        return APPROVAL_PENDING if tier == RiskTier.HIGH else APPROVAL_APPROVED
+
+    # 默认：按风险档位 —— 低档自动放行，中档与高档要人批。
+    if tier in (RiskTier.MEDIUM, RiskTier.HIGH):
         return APPROVAL_PENDING
-    if tier == RiskTier.MEDIUM:
-        # 执行命令 / 联网：会在进程外产生副作用，要人看一眼
-        return APPROVAL_APPROVED if mode == "permissive" else APPROVAL_PENDING
-    # 低档：只读、写入 —— 改错了能改回来，不打断人
     return APPROVAL_APPROVED
 
 
@@ -211,9 +270,9 @@ def needs_approval(
     Args:
         permission: 权限要求（none / confirm / admin）。
         risk: 风险等级（可以是参数级规则上调后的值）。
-        trust_mode: 会话信任模式。
+        trust_mode: 权限模式（老名字 strict / balanced / permissive 也认）。
         require_admin: 参数级规则是否要求管理员放行。
-        always: 无论信任模式都要人批（删除这类不可逆的操作）。
+        always: 无论模式都要人批（删除这类不可逆的操作）。
 
     Returns:
         要人批返回 ``True``。
@@ -221,7 +280,12 @@ def needs_approval(
     if always:
         return True
     return (
-        approval_decision(permission, risk, trust_mode, require_admin=require_admin)
+        approval_decision(
+            permission,
+            risk,
+            trust_mode,
+            require_admin=require_admin,
+        )
         == APPROVAL_PENDING
     )
 
@@ -420,11 +484,13 @@ __all__ = [
     "EGRESS_TARGET_MODEL_CONTROLLED",
     "Annotations",
     "PermissionLevel",
+    "PermissionMode",
     "RetryPolicy",
     "RiskLevel",
     "RiskTier",
     "approval_decision",
     "max_risk",
+    "normalize_mode",
     "risk_rank",
     "risk_tier",
 ]

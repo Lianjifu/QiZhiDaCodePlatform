@@ -79,7 +79,7 @@
 | --- | --- | --- |
 | 列出全部成员 | `GET /api/v1/capabilities` | 按 `kind` / `tag` / `enabled` 过滤 |
 | 取任意成员 | `GET /api/v1/capabilities/{key}` | 跨三类成员按 key 取 |
-| 取完整声明 | `GET /api/v1/capabilities/{key}/spec` | 契约 + 策略（schema / 风险 / 权限 / 超时 / 重试 / 注解 / 信任模式） |
+| 取完整声明 | `GET /api/v1/capabilities/{key}/spec` | 契约 + 策略（schema / 风险 / 权限 / 超时 / 重试 / 注解 / 权限模式） |
 | 直接调一次 | `POST /api/v1/capabilities/{key}/invoke` | 调试用；**走的是同一条执行流水线**，不是另一条捷径 |
 
 **数据库是唯一事实来源**。代码里的出厂清单只是"出厂源"，负责首次安装 + 补空字段，
@@ -166,8 +166,8 @@ query string，其余进 JSON body。
 | `delete` | destructive | 高 | none | ✗ | **永远**要人批 |
 | `execute` | execute | 中 | none | ✗ | balanced / strict 要人批 |
 
-`delete` 是高档：写文件能靠再写一遍补救，**删掉的回不来** —— 信任模式再宽松
-也要人批。
+`delete` 是高档：写文件能靠再写一遍补救，**删掉的回不来** —— 只有「绕过权限」
+模式会放它，其余都要人批。
 
 我们自己的工具（`web_fetch` / `web_search` / `run_python` / MCP）走同一套判定 ——
 它们的 `permission` / `risk` 来自声明。两边合起来才是完整的工具集，判定函数
@@ -178,7 +178,19 @@ query string，其余进 JSON body。
 - `risk` —— 这能力**最坏**能造成什么（描述能力本身）；
 - `permission` —— **谁来放行**这次调用（描述运行时策略）。
 
-**审批按风险档位判**（用户定的口径：只有中高档才需要审批）：
+**审批按权限模式判**（用户定的口径：只有中高档才需要审批）。模式是**会话级**的
+（`app/agents/permissions.py` 存文件，跨进程可见），`CAPABILITY_TRUST_MODE` 只是
+默认值。语义对齐 Claude Code 的权限模式：
+
+| 模式 | 行为 |
+| --- | --- |
+| `auto`（默认） | 按风险档位：低档自动放行，中档与高档要人批 |
+| `manual` | 任何会改东西的操作都要人批（只读不问） |
+| `accept_edits` | 文件编辑与命令都自动放行，只有破坏性要人批 |
+| `plan` | 只读：写类与执行类工具**不暴露给模型**（中间件裁工具） |
+| `bypass` | 全放行（含破坏性） |
+
+`auto` 模式下的风险档位：
 
 | 档位 | 风险等级 | 要不要人批 |
 | --- | --- | --- |
@@ -187,18 +199,10 @@ query string，其余进 JSON body。
 | 高 | destructive | **永远**要人批 —— 不可逆 |
 
 `permission` 是档位之上的两个口子：`confirm` = 运营额外要求人确认，
-`admin` = 管理员放行（信任模式放宽不了）。出厂能力的 `permission` 一律 `none`
+`admin` = 管理员放行（只有 `bypass` 会放它）。出厂能力的 `permission` 一律 `none`
 —— 档位说了算，声明不重复表达一遍。
 
-信任模式只决定**中档**放不放心行：
-
-| 模式 | 放行范围 | 用途 |
-| --- | --- | --- |
-| `strict` | 中高档要人批；标了 `confirm` 的低档能力也要人批 | 生产 |
-| `balanced`（默认） | 中高档要人批 | 默认 |
-| `permissive` | 只有高档要人批（中档也放行） | 本地开发 |
-
-信任模式只能**放宽**中档，放宽不了高档这种"不可逆"的操作。
+老配置名还认：`strict`→`manual`、`balanced`→`auto`、`permissive`→`bypass`。
 
 风险还会被**参数级规则上调**（规则是纯函数，便于单测、便于向模型解释"这次
 为什么要审批"）：
@@ -395,7 +399,7 @@ CompositeBackend(
 ③ 风险评估    assess()              execution/risk.py
                声明的 risk + 参数级规则（破坏性命令 / SSRF）
 ④ 审批等待    _decide_approval()    pipeline.py
-               按风险档位 + permission + 信任模式 → approved / pending / denied
+               按权限模式 + permission + 风险档位 → approved / pending / denied
 ⑤ 实际调用    _invoke()             pipeline.py
                幂等去重 → 超时 → 重试 → 适配器
 ⑥ 结果验证    _verify_output()      pipeline.py
@@ -516,7 +520,7 @@ POST /api/v1/agent/chat
 `policy.py::approval_decision()`），中间件拿它做判定，同时**提前告诉模型**：
 
 ```text
-当前信任模式：balanced。
+当前权限模式：自动。
 审批按风险档位：只读、写入是低档，直接执行；执行命令、联网是中档，需要人工
 审批；破坏性操作是高档，永远需要人工审批。
 以下工具需要人工批准才能执行：delete、execute。

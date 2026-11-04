@@ -2,7 +2,7 @@
  * 输入框。
  *
  * 空状态时**居中**（像 Claude 桌面端那样），有消息之后固定在底部。
- * 底部一行：`+`（附件 / 斜杠命令 / @ 提及）、模式（只留「对话」一档）、模型选择。
+ * 底部一行：`+`（附件 / 斜杠命令 / @ 提及）、权限模式、模型选择。
  *
  * ## 三种输入能力
  *
@@ -24,6 +24,7 @@ import { humanSize } from '../../lib/format'
 import type { LLMProvider, SlashCommand, WorkspaceFile } from '../../types/api'
 import ContextUsageIndicator from '../sessions/ContextUsageIndicator'
 import MentionPicker from './MentionPicker'
+import PermissionModePicker from './PermissionModePicker'
 import SlashCommandMenu from './SlashCommandMenu'
 import { detectTrigger, mentionedPaths, orderEntries, type Trigger } from './triggers'
 
@@ -521,8 +522,8 @@ export default forwardRef<ComposerHandle, {
               )}
             </div>
 
-            {/* 模式：目前只有「对话」一档 */}
-            <span className="rounded-lg bg-sunken px-2.5 py-1.5 text-xs text-ink">对话</span>
+            {/* 权限模式：这一轮要不要人批 */}
+            <PermissionModePicker threadId={threadId} />
 
             <div className="flex-1" />
 

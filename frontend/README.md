@@ -65,6 +65,8 @@ src/
     agent/         编码助手（唯一支持多轮对话的页面）
       ChatPage.tsx  MessageList.tsx  ToolCallBlock.tsx
       ApprovalCard.tsx  Composer.tsx  useChat.ts
+      PermissionModePicker.tsx  权限模式选择器
+      permissionModes.ts       权限模式清单（纯数据，可单测）
       toolSummary.ts  工具名/参数的摘要规则（纯函数，可单测）
       SlashCommandMenu.tsx  斜杠命令面板
       MentionPicker.tsx     @ 提及面板
@@ -389,6 +391,25 @@ worktree。
 **删会话只删侧栏的记录** —— 后端的 checkpoint 与工作区文件都还在。
 `/clear` 斜杠命令才是真删（`DELETE /agent/{thread_id}`，删 checkpoint，
 工作区文件留着）。
+
+## 权限模式
+
+输入框底部有一个**权限模式**选择器（盾牌图标），决定这一轮要不要人批 —— 语义
+对齐 Claude Code 的权限模式：
+
+| 模式 | 行为 |
+| --- | --- |
+| 自动（推荐） | 按风险档位：只读与写入直接放行，执行命令、联网、破坏性操作要人批 |
+| 手动 | 任何会改东西的操作都要人批，只读不问 |
+| 接受编辑 | 文件编辑与命令都自动放行，只有破坏性操作要人批 |
+| 只读 | 写文件与执行命令的工具不提供给模型，只做阅读与规划 |
+| 绕过权限 | 所有操作直接执行，不会有人工审批（切换时要二次确认） |
+
+模式是**会话级**的，存在后端（`<workspace_root>/.qzd/permissions/`）——
+别的进程也要看得见（审批恢复可能落在另一个进程上）。切换后**下一轮**生效；
+当前挂起的那次调用还是要点「批准」。
+
+「绕过权限」会连破坏性操作一起放行，切换时弹一次确认。
 
 ## 工具调用卡片
 

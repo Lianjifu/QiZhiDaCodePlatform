@@ -44,10 +44,16 @@ from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.redaction import redact
 from app.capabilities.execution.risk import assess
 from app.capabilities.execution.task_state import adjust_confidence, load_task_state
-from app.capabilities.registration.policy import Annotations
+from app.capabilities.registration.policy import (
+    Annotations,
+    PermissionMode,
+    RiskLevel,
+    normalize_mode,
+)
 from app.capabilities.registration.spec import KIND_TOOL, CapabilitySpec
 from app.capabilities.registration.tool_policy import (
     FS_TOOL_NAMES,
+    READ_ONLY_TOOL_NAMES,
     ToolPolicy,
     approval_required_tools,
     policy_for_tool,
@@ -73,7 +79,7 @@ class CapabilityMiddleware(AgentMiddleware):
         allowed_tool_keys: set[str] | None = None,
         context: ExecutionContext | None = None,
         thread_id: str = "",
-        trust_mode: str = "balanced",
+        trust_mode: str = "auto",
         interrupt_enabled: bool = True,
     ) -> None:
         """构造中间件。
@@ -96,6 +102,7 @@ class CapabilityMiddleware(AgentMiddleware):
         self.context = context
         self.thread_id = thread_id
         self.trust_mode = trust_mode
+        self.permission_mode = normalize_mode(trust_mode)
         self.interrupt_enabled = interrupt_enabled
 
     # ---------- 模型调用前 ----------
@@ -111,11 +118,19 @@ class CapabilityMiddleware(AgentMiddleware):
             模型请求的响应。
         """
         overrides: dict[str, Any] = {}
-        if self.allowed_tool_keys is not None:
+        allowed = self.allowed_tool_keys
+        if self.permission_mode == PermissionMode.PLAN:
+            # 只读模式：写类与执行类工具**不暴露给模型** —— 不是"问一句再放行"，
+            # 是模型根本看不到它们，只能读与规划。
+            readonly = READ_ONLY_TOOL_NAMES | {
+                spec.key for spec in self.specs if spec.risk == RiskLevel.READ
+            }
+            allowed = readonly if allowed is None else (allowed & readonly)
+        if allowed is not None:
             kept = [
                 tool
                 for tool in request.tools
-                if getattr(tool, "name", None) in self.allowed_tool_keys
+                if getattr(tool, "name", None) in allowed
             ]
             if kept:
                 # 一个都没匹配上就别收窄，保留原样，避免把 agent 关死
@@ -395,6 +410,16 @@ class CapabilityMiddleware(AgentMiddleware):
         )
 
 
+# 权限模式 → 中文名（给模型看的那句话）
+_MODE_LABELS: dict[str, str] = {
+    PermissionMode.AUTO: "自动",
+    PermissionMode.MANUAL: "手动",
+    PermissionMode.ACCEPT_EDITS: "接受编辑",
+    PermissionMode.PLAN: "只读",
+    PermissionMode.BYPASS: "绕过权限",
+}
+
+
 def build_policy_note(
     specs: list[CapabilitySpec],
     trust_mode: str,
@@ -413,15 +438,21 @@ def build_policy_note(
     Returns:
         策略说明正文。没有可说的内容时返回空串。
     """
-    notes = [
-        f"当前信任模式：{trust_mode}。",
-        "审批按风险档位：只读、写入是低档，直接执行；执行命令、联网是中档，"
-        "需要人工审批；破坏性操作是高档，永远需要人工审批。",
-    ]
-    if trust_mode == "permissive":
-        notes.append("宽松模式：中档（执行命令、联网）也自动放行，只有破坏性操作仍要人批。")
-    elif trust_mode == "strict":
-        notes.append("严格模式：标了「要人确认」的能力即使是低档也要人批。")
+    mode = normalize_mode(trust_mode)
+    notes = [f"当前权限模式：{_MODE_LABELS.get(mode, mode)}。"]
+    if mode == PermissionMode.AUTO:
+        notes.append(
+            "审批按风险档位：只读、写入是低档，直接执行；执行命令、联网是中档，"
+            "需要人工审批；破坏性操作是高档，永远需要人工审批。"
+        )
+    elif mode == PermissionMode.MANUAL:
+        notes.append("手动模式：只读直接执行，其余任何操作都要人工审批。")
+    elif mode == PermissionMode.ACCEPT_EDITS:
+        notes.append("接受编辑模式：文件编辑与命令都直接执行，只有破坏性操作仍要人工审批。")
+    elif mode == PermissionMode.PLAN:
+        notes.append("只读模式：写文件与执行命令的工具**没有提供给你**，只做阅读与规划。")
+    elif mode == PermissionMode.BYPASS:
+        notes.append("绕过权限模式：所有操作都会直接执行，不会有人工审批。")
 
     approval = approval_required_tools(specs, trust_mode, allowed_tool_keys)
     if approval:

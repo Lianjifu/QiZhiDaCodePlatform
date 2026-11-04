@@ -49,6 +49,15 @@ export interface PendingApproval {
 }
 
 /** 一轮对话的结果（后端 `AgentChatOut`）。 */
+/** 会话级权限模式（后端 `SessionPermissionOut`）。 */
+export interface SessionPermission {
+  thread_id: string
+  /** auto / manual / accept_edits / plan / bypass */
+  permission_mode: string
+  /** 是不是这个会话自己设的（不是全局默认） */
+  session_override: boolean
+}
+
 export interface AgentChatResult {
   thread_id: string
   content: string
