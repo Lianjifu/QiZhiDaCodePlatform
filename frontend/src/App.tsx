@@ -12,6 +12,7 @@ import EnvironmentsPage from './pages/EnvironmentsPage'
 import FilesPage from './pages/FilesPage'
 import PlaceholderPage from './pages/PlaceholderPage'
 import ProvidersPage from './pages/ProvidersPage'
+import RetrospectivesPage from './pages/RetrospectivesPage'
 import StatusPage from './pages/StatusPage'
 
 export default function App() {
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="providers" element={<ProvidersPage />} />
         <Route path="capabilities" element={<CapabilitiesPage />} />
         <Route path="status" element={<StatusPage />} />
+        <Route path="retrospectives" element={<RetrospectivesPage />} />
         <Route path="*" element={<PlaceholderPage module="页面" stage="未规划" />} />
       </Route>
     </Routes>

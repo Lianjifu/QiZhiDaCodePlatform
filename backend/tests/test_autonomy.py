@@ -28,7 +28,7 @@ from app.agents.autonomy import (
     parse_proposal,
     violates_safety_scope,
 )
-from app.models.invocation import STATUS_FAILED, Invocation
+from app.models.invocation import STATUS_FAILED, STATUS_SUCCEEDED, Invocation
 from app.models.retrospective import (
     REJECT_CONFLICT,
     REJECT_LIMIT,
@@ -698,3 +698,58 @@ async def test_接口能给出度量(client):
 async def test_接口查不存在的复盘报404(client):
     response = await client.get("/api/v1/retrospectives/99999")
     assert response.status_code == 404
+
+
+async def test_退出码非零的调用也会被复盘(session):
+    """**这条是最容易漏的一种失败。**
+
+    ``run_python`` 的职责是"跑代码并把退出码与输出带回来" —— 代码抛异常时
+    这个职责履行了，所以记录的状态是 ``succeeded``。
+
+    只按状态筛的话，复盘永远看不到它 —— 而"代码跑挂了"恰恰是代码 agent
+    最常见的失败形态。
+    """
+    failure = _failure()
+    failure.status = STATUS_SUCCEEDED
+    failure.error_code = None
+    failure.error_message = None
+    failure.result = {"exit_code": 1, "content": "退出码: 1\nValueError: 坏了"}
+    session.add(failure)
+    await session.commit()
+
+    result = await RetrospectiveService(session).run(
+        thread_id="t1", task="做点事", model=FakeModel(reply=_proposal())
+    )
+    assert result is not None, "退出码非零的调用也算失败，该被复盘"
+    assert result.invocation_count == 1
+
+
+async def test_有相关记忆时复盘也能跑完(session):
+    """召回得到目录条目时不能炸。
+
+    ``CatalogEntry.summary`` 是**字段**不是方法 —— 当成方法调会报
+    "str object is not callable"。**只有真有相关记忆时才会走到那一步**，
+    所以空目录的用例盖不住它。
+    """
+    from app.memory.service import MemoryService
+
+    service = MemoryService(session=session, thread_id="t1")
+    await service.remember(
+        content="这个仓库的测试要跑 pytest tests/ -x",
+        kind="note",
+        tags=["pytest", "测试"],
+        scope="session",
+        source="model-inferred",
+    )
+    session.add(_failure())
+    await session.commit()
+
+    result = await RetrospectiveService(session).run(
+        thread_id="t1",
+        task="跑一下测试",
+        # 正文与已有记忆**不冲突**（标签不同）—— 冲突是另一条路径，
+        # 这里要验的是"召回得到条目时能一路跑完"
+        model=FakeModel(reply=_proposal(content="跑测试之前先跑 lint", tags=["lint"])),
+    )
+    assert result is not None
+    assert result.status == STATUS_APPLIED

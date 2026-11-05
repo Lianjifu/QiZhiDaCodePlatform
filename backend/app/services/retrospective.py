@@ -64,6 +64,7 @@ from app.models.retrospective import (
     STATUS_RUNNING,
     Retrospective,
 )
+from app.repositories.invocation import InvocationRepository
 from app.repositories.prompt_rule import PromptRuleRepository
 from app.repositories.retrospective import RetrospectiveRepository
 
@@ -90,6 +91,7 @@ class RetrospectiveService:
         self.lock = lock or TaskLock()
         self.repo = RetrospectiveRepository(session)
         self.rules = PromptRuleRepository(session)
+        self._invocations = InvocationRepository(session)
 
     # ---------- 主流程 ----------
 
@@ -117,7 +119,7 @@ class RetrospectiveService:
         if await self._in_cooldown(thread_id):
             return None
 
-        failures = await self.repo.list_uncovered_failures(
+        failures = await self._invocations.list_uncovered_failures(
             thread_id,
             since=datetime.now(UTC) - timedelta(seconds=settings.autonomy_lookback_seconds),
             limit=MAX_FAILURES,
@@ -155,7 +157,7 @@ class RetrospectiveService:
         try:
             await self._produce(record, task=task, failures=mine, model=model)
         except Exception as exc:  # pragma: no cover - 复盘失败不该拖垮任何东西
-            logger.warning("复盘失败 thread=%s: %s", thread_id, exc)
+            logger.warning("复盘失败 thread=%s: %s", thread_id, exc, exc_info=True)
             await self.repo.set_status(record.id, STATUS_FAILED, reject_reason=None)
             # **把失败还回去** —— 抢了不还，它们就永远不会被复盘
             await self.repo.release_failures(record.id)
@@ -469,7 +471,9 @@ class RetrospectiveService:
         except Exception as exc:
             logger.debug("复盘召回记忆失败: %s", exc)
             return []
-        return [entry.summary(160) for entry in catalog.entries]
+        # **目录条目里的 ``summary`` 是字段，不是方法** —— 那是
+        # ``CatalogEntry``（目录行），不是 ``MemoryEntry``（记忆本体）。
+        return [str(entry.summary or "")[:160] for entry in catalog.entries]
 
     def _memory_service(self, thread_id: str) -> MemoryService:
         """按执行上下文造一个记忆服务（长期记忆要连 RAG 集合）。"""
@@ -587,12 +591,10 @@ class RetrospectiveService:
            在它**之前**失败过几次、**之后**又失败过几次。
            后者比前者少，才说明改进起作用了。
         """
-        from app.repositories.invocation import InvocationRepository
-
         by_status = await self.repo.count_by_status()
         by_reason = await self.repo.count_by_reject_reason()
 
-        repo = InvocationRepository(self.session)
+        repo = self._invocations
         applied = await self.repo.list_page(
             thread_id=thread_id, status=STATUS_APPLIED, limit=200
         )

@@ -492,3 +492,61 @@ export interface CapabilityList {
   total: number
   kinds: string[]
 }
+
+// ---------- 复盘（自我进化） ----------
+
+/**
+ * 一次复盘记录（后端 `app/schemas/retrospective.py` 的 `RetrospectiveOut`）。
+ *
+ * **这是 agent 自己改了什么的那本账** —— 复盘是免审批的，所以改了什么、
+ * 为什么改、成功没有，都得在这儿查得到、撤得回。
+ */
+export interface Retrospective {
+  id: number
+  thread_id?: string | null
+  task_summary: string
+  status: string
+  reject_reason?: string | null
+  carrier: string
+  title: string
+  content: string
+  kind: string
+  tags: string[]
+  target_id: string
+  target_skill_id?: number | null
+  reason: string
+  capability_keys: string[]
+  invocation_count: number
+  created_at?: string | null
+  applied_at?: string | null
+}
+
+/**
+ * 一条改进的复发率（后端 `RecurrenceOut`）。
+ *
+ * `failures_before` 是改进之前同类失败过几次，`failures_after` 是改进之后
+ * 又失败了几次 —— **后者比前者少，才说明改进起作用了**。
+ */
+export interface Recurrence {
+  retrospective_id: number
+  thread_id?: string | null
+  capability_keys: string[]
+  failures_before: number
+  failures_after: number
+  recurrence_rate?: number | null
+}
+
+/** 复盘这条链路的度量（后端 `RetrospectiveMetricsOut`）。 */
+export interface RetrospectiveMetrics {
+  total: number
+  by_status: Record<string, number>
+  by_reject_reason: Record<string, number>
+  recurrence: Recurrence[]
+}
+
+/** 撤销的结果（后端 `RevertOut`）。 */
+export interface RevertResult {
+  id: number
+  reverted: boolean
+  message: string
+}

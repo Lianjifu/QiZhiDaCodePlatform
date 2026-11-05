@@ -27,6 +27,13 @@ Create Date: 2026-11-05
 
 **不加外键**：``retrospective`` 与 ``invocation`` 互相引用会成环，删表顺序就
 定不下来。这里只存 id，删复盘时把它置空即可。
+
+**容忍表已存在**：平台默认开着 ``DB_AUTO_CREATE_TABLES`` —— 进程启动时
+``create_all`` 会照模型建表，那**先于**迁移跑。于是迁移再 ``create_table``
+就会撞上"table already exists"。
+
+所以这里每一步都先看一眼表/列在不在。这不是偷懒：两种建表方式（模型与
+迁移）本来就该能共存 —— 谁先谁后都不该把另一边堵死。
 """
 
 from __future__ import annotations
@@ -43,74 +50,107 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _has_table(name: str) -> bool:
+    """这张表在不在。"""
+    return sa.inspect(op.get_bind()).has_table(name)
+
+
+def _has_column(table: str, column: str) -> bool:
+    """这一列在不在。"""
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table(table):
+        return False
+    return any(col["name"] == column for col in inspector.get_columns(table))
+
+
 def upgrade() -> None:
-    op.create_table(
-        "retrospective",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("thread_id", sa.String(length=64), nullable=True),
-        sa.Column("task_summary", sa.Text(), nullable=False),
-        sa.Column("status", sa.String(length=16), nullable=False),
-        sa.Column("reject_reason", sa.String(length=32), nullable=True),
-        sa.Column("carrier", sa.String(length=16), nullable=False),
-        sa.Column("title", sa.Text(), nullable=False),
-        sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("kind", sa.String(length=16), nullable=False),
-        sa.Column("tags", sa.JSON(), nullable=False),
-        sa.Column("target_id", sa.String(length=64), nullable=False),
-        sa.Column("target_skill_id", sa.Integer(), nullable=True),
-        sa.Column("appended_block", sa.Text(), nullable=False),
-        sa.Column("reason", sa.Text(), nullable=False),
-        sa.Column("capability_keys", sa.JSON(), nullable=False),
-        sa.Column("invocation_count", sa.Integer(), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.Column("applied_at", sa.DateTime(timezone=True), nullable=True),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index("ix_retrospective_thread_id", "retrospective", ["thread_id"])
-    op.create_index("ix_retrospective_status", "retrospective", ["status"])
-
-    op.create_table(
-        "prompt_rule",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("rule", sa.Text(), nullable=False),
-        sa.Column("enabled", sa.Boolean(), nullable=False),
-        sa.Column("retrospective_id", sa.Integer(), nullable=True),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index("ix_prompt_rule_retrospective_id", "prompt_rule", ["retrospective_id"])
-
-    with op.batch_alter_table("invocation") as batch:
-        batch.add_column(
-            sa.Column("retrospective_id", sa.Integer(), nullable=True),
+    if not _has_table("retrospective"):
+        op.create_table(
+            "retrospective",
+            sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column("thread_id", sa.String(length=64), nullable=True),
+            sa.Column("task_summary", sa.Text(), nullable=False),
+            sa.Column("status", sa.String(length=16), nullable=False),
+            sa.Column("reject_reason", sa.String(length=32), nullable=True),
+            sa.Column("carrier", sa.String(length=16), nullable=False),
+            sa.Column("title", sa.Text(), nullable=False),
+            sa.Column("content", sa.Text(), nullable=False),
+            sa.Column("kind", sa.String(length=16), nullable=False),
+            sa.Column("tags", sa.JSON(), nullable=False),
+            sa.Column("target_id", sa.String(length=64), nullable=False),
+            sa.Column("target_skill_id", sa.Integer(), nullable=True),
+            sa.Column("appended_block", sa.Text(), nullable=False),
+            sa.Column("reason", sa.Text(), nullable=False),
+            sa.Column("capability_keys", sa.JSON(), nullable=False),
+            sa.Column("invocation_count", sa.Integer(), nullable=False),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.Column("applied_at", sa.DateTime(timezone=True), nullable=True),
+            sa.PrimaryKeyConstraint("id"),
         )
-    op.create_index("ix_invocation_retrospective_id", "invocation", ["retrospective_id"])
+    op.create_index(
+        "ix_retrospective_thread_id", "retrospective", ["thread_id"], if_not_exists=True
+    )
+    op.create_index(
+        "ix_retrospective_status", "retrospective", ["status"], if_not_exists=True
+    )
+
+    if not _has_table("prompt_rule"):
+        op.create_table(
+            "prompt_rule",
+            sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column("rule", sa.Text(), nullable=False),
+            sa.Column("enabled", sa.Boolean(), nullable=False),
+            sa.Column("retrospective_id", sa.Integer(), nullable=True),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.Column(
+                "updated_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.PrimaryKeyConstraint("id"),
+        )
+    op.create_index(
+        "ix_prompt_rule_retrospective_id",
+        "prompt_rule",
+        ["retrospective_id"],
+        if_not_exists=True,
+    )
+
+    if not _has_column("invocation", "retrospective_id"):
+        with op.batch_alter_table("invocation") as batch:
+            batch.add_column(
+                sa.Column("retrospective_id", sa.Integer(), nullable=True),
+            )
+    op.create_index(
+        "ix_invocation_retrospective_id",
+        "invocation",
+        ["retrospective_id"],
+        if_not_exists=True,
+    )
 
 
 def downgrade() -> None:
     op.drop_index("ix_invocation_retrospective_id", table_name="invocation")
-    with op.batch_alter_table("invocation") as batch:
-        batch.drop_column("retrospective_id")
+    if _has_column("invocation", "retrospective_id"):
+        with op.batch_alter_table("invocation") as batch:
+            batch.drop_column("retrospective_id")
 
     op.drop_index("ix_prompt_rule_retrospective_id", table_name="prompt_rule")
-    op.drop_table("prompt_rule")
+    if _has_table("prompt_rule"):
+        op.drop_table("prompt_rule")
 
     op.drop_index("ix_retrospective_status", table_name="retrospective")
     op.drop_index("ix_retrospective_thread_id", table_name="retrospective")
-    op.drop_table("retrospective")
+    if _has_table("retrospective"):
+        op.drop_table("retrospective")

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import Integer, func, select
 
-from app.models.invocation import FAILURE_STATUSES, Invocation
+from app.models.invocation import FAILURE_STATUSES, Invocation, is_failure
 from app.repositories.base import BaseRepository
 
 # 幂等去重窗口：只在这么短时间内认为"是同一次调用的重放"。
@@ -190,6 +190,53 @@ class InvocationRepository(BaseRepository[Invocation]):
             stmt = stmt.where(Invocation.created_at <= until)
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
+
+    async def list_uncovered_failures(
+        self,
+        thread_id: str,
+        *,
+        since: datetime,
+        limit: int = 10,
+        scan: int = 60,
+    ) -> list[Invocation]:
+        """这个会话里**还没被复盘过**的失败调用。
+
+        条件：属于本会话、还没被任何复盘认领（``retrospective_id IS NULL``）、
+        创建时间在 ``since`` 之后。
+
+        **"失败"的判定放在 Python 里做**，不在 SQL 里 ——
+        因为退出码非零的调用在记录里是 ``succeeded``（工具履行了"跑代码并把
+        退出码带回来"的职责），只按状态筛会把代码 agent **最常见的那种失败**
+        整个漏掉。判定用 ``app/models/invocation.py::is_failure``，
+        与反思块、复发率统计同一份。
+
+        所以这里多取一些（``scan`` 条）再筛 —— 免得最近的几条恰好都是成功的。
+
+        **按时间从早到晚排** —— 复盘一次最多看 ``limit`` 条，早的先复盘。
+        反过来（取最新的）会让水位线跳过去，中间没复盘过的就永远漏了。
+
+        Args:
+            thread_id: 会话 ID。
+            since: 只看这个时间之后的失败（早于它的多半是老账，不该翻）。
+            limit: 最多返回几条失败。
+            scan: 往前扫多少条记录来找失败。
+
+        Returns:
+            失败调用记录（从早到晚）。
+        """
+        stmt = (
+            select(Invocation)
+            .where(Invocation.thread_id == thread_id)
+            .where(Invocation.retrospective_id.is_(None))
+            .where(Invocation.created_at >= since)
+            .order_by(Invocation.id.desc())
+            .limit(scan)
+        )
+        result = await self.session.execute(stmt)
+        records = list(result.scalars().all())
+        records.reverse()
+        failures = [record for record in records if is_failure(record)]
+        return failures[:limit]
 
     async def sum_changes(self, thread_id: str | None) -> tuple[int, int]:
         """这个会话的改动量合计（新增行数, 删除行数）。

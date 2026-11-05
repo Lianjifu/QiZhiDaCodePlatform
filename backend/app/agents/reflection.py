@@ -51,11 +51,12 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invocation import (
-    FAILURE_STATUSES,
     STATUS_BLOCKED,
     STATUS_DENIED,
     STATUS_EXPIRED,
     STATUS_FAILED,
+    exit_code_of,
+    is_failure,
 )
 
 # 自动注入时最多列几条 —— 再多就不是"提醒"而是"历史"，模型会当成上下文噪声。
@@ -136,35 +137,6 @@ class FailureNote:
         }
 
 
-def is_failure(record: Any) -> bool:
-    """这条调用记录算不算"没成功"。
-
-    两层判断（见模块文档）：记录的状态，或者是退出码非零。
-
-    Args:
-        record: ``Invocation`` 行（或任何有 ``status`` 与 ``result`` 属性的对象）。
-
-    Returns:
-        算不算失败。
-    """
-    if getattr(record, "status", "") in FAILURE_STATUSES:
-        return True
-    return _exit_code_of(record) not in (None, 0)
-
-
-def _exit_code_of(record: Any) -> int | None:
-    """从记录的结果里取退出码。
-
-    执行层把 ``ExecutionResult.to_dict()`` 存进 ``result`` —— 退出码就在
-    顶层。取不到就当没有（不是失败）。
-    """
-    result = getattr(record, "result", None)
-    if not isinstance(result, dict):
-        return None
-    value = result.get("exit_code")
-    return value if isinstance(value, int) else None
-
-
 # 状态标记行 —— 它们说明"失败了"，但不说明"错在哪"。
 #
 # ``run_python`` 的正文第一行是"退出码: 1"；``execute`` 的正文最后一行是
@@ -232,7 +204,7 @@ async def recent_failures(
             error_code=record.error_code or "",
             error_message=_failure_message(record),
             created_at=record.created_at,
-            exit_code=_exit_code_of(record),
+            exit_code=exit_code_of(record),
         )
         for record in records
         if is_failure(record)

@@ -64,7 +64,7 @@ async def list_retrospectives(
     pages = (total + page_size - 1) // page_size if total else 0
     return ResponseModel[RetrospectiveListOut](
         data=RetrospectiveListOut(
-            items=[RetrospectiveOut.model_validate(item.to_dict()) for item in items],
+            items=[RetrospectiveOut.model_validate(item) for item in items],
             meta=PageMeta(total=total, page=page, page_size=page_size, pages=pages),
         )
     )
@@ -102,7 +102,7 @@ async def get_retrospective(
     if record is None:
         raise NotFoundError(f"复盘记录 {record_id} 不存在")
     return ResponseModel[RetrospectiveOut](
-        data=RetrospectiveOut.model_validate(record.to_dict())
+        data=RetrospectiveOut.model_validate(record)
     )
 
 

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import JSON, DateTime, Float, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -49,6 +50,43 @@ FAILURE_STATUSES = (
     STATUS_DENIED,
     STATUS_EXPIRED,
 )
+
+
+def exit_code_of(record: Any) -> int | None:
+    """从一条调用记录里取退出码。
+
+    执行层把 ``ExecutionResult.to_dict()`` 存进 ``result`` —— 退出码就在
+    顶层。取不到就当没有（不是失败）。
+    """
+    result = getattr(record, "result", None)
+    if not isinstance(result, dict):
+        return None
+    value = result.get("exit_code")
+    return value if isinstance(value, int) else None
+
+
+def is_failure(record: Any) -> bool:
+    """这条调用记录算不算"没成功"。
+
+    **两层判断**：
+
+    1. 记录的状态（失败 / 被阻塞 / 被拒绝 / 审批过期）；
+    2. **退出码非零** —— 工具本身跑成了（记录是 ``succeeded``），
+       但**要做的事没做成**。
+
+    第二层是代码 agent 最常见的失败形态。``run_python`` 的职责是"在沙箱里
+    跑一段代码并把退出码与输出带回来" —— 代码抛异常时这个职责**履行了**，
+    所以记录是成功的。但从 agent 的角度那次尝试就是失败了：它想算的东西
+    没算出来。
+
+    只看状态的话，反思与复盘在**最需要它们的场景里**都是空的。
+
+    **为什么放这里**：这条判定被三处用 —— 反思块（每轮注入）、
+    复盘的候选筛选、复盘的复发率统计。放在一处，它们才不会各说各话。
+    """
+    if getattr(record, "status", "") in FAILURE_STATUSES:
+        return True
+    return exit_code_of(record) not in (None, 0)
 
 # 人工已经处理完的状态（无论是批准、拒绝还是取消）。
 DECIDED_STATUSES = (

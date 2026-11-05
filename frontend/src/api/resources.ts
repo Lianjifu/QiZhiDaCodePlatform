@@ -25,6 +25,9 @@ import type {
   PagedList,
   ProviderPreset,
   ProviderTestResult,
+  Retrospective,
+  RetrospectiveMetrics,
+  RevertResult,
   SessionPermission,
   SessionStatus,
   Skill,
@@ -408,4 +411,53 @@ export async function readFileText(threadId: string, path: string): Promise<stri
     throw new Error(`读不到文件（HTTP ${response.status}）`)
   }
   return response.text()
+}
+
+// ---------- 复盘（自我进化） ----------
+
+/**
+ * 列出复盘记录。
+ *
+ * **新的在前** —— 最近发生了什么最要紧。
+ */
+export function listRetrospectives(params?: {
+  thread_id?: string
+  status?: string
+  carrier?: string
+  page?: number
+  page_size?: number
+}): Promise<PagedList<Retrospective>> {
+  const query = new URLSearchParams()
+  if (params?.thread_id) query.set('thread_id', params.thread_id)
+  if (params?.status) query.set('status', params.status)
+  if (params?.carrier) query.set('carrier', params.carrier)
+  if (params?.page) query.set('page', String(params.page))
+  if (params?.page_size) query.set('page_size', String(params.page_size))
+  const suffix = query.toString()
+  return api.get<PagedList<Retrospective>>(`/retrospectives${suffix ? `?${suffix}` : ''}`)
+}
+
+/** 取一条复盘记录。 */
+export function getRetrospective(id: number): Promise<Retrospective> {
+  return api.get<Retrospective>(`/retrospectives/${id}`)
+}
+
+/**
+ * 复盘这条链路的度量。
+ *
+ * **复发率是"改进有没有用"的唯一依据** —— 某次复盘涉及的能力，
+ * 在它之前失败过几次、之后又失败了几次。
+ */
+export function getRetrospectiveMetrics(threadId?: string): Promise<RetrospectiveMetrics> {
+  const query = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : ''
+  return api.get<RetrospectiveMetrics>(`/retrospectives/metrics${query}`)
+}
+
+/**
+ * 撤销一次复盘做的改动。
+ *
+ * 记忆删掉、技能追加的那段删回去、提示词规则停用。
+ */
+export function revertRetrospective(id: number): Promise<RevertResult> {
+  return api.post<RevertResult>(`/retrospectives/${id}/revert`)
 }

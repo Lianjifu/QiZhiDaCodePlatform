@@ -6,13 +6,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.invocation import FAILURE_STATUSES, Invocation
+from app.models.invocation import Invocation
 from app.models.retrospective import Retrospective
 
 
@@ -99,43 +98,6 @@ class RetrospectiveRepository:
         )
         result = await self.session.execute(stmt)
         return result.scalars().first()
-
-    async def list_uncovered_failures(
-        self,
-        thread_id: str,
-        *,
-        since: datetime,
-        limit: int = 10,
-    ) -> list[Invocation]:
-        """这个会话里**还没被复盘过**的失败调用。
-
-        条件三条：属于本会话、状态是失败、还没被任何复盘认领
-        （``retrospective_id IS NULL``）。
-
-        **按时间从早到晚排** —— 复盘一次最多看 ``limit`` 条，早的先复盘。
-        反过来（取最新的）会让水位线跳过去，中间没复盘过的就永远漏了。
-
-        Args:
-            thread_id: 会话 ID。
-            since: 只看这个时间之后的失败（早于它的多半是老账，不该翻）。
-            limit: 最多几条。
-
-        Returns:
-            失败调用记录（新的在前 —— 调用方按时间正序处理）。
-        """
-        stmt = (
-            select(Invocation)
-            .where(Invocation.thread_id == thread_id)
-            .where(Invocation.status.in_(FAILURE_STATUSES))
-            .where(Invocation.retrospective_id.is_(None))
-            .where(Invocation.created_at >= since)
-            .order_by(Invocation.id.desc())
-            .limit(limit)
-        )
-        result = await self.session.execute(stmt)
-        records = list(result.scalars().all())
-        records.reverse()
-        return records
 
     async def claim_failures(
         self,

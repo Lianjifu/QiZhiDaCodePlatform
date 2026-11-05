@@ -64,6 +64,12 @@ const MODULES: NavItem[] = [
     hint: '供应商配置',
     icon: <PlugIcon className="h-4 w-4" />,
   },
+  {
+    to: '/retrospectives',
+    label: '进化记录',
+    hint: 'agent 改了什么',
+    icon: <LayersIcon className="h-4 w-4" />,
+  },
 ]
 
 /** 侧栏折叠状态存在哪儿 —— 刷新页面不该把用户的布局弹回去。 */
@@ -222,6 +228,13 @@ export default function AppShell() {
         hint: '供应商配置',
         icon: <PlugIcon className="h-3.5 w-3.5" />,
         action: () => go('/providers'),
+      },
+      {
+        id: 'go-retrospectives',
+        title: '进化记录',
+        hint: 'agent 自己改了什么',
+        icon: <LayersIcon className="h-3.5 w-3.5" />,
+        action: () => go('/retrospectives'),
       },
       {
         id: 'toggle-sidebar',
