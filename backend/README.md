@@ -43,6 +43,15 @@ FastAPI 后端脚手架，采用**简化分层架构（Service Layer）**。
    也**能写一条越界的技能知识**（技能的工具集复盘碰不到，但知识能写）。
    复盘的改进也不该被当成可信输入 —— 它是模型自己的推断。
 
+6. **知识库检索能力把语料交给了 agent。**
+   `rag_search` / `rag_read` 是只读能力，但**它们的出口是模型的对话** ——
+   agent 检索到的片段会进上下文，也就可能进它的回答、进它写的文件、
+   进它发出的请求。平台无鉴权 ⇒ 任何能调能力接口的人都能让 agent
+   把知识库里的东西读出来。
+   `POST /api/v1/memory/long-term`（长期记忆一键初始化）会**创建平台状态**
+   ——集合一旦建好，它就是此后所有长期记忆的落点；无鉴权下谁都能建，
+   也谁能删（`DELETE /api/v1/rag/collections/{id}` 会连同里面的记忆一起删）。
+
 这些不是"以后再说"的装饰性提示 —— 平台一旦暴露在网络上，上面每一条都能被
 直接利用。**先补鉴权，再谈上线。**
 
@@ -533,15 +542,32 @@ deepAgents 迁移的方案与决策见 [`docs/plans/agent-migration-deepagents.m
 | `grep` | 搜索文件内容 | `pattern` `path` | read | 按正则搜内容 |
 | `execute` | 执行命令 | `command` | execute | 在沙箱里跑一条 shell 命令 |
 
-**我们自己的内置能力**（3 个）：
+**我们自己的内置能力**（16 个）：
 
 | key | 名称 | 参数 | 风险 | 档位 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `run_python` | 执行 Python | `code` | execute | 中 | 在沙箱里跑一段 Python，返回退出码 / 输出 |
 | `web_fetch` | 抓取网页 | `url` | network | 中 | 抓 http/https 页面并转纯文本（去脚本、去样式） |
 | `web_search` | 联网搜索 | `query` `max_results` | network | 中 | 走 Tavily / Serper / Bing 搜索，需配 API Key |
+| `git_status` | 查看 git 状态 | — | read | 低 | 当前分支、改动统计 |
+| `git_worktree_list` | 列出 worktree | — | read | 低 | 列出本仓库的 worktree |
+| `git_worktree_add` | 创建 worktree | `branch` `base` | write | 低 | 建 worktree 并起新分支 |
+| `git_worktree_remove` | 删除 worktree | `path` `force` | destructive | 高 | **永远要人批**；校验 worktree 归属本仓库 |
+| `git_commit` | 提交改动 | `message` | write | 低 | 提交工作区改动 |
+| `git_merge` | 合并分支 | `branch` `target` | destructive | 高 | **永远要人批**；冲突会列出来而不是直接失败 |
+| `delegate_worker` | 派子 agent 干活 | `task` `branch` `base` | execute | 中 | 子 agent 在独立 worktree 里干活，产出分支与结论 |
+| `memory_search` | 召回记忆 | `query` `scope` `top_k` | read | 低 | 返回命中条目的**摘要**与 id（不给全文） |
+| `memory_read` | 读取记忆 | `id` | read | 低 | 按 id 取一条记忆的全文 |
+| `memory_write` | 写入记忆 | `content` `kind` `tags` `scope` `title` `supersedes` | write | 低 | 写入或合并一条记忆；凭据硬拦 + 冲突检测 |
+| `rag_search` | 检索知识库 | `query` `collection` `top_k` | read | 低 | 在 RAG 集合里检索，返回命中片段的标题 / 来源 / 摘要 |
+| `rag_read` | 读知识库文档 | `document_id` | read | 低 | 取一篇文档的完整正文 |
+| `invocation_recent_failures` | 查最近的失败 | `limit` `capability_key` | read | 低 | 列出本会话没成功的调用，避免重蹈覆辙 |
 
 出厂能力的权限要求一律 `none` —— 审批按档位判，声明不重复表达一遍。
+
+**检索类能力的出口是固定的**：记忆与知识库的检索要打平台自己配的向量化端点，
+地址不是模型给的，所以按"固定出口"处理，不按 network 风险拦 ——
+否则 balanced 模式下每查一次都要人工审批。
 
 几个设计取舍：
 
@@ -801,6 +827,27 @@ v1 的向量存在 SQL 的 JSON 列里，检索在进程内算余弦 —— 几�
 设计细节见 [`docs/implementation/rag-architecture.md`](docs/implementation/rag-architecture.md)，
 待办见 [`docs/plans/rag-followups.md`](docs/plans/rag-followups.md)。
 
+### RAG 也给 agent 用：`rag_search` / `rag_read`
+
+RAG 原本只有长期记忆一个消费者 —— 集合、文档、混合检索都有，**但没暴露成
+agent 工具**。现在有两个只读能力：
+
+```text
+rag_search  →  命中片段的集合名 / 标题 / 来源 / 分数 / 摘要
+rag_read    →  一篇文档的完整正文
+```
+
+只读、幂等 → 风险 `read`，不触发任何审批；出口是固定的（向量化端点由平台
+配好），所以不按 network 风险拦。
+
+三处取舍：
+
+- **扫全部集合时排除记忆集合** —— 长期记忆有自己的一套语义（被取代的记忆
+  不参与召回、模型写的东西按"模型说的"降权），走原始检索会把这些规则绕过去。
+  记忆交给 `memory_search`；显式点名记忆集合时仍然可以搜。
+- **按文档去重** —— 一篇文档被多个分块命中时取分数最高的那块。
+- **纯关键词集合不算"降级"** —— 集合压根没配 embedding 是用户的配置选择。
+
 ### RAG 接口
 
 ```text
@@ -909,21 +956,32 @@ curl 'http://127.0.0.1:8000/api/v1/memory?scope=session&thread_id=t1'
 curl 'http://127.0.0.1:8000/api/v1/memory/catalog?query=pnpm&thread_id=t1'
 ```
 
-**长期记忆需要先配集合**：在 RAG 界面建好集合、选好 embedding 模型，再把集合名
-填到 `MEMORY_COLLECTION_NAME`。平台不自动建 —— 集合的向量化配置是建集合时锁死的，
-建错了只能重建。
+### 长期记忆：一键初始化
 
-已配好的示例：
+长期记忆需要一个 RAG 集合，而集合的**向量化配置建时就锁死**（换模型要重建
+集合、重新灌记忆）—— 所以平台不静默替人建一个没配 embedding 的集合，那等于
+把人锁死在"纯关键词检索"上。改成**显式的一步 + 状态可见**：
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/rag/collections \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"agent-memory","description":"长期记忆集合","scope":"private","embedding_model":""}'
-# 然后在 .env 里：MEMORY_COLLECTION_NAME="agent-memory"
+# 看状态：能不能用、集合名、向量模型、里面多少条记忆、为什么不能用
+curl http://127.0.0.1:8000/api/v1/memory/long-term
+
+# 一键初始化：按当前供应商的 embedding 配置把集合建好（幂等，集合已在就不重建）
+curl -X POST http://127.0.0.1:8000/api/v1/memory/long-term \
+  -H 'Content-Type: application/json' -d '{}'
 ```
 
-（`embedding_model` 留空 = 只走关键词检索。想要向量检索就填模型名 —— 但
-**集合的向量化配置建时就锁死**，换模型要重建集合、重新灌记忆。）
+集合名取 `MEMORY_COLLECTION_NAME`（默认 `agent-memory`，不用改）。
+初始化时找 embedding 配置的顺序：显式指定 → 默认供应商 → 任意一条配了
+embedding 的供应商 → 环境变量兜底 → 都没有就建**纯关键词**的集合
+（能用，语义检索用不上；空集合想换随时能删）。
+
+界面上：进化记录页顶部一张「长期记忆」卡片，带「一键初始化」按钮。
+
+**判定口径是"集合在不在"，不是"名字配了没有"** —— 名字来自环境变量，集合是
+数据库里的行，两者可能只配了一个。集合不在时统一降级：写长期 → 改记会话内
+（并把降级的事实回给模型）；召回目录 → 只有会话内记忆；管理接口 → 空列表
+加一句"还没初始化"，而不是 500。
 
 > ⚠️ 记忆接口**当前没有鉴权**（整个平台都没做）。任何人都能读别人的会话内记忆、
 > 读长期记忆集合、往里塞东西。上线前必须补。

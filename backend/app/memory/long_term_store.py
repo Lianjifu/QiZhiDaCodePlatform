@@ -20,11 +20,16 @@ meta    = {kind, memory_kind, tags, strength, use_count, source, source_thread_i
 - **正文变了** → 走入库（内容哈希变了，不会被判重）；
 - **只是计数变了** → 直接改 ``rag_document.meta``，不重新入库。
 
-## 集合是用户自己建的
+## 集合是"名字配了 + 集合真的在"
 
 RAG 集合的向量化配置（模型 + 维度）是**建集合时锁死**的，建错了只能重建。
-所以平台不自动建记忆集合 —— 由用户在 RAG 界面建好、选好 embedding 模型，再把
-集合名配到 ``MEMORY_COLLECTION_NAME``。没配就明确报错，不静默失败。
+
+集合本身可以由平台代建 —— ``POST /api/v1/memory/long-term``（一键初始化）会
+按当前供应商的 embedding 配置建好，名字取 ``MEMORY_COLLECTION_NAME``。
+
+但**名字与集合是两回事**：名字来自环境变量，集合是数据库里的行，两者可能
+只配了一个。所以每个用长期记忆的入口都要先问一句 ``available()`` ——
+"配了名字"不等于"能用"。
 """
 
 from __future__ import annotations
@@ -45,7 +50,7 @@ from app.memory.models import (
     ensure_utc,
 )
 from app.memory.session_store import serialized
-from app.rag.models import RagDocument
+from app.rag.models import RagCollection, RagDocument
 
 
 class LongTermMemoryStore:
@@ -74,6 +79,20 @@ class LongTermMemoryStore:
     # ---------- 集合 ----------
 
     @serialized
+    async def available(self) -> bool:
+        """长期记忆现在能不能用。
+
+        **"配了名字"不等于"能用"** —— 名字来自环境变量，集合是数据库里的行，
+        两者可能只配了一个。所以长期记忆的每个入口都要先问这一句。
+
+        没配名字、集合不存在，都算不能用；调用方据此降级（写长期失败就改写
+        会话内），而不是等真正写的时候才炸。
+        """
+        if not self.collection_name:
+            return False
+        return await self._find_collection() is not None
+
+    @serialized
     async def collection_id(self) -> int:
         """取记忆集合的 id。
 
@@ -84,17 +103,16 @@ class LongTermMemoryStore:
             raise _not_configured()
         if self._collection_id is not None:
             return self._collection_id
-        from app.rag.models import RagCollection
-
-        collection = (
-            await self.session.execute(
-                select(RagCollection).where(RagCollection.name == self.collection_name)
-            )
-        ).scalar_one_or_none()
+        collection = await self._find_collection()
         if collection is None:
             raise _not_found(self.collection_name)
         self._collection_id = collection.id
         return collection.id
+
+    async def _find_collection(self) -> RagCollection | None:
+        """按名字找集合；找不到就是 ``None``。"""
+        stmt = select(RagCollection).where(RagCollection.name == self.collection_name)
+        return (await self.session.execute(stmt)).scalar_one_or_none()
 
     # ---------- 写 ----------
 
@@ -436,8 +454,8 @@ def _not_configured():
     from app.capabilities.errors import CapabilityError, ErrorCode
 
     return CapabilityError(
-        "未配置长期记忆集合。请在 RAG 界面创建集合（记得选好 embedding 模型），"
-        "并把集合名设置到环境变量 MEMORY_COLLECTION_NAME。",
+        "未配置长期记忆集合。请把集合名设置到环境变量 MEMORY_COLLECTION_NAME，"
+        "或调用 POST /api/v1/memory/long-term 一键初始化。",
         code=ErrorCode.EXECUTION_ERROR,
     )
 
@@ -446,9 +464,25 @@ def _not_found(name: str):
     from app.capabilities.errors import CapabilityError, ErrorCode
 
     return CapabilityError(
-        f"长期记忆集合 {name!r} 不存在。请在 RAG 界面创建它，或修正 MEMORY_COLLECTION_NAME。",
+        f"长期记忆集合 {name!r} 不存在。调用 POST /api/v1/memory/long-term 一键初始化它，"
+        "或修正 MEMORY_COLLECTION_NAME。",
         code=ErrorCode.EXECUTION_ERROR,
     )
 
 
-__all__ = ["LongTermMemoryStore"]
+async def long_term_store_for(
+    session: AsyncSession, lock: TaskLock | None = None
+) -> LongTermMemoryStore | None:
+    """造一个**能用**的长期记忆存储；集合不在就返回 ``None``。
+
+    长期记忆的每个入口都走这里 —— 判一次"能不能用"，然后要么用它，要么
+    降级到会话内。**别等到真写的时候才炸**：模型失败之后往往不重试，而是
+    自己找个别的办法记（改写工作区的 AGENTS.md），那比记在会话里更糟。
+    """
+    store = LongTermMemoryStore(session, lock=lock)
+    if await store.available():
+        return store
+    return None
+
+
+__all__ = ["LongTermMemoryStore", "long_term_store_for"]

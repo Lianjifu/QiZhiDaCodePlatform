@@ -664,14 +664,12 @@ class AgentRunner:
         if context.session is None or not message.strip():
             return ""
         try:
-            from app.memory.long_term_store import LongTermMemoryStore
+            from app.memory.long_term_store import long_term_store_for
             from app.memory.service import MemoryService
 
-            # 长期记忆要连 RAG 集合，没配集合名就别建它 —— 否则每轮都会
-            # 抛一次"未配置长期记忆集合"，日志全是它。
-            long_term = None
-            if settings.memory_collection_name:
-                long_term = LongTermMemoryStore(context.session, lock=context.db_lock)
+            # 长期记忆要连 RAG 集合 —— **集合不在就别建它**：每轮都抛一次
+            # "集合不存在"，日志会被它刷满，而且白花开销。
+            long_term = await long_term_store_for(context.session, lock=context.db_lock)
 
             service = MemoryService(
                 session=context.session,

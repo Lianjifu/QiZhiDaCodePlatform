@@ -566,6 +566,81 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
                 ["content", "id"],
             ),
         ),
+        # ---------- 知识库（RAG） ----------
+        # rag_search / rag_read 的约定：
+        #
+        # - 只读、幂等；
+        # - **出口是固定的**：检索要打平台自己配的向量化端点，地址不是模型给的，
+        #   所以 egress_target=fixed —— 不按 network 风险拦，否则 balanced 模式下
+        #   每查一次知识库都要人工审批；
+        # - 超时比记忆宽（30 秒）：一次检索可能要连着查好几个集合。
+        BuiltinSpec(
+            key="rag_search",
+            source="app.capabilities.registration.builtin.rag:make_rag_search",
+            display_name="检索知识库",
+            description=(
+                "在 RAG 知识库里检索，返回命中片段的标题、来源与摘要。"
+                "留空 collection 表示搜所有集合（记忆集合除外）。"
+                "知识库里明明有答案时，先查再答，别凭印象编。"
+            ),
+            tags=("知识库", "检索"),
+            permission=PermissionLevel.NONE,
+            risk=RiskLevel.READ,
+            timeout_s=30,
+            annotations=_FIXED,
+            input_schema=_obj(
+                {
+                    "query": {"type": "string", "description": "检索词，用真正想找的东西来搜"},
+                    "collection": {
+                        "type": "string",
+                        "description": "在哪个集合里找；留空 = 搜所有集合",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "返回多少条，默认 5",
+                    },
+                },
+                ["query"],
+            ),
+            output_schema=_obj(
+                {
+                    "content": {"type": "string"},
+                    "query": {"type": "string"},
+                    "collections": {"type": "array", "items": {"type": "string"}},
+                    "items": {"type": "array", "items": {"type": "object"}},
+                },
+                ["content", "items"],
+            ),
+        ),
+        BuiltinSpec(
+            key="rag_read",
+            source="app.capabilities.registration.builtin.rag:make_rag_read",
+            display_name="读知识库文档",
+            description="按 id 取一篇文档的完整正文（rag_search 给的 document_id）。",
+            tags=("知识库", "检索"),
+            permission=PermissionLevel.NONE,
+            risk=RiskLevel.READ,
+            timeout_s=30,
+            annotations=_FIXED,
+            input_schema=_obj(
+                {"document_id": {"type": "integer", "description": "文档 id"}},
+                ["document_id"],
+            ),
+            output_schema=_obj(
+                {
+                    "content": {"type": "string"},
+                    "document_id": {"type": "integer"},
+                    "collection": {"type": "string"},
+                    "title": {"type": "string"},
+                    "source": {"type": "string"},
+                    "format": {"type": "string"},
+                    "meta": {"type": "object"},
+                },
+                ["content", "document_id"],
+            ),
+        ),
         # ---------- 反思 ----------
         # 平台早就把每次调用的轨迹写进了 ``invocation`` 表，但那张表只有人在
         # 管理界面看得见 —— agent 自己查不到。于是它会在同一轮里反复试同一个

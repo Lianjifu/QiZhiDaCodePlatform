@@ -264,17 +264,16 @@ class RetrospectiveService:
 
         写的是**长期**记忆（跨会话）—— 一次任务的经验下次也要能用。
 
-        **长期集合没建好就降级成会话内**（不是丢掉）：集合是用户手工建的，
-        集合名配了但集合不存在是常事 —— 一条改进因为这个丢了才亏。
+        **长期集合没建好就降级成会话内**（不是丢掉）：一条改进因为这个丢了才亏。
         """
+        service = await self._memory_service(record.thread_id or "")
         scopes = [SCOPE_SESSION]
-        if settings.memory_collection_name.strip():
+        if service.long_term_store is not None:
             scopes.insert(0, SCOPE_LONG_TERM)
 
         last_error: Exception | None = None
         for scope in scopes:
             try:
-                service = self._memory_service(record.thread_id or "")
                 async with self.lock:
                     entry = await service.remember(
                         content=proposal["content"],
@@ -469,7 +468,7 @@ class RetrospectiveService:
         if not task.strip():
             return []
         try:
-            service = self._memory_service("")
+            service = await self._memory_service("")
             catalog = await service.recall_catalog(task)
         except Exception as exc:
             logger.debug("复盘召回记忆失败: %s", exc)
@@ -478,13 +477,17 @@ class RetrospectiveService:
         # ``CatalogEntry``（目录行），不是 ``MemoryEntry``（记忆本体）。
         return [str(entry.summary or "")[:160] for entry in catalog.entries]
 
-    def _memory_service(self, thread_id: str) -> MemoryService:
-        """按执行上下文造一个记忆服务（长期记忆要连 RAG 集合）。"""
-        long_term = None
-        if self.session is not None and settings.memory_collection_name.strip():
-            from app.memory.long_term_store import LongTermMemoryStore
+    async def _memory_service(self, thread_id: str) -> MemoryService:
+        """按执行上下文造一个记忆服务（长期记忆要连 RAG 集合）。
 
-            long_term = LongTermMemoryStore(self.session, lock=self.lock)
+        **集合不在就不给长期存储** —— 那样写长期会抛错，而写长期失败会被
+        当成"记忆冲突"一路降级，白白多走一遍。
+        """
+        long_term = None
+        if self.session is not None:
+            from app.memory.long_term_store import long_term_store_for
+
+            long_term = await long_term_store_for(self.session, lock=self.lock)
         return MemoryService(
             session=self.session,
             thread_id=thread_id,

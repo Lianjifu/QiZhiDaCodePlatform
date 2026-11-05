@@ -37,43 +37,40 @@ from app.memory.service import MemoryService
 _SCOPES = (SCOPE_SESSION, SCOPE_LONG_TERM, SCOPE_ALL)
 
 
-def _service(context: ExecutionContext) -> MemoryService:
+async def _service(context: ExecutionContext) -> tuple[MemoryService, bool]:
     """按执行上下文造一个记忆服务。
 
-    长期记忆的存储要连 RAG 集合，所以只在**真的要查长期记忆时**才建 ——
-    没配集合名时，建它就会抛错，而会话内记忆不该被这个连累。
+    顺带告诉调用方**长期记忆现在能不能用** —— 集合不在时降级到会话内，
+    而不是等真写的时候才炸。
+
+    长期记忆的存储要连 RAG 集合，所以只在**集合真的在**时才建 ——
+    没建的时候建它就会抛错，而会话内记忆不该被这个连累。
     """
     long_term = None
-    if context.session is not None and _long_term_configured():
-        from app.memory.long_term_store import LongTermMemoryStore
+    if context.session is not None:
+        from app.memory.long_term_store import long_term_store_for
 
-        long_term = LongTermMemoryStore(context.session, lock=context.db_lock)
-    return MemoryService(
+        long_term = await long_term_store_for(context.session, lock=context.db_lock)
+    service = MemoryService(
         session=context.session,
         thread_id=context.thread_id,
         long_term_store=long_term,
         db_lock=context.db_lock,
     )
+    return service, long_term is not None
 
 
-def _long_term_configured() -> bool:
-    """长期记忆集合配了没有。"""
-    from app.core.config import settings
-
-    return bool(settings.memory_collection_name.strip())
-
-
-def _resolve_scope(context: ExecutionContext, scope: str) -> tuple[str, str]:
+def _resolve_scope(scope: str, long_term_ready: bool) -> tuple[str, str]:
     """实际用哪个 scope，以及要不要跟模型说一声。
 
-    **降级而不是报错**：长期记忆集合没配时，模型写 ``long_term`` 会直接失败 ——
+    **降级而不是报错**：长期记忆集合还没建好时，模型写 ``long_term`` 会直接失败 ——
     而模型失败之后往往不会重试，而是自己找个别的办法记（改写工作区的
     AGENTS.md）。那比记在会话里更糟：既不受预算控制，也不做相关性排序。
 
     所以这里把长期降级成会话内，并把降级的事实回给模型，让它能转告用户。
     """
-    if scope == SCOPE_LONG_TERM and not _long_term_configured():
-        return SCOPE_SESSION, "（长期记忆集合未配置，这条已改记在会话内）"
+    if scope == SCOPE_LONG_TERM and not long_term_ready:
+        return SCOPE_SESSION, "（长期记忆集合还没初始化，这条已改记在会话内）"
     return scope, ""
 
 
@@ -115,10 +112,10 @@ def make_memory_search(context: ExecutionContext) -> Callable[..., Any]:
         """
         if scope not in _SCOPES:
             raise CapabilityError(f"scope 只能是 {_SCOPES} 之一", code=ErrorCode.INVALID_ARGUMENTS)
-        scope, note = _resolve_scope(context, scope)
+        service, long_term_ready = await _service(context)
+        scope, note = _resolve_scope(scope, long_term_ready)
         if scope == SCOPE_SESSION:
             _require_session_scope(context)
-        service = _service(context)
         if scope != SCOPE_ALL:
             service.require_store(scope)
 
@@ -174,7 +171,7 @@ def make_memory_read(context: ExecutionContext) -> Callable[..., Any]:
         Raises:
             CapabilityError: id 不存在。
         """
-        service = _service(context)
+        service, _ = await _service(context)
         entry = await service.read(id)
         if entry is None:
             raise CapabilityError(f"记忆 {id} 不存在", code=ErrorCode.INVALID_ARGUMENTS)
@@ -238,11 +235,10 @@ def make_memory_write(context: ExecutionContext) -> Callable[..., Any]:
             raise CapabilityError(
                 f"kind 只能是 {MEMORY_KINDS} 之一", code=ErrorCode.INVALID_ARGUMENTS
             )
-        scope, note = _resolve_scope(context, scope)
+        service, long_term_ready = await _service(context)
+        scope, note = _resolve_scope(scope, long_term_ready)
         if scope == SCOPE_SESSION:
             _require_session_scope(context)
-
-        service = _service(context)
         entry = await service.remember(
             content=content,
             kind=kind,

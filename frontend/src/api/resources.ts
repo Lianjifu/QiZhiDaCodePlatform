@@ -20,6 +20,7 @@ import type {
   EnvironmentRoots,
   FileList,
   LLMProvider,
+  LongTermStatus,
   MCPServer,
   MCPServerTool,
   PagedList,
@@ -460,4 +461,27 @@ export function getRetrospectiveMetrics(threadId?: string): Promise<Retrospectiv
  */
 export function revertRetrospective(id: number): Promise<RevertResult> {
   return api.post<RevertResult>(`/retrospectives/${id}/revert`)
+}
+
+// ---------- 长期记忆 ----------
+
+/**
+ * 长期记忆现在能不能用。
+ *
+ * **配了集合名不等于能用** —— 名字来自环境变量，集合是数据库里的行。
+ */
+export function getLongTermStatus(): Promise<LongTermStatus> {
+  return api.get<LongTermStatus>('/memory/long-term')
+}
+
+/**
+ * 一键初始化长期记忆：把集合按当前供应商的 embedding 配置建好。
+ *
+ * 幂等 —— 集合已经在就只返回现状，不会重建（重建会把记忆一起没掉）。
+ */
+export function initializeLongTerm(payload?: {
+  embedding_model?: string
+  provider_id?: number | null
+}): Promise<LongTermStatus> {
+  return api.post<LongTermStatus>('/memory/long-term', payload ?? {})
 }

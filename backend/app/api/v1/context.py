@@ -70,11 +70,11 @@ async def _memory_catalog(session: AsyncSession, thread_id: str, query: str) -> 
     """召回记忆目录（预览用）。失败不阻塞预览。"""
     if not query.strip():
         return ""
-    from app.memory.long_term_store import LongTermMemoryStore
+    from app.memory.long_term_store import long_term_store_for
     from app.memory.service import MemoryService
 
     try:
-        long_term = LongTermMemoryStore(session) if settings.memory_collection_name else None
+        long_term = await long_term_store_for(session)
         service = MemoryService(
             session=session,
             thread_id=thread_id,

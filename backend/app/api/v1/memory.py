@@ -13,12 +13,19 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.deps import get_memory_service
+from app.api.deps import DbSession, get_memory_service
 from app.core.exceptions import NotFoundError
-from app.memory.models import SCOPE_SESSION
+from app.memory.models import SCOPE_LONG_TERM, SCOPE_SESSION
 from app.memory.service import MemoryService
+from app.memory.setup import LongTermSetup
 from app.schemas.common import PageMeta, ResponseModel
-from app.schemas.memory import MemoryCatalogOut, MemoryListOut, MemoryOut
+from app.schemas.memory import (
+    LongTermInitRequest,
+    LongTermStatusOut,
+    MemoryCatalogOut,
+    MemoryListOut,
+    MemoryOut,
+)
 
 router = APIRouter(prefix="/memory", tags=["记忆"])
 
@@ -45,7 +52,12 @@ async def list_memories(
         )
     scoped = service.for_thread(thread_id) if thread_id else service
     entries = await scoped.list_all(scope=scope, limit=limit)
+    message = ""
+    if scope == SCOPE_LONG_TERM and service.long_term_store is None:
+        # **集合不在就明说** —— 空列表 + 一句"还没初始化"，比让人猜好。
+        message = "长期记忆集合还没初始化，先调 POST /api/v1/memory/long-term 建好"
     return ResponseModel[MemoryListOut](
+        message=message,
         data=MemoryListOut(
             items=[MemoryOut.model_validate(item.to_dict()) for item in entries],
             meta=PageMeta(total=len(entries), page=1, page_size=limit),
@@ -72,6 +84,49 @@ async def preview_catalog(
             truncated=catalog.truncated,
             entries=[],
         )
+    )
+
+
+@router.get("/long-term", response_model=ResponseModel[LongTermStatusOut], summary="长期记忆状态")
+async def long_term_status(
+    session: DbSession,
+) -> ResponseModel[LongTermStatusOut]:
+    """长期记忆现在能不能用，为什么不能。
+
+    **配了集合名不等于能用** —— 名字来自环境变量，集合是数据库里的行。
+    这个接口把两边的状态一起报出来，顺带报集合的向量化配置与已有多少条记忆。
+    """
+    status = await LongTermSetup(session).status()
+    return ResponseModel[LongTermStatusOut](data=LongTermStatusOut.model_validate(status))
+
+
+@router.post(
+    "/long-term",
+    response_model=ResponseModel[LongTermStatusOut],
+    summary="初始化长期记忆",
+)
+async def initialize_long_term(
+    payload: LongTermInitRequest,
+    session: DbSession,
+) -> ResponseModel[LongTermStatusOut]:
+    """把长期记忆的集合建好 —— 长期记忆一键初始化。
+
+    集合的向量化配置是**建的时候锁死**的，所以这一步会按当前供应商的
+    embedding 配置建好（模型名写错、密钥不对、端点不通，在这里就报出来）。
+
+    幂等：集合已经在就只返回现状，**不会重建** —— 重建会把里面的记忆一起
+    没掉。
+
+    ⚠️ **当前没有鉴权**（见模块说明）：能调到这个接口的人就能建集合、
+    改变平台的长期记忆落点。
+    """
+    status, created = await LongTermSetup(session).initialize(
+        embedding_model=payload.embedding_model,
+        provider_id=payload.provider_id,
+    )
+    return ResponseModel[LongTermStatusOut](
+        message="长期记忆已就绪" if created else "长期记忆集合已经存在",
+        data=LongTermStatusOut.model_validate(status),
     )
 
 

@@ -44,3 +44,34 @@ class MemoryCatalogOut(BaseModel):
     total_found: int = Field(default=0, description="一共找到多少条")
     truncated: bool = Field(default=False, description="是不是因为预算被截断了")
     entries: list[MemoryOut] = Field(default_factory=list)
+
+
+class LongTermInitRequest(BaseModel):
+    """初始化长期记忆集合。"""
+
+    embedding_model: str = Field(
+        default="", max_length=128, description="向量化模型名；留空 = 自动找（默认供应商优先）"
+    )
+    provider_id: int | None = Field(
+        default=None, description="用哪条模型接入配置发向量化请求；留空 = 跟着模型名一起找"
+    )
+
+
+class LongTermStatusOut(BaseModel):
+    """长期记忆的状态。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    ready: bool = Field(default=False, description="能不能用")
+    collection_name: str = Field(default="", description="集合名")
+    collection_id: int | None = Field(default=None, description="集合 id")
+    embedding_model: str = Field(default="", description="集合上的向量化模型；空 = 只有关键词索引")
+    embedding_dim: int = Field(default=0, description="向量维度")
+    keyword_only: bool = Field(default=False, description="是不是只有关键词索引")
+    doc_count: int = Field(default=0, description="集合里已有多少篇文档（= 多少条记忆）")
+    reason: str = Field(
+        default="",
+        description="没就绪的原因：not_configured（没配集合名）/ collection_missing（集合不存在）",
+    )
+    hint: str = Field(default="", description="给人看的下一步")
+    provider_name: str = Field(default="", description="初始化时用的供应商配置名")

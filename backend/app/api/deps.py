@@ -68,19 +68,22 @@ def get_rag_service(session: DbSession) -> RagService:
     return RagService(session)
 
 
-def get_memory_service(session: DbSession) -> MemoryService:
+async def get_memory_service(session: DbSession) -> MemoryService:
     """构造记忆服务实例。
 
     跟 RAG 一样，记忆的领域服务直接用（``app/memory/service.py``），不另起
     一层 ``app/services`` 包装 —— 那层只是转发。
+
+    **长期存储只在集合真的在时才挂上** —— 集合不在时管理接口看到的是空列表，
+    而不是一串"集合不存在"的报错。
     """
-    from app.memory.long_term_store import LongTermMemoryStore
+    from app.memory.long_term_store import long_term_store_for
     from app.memory.service import MemoryService
 
     return MemoryService(
         session=session,
         thread_id="",
-        long_term_store=LongTermMemoryStore(session),
+        long_term_store=await long_term_store_for(session),
     )
 
 

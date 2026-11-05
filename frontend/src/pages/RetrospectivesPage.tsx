@@ -15,7 +15,9 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import {
+  getLongTermStatus,
   getRetrospectiveMetrics,
+  initializeLongTerm,
   listRetrospectives,
   revertRetrospective,
 } from '../api/resources'
@@ -27,6 +29,7 @@ import EmptyState from '../components/ui/EmptyState'
 import Modal from '../components/ui/Modal'
 import PageHeader from '../components/ui/PageHeader'
 import { useConfirm } from '../components/ui/useConfirm'
+import LongTermMemoryCard from '../features/autonomy/LongTermMemoryCard'
 import {
   carrierLabel,
   recurrenceText,
@@ -34,7 +37,7 @@ import {
   statusLabel,
   statusTone,
 } from '../features/autonomy/labels'
-import type { Retrospective, RetrospectiveMetrics } from '../types/api'
+import type { LongTermStatus, Retrospective, RetrospectiveMetrics } from '../types/api'
 
 export default function RetrospectivesPage() {
   const { confirm, dialog: confirmDialog } = useConfirm()
@@ -43,22 +46,27 @@ export default function RetrospectivesPage() {
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
   const [viewing, setViewing] = useState<Retrospective | null>(null)
+  const [longTerm, setLongTerm] = useState<LongTermStatus | null>(null)
+  const [initializing, setInitializing] = useState(false)
 
   /** 读数据。分开写是为了让 effect 里的 setState 落在 then 里（同步调用会被 lint 判成级联渲染）。 */
   const load = useCallback(async () => {
-    const [page, metric] = await Promise.all([
+    const [page, metric, memory] = await Promise.all([
       listRetrospectives({ page_size: 100 }),
       getRetrospectiveMetrics(),
+      getLongTermStatus(),
     ])
-    return { page, metric }
+    return { page, metric, memory }
   }, [])
 
   const apply = (data: {
     page: Awaited<ReturnType<typeof listRetrospectives>>
     metric: Awaited<ReturnType<typeof getRetrospectiveMetrics>>
+    memory: Awaited<ReturnType<typeof getLongTermStatus>>
   }) => {
     setRows(data.page.items)
     setMetrics(data.metric)
+    setLongTerm(data.memory)
     setError('')
   }
 
@@ -173,6 +181,25 @@ export default function RetrospectivesPage() {
           有 {blocked} 条改进被范围守卫拦下了 —— 那些想改权限与审批的建议一律不应用。
         </Banner>
       ) : null}
+
+      <LongTermMemoryCard
+        status={longTerm}
+        initializing={initializing}
+        onInitialize={() => {
+          void (async () => {
+            setInitializing(true)
+            try {
+              const status = await initializeLongTerm()
+              setLongTerm(status)
+              setNote('长期记忆已经就绪')
+            } catch (cause) {
+              setError(cause instanceof Error ? cause.message : String(cause))
+            } finally {
+              setInitializing(false)
+            }
+          })()
+        }}
+      />
 
       <div className="mt-4 overflow-hidden rounded-xl border border-line bg-raised shadow-1">
         <DataTable

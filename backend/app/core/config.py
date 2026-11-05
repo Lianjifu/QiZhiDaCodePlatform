@@ -213,13 +213,16 @@ class Settings(BaseSettings):
     context_max_skills_in_prompt: int = 20
 
     # ---- 记忆模块 ----
-    # 长期记忆用的 RAG 集合名；留空 = 只支持会话内记忆
+    # 长期记忆用的 RAG 集合名。
     #
-    # **平台不自动建这个集合** —— RAG 集合的向量化配置（模型 + 维度）是建集合时
-    # 锁死的，建错了只能重建。平台替用户建一个没配 embedding 的集合，等于把
-    # 用户锁死在"纯关键词检索"上。要用长期记忆，先在 RAG 界面建好集合、选好
-    # embedding 模型，再把集合名配到这里。
-    memory_collection_name: str = ""
+    # **默认就是平台约定的名字** —— 集合本身由「一键初始化」建
+    # （``POST /api/v1/memory/long-term``，按当前供应商的 embedding 配置建好），
+    # 所以新部署不用改任何环境变量就能把长期记忆打开。要换名字设
+    # ``MEMORY_COLLECTION_NAME`` 即可。
+    #
+    # 注意：**配了名字不等于能用** —— 名字是环境变量，集合是数据库里的行。
+    # 长期记忆的每个入口都要先确认集合真的在（``LongTermMemoryStore.available()``）。
+    memory_collection_name: str = "agent-memory"
     # 是否每轮自动把记忆目录注入上下文
     memory_catalog_enabled: bool = True
     # 目录块的字符预算（每轮都付这笔钱，所以要小）

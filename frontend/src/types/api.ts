@@ -550,3 +550,24 @@ export interface RevertResult {
   reverted: boolean
   message: string
 }
+
+/**
+ * 长期记忆的状态（后端 `LongTermStatusOut`）。
+ *
+ * **配了集合名不等于能用** —— 名字来自环境变量，集合是数据库里的行。
+ * 长期记忆的改进落点全看这个状态。
+ */
+export interface LongTermStatus {
+  ready: boolean
+  collection_name: string
+  collection_id?: number | null
+  embedding_model: string
+  embedding_dim: number
+  keyword_only: boolean
+  doc_count: number
+  /** 没就绪的原因：not_configured / collection_missing */
+  reason: string
+  /** 给人的一句可操作的话 */
+  hint: string
+  provider_name: string
+}
