@@ -613,6 +613,67 @@ async def test_撤销会删掉那条记忆(session):
     assert result.status == STATUS_REVERTED
 
 
+async def test_撤销会删掉落在长期记忆里的那条改进(session, monkeypatch):
+    """**长期记忆的改进也必须能撤** —— 撤销是免审批的兜底，撤不掉等于没有。
+
+    复盘写的是**长期**记忆（跨会话），所以 ``target_id`` 带 ``l:`` 前缀。
+    撤销走的是另一条路（``_revert_memory``），它自己造记忆服务 ——
+    那里必须把长期存储接上，否则 ``forget_any`` 看到 ``l:`` 前缀却没有
+    长期存储，直接返回 False，撤销报"目标已经不在了"。
+    """
+    from dataclasses import dataclass
+
+    from app.memory.long_term_store import LongTermMemoryStore
+    from app.rag.service import RagService
+
+    @dataclass
+    class _Payload:
+        name: str
+        description: str = ""
+        scope: str = "private"
+        embedding_model: str = ""
+        provider_id: int | None = None
+        chunk_size: int = 1000
+        chunk_overlap: int = 150
+        meta: dict = None  # type: ignore[assignment]
+
+    await RagService(session).create_collection(_Payload(name="mem-revert-test"))
+
+    # 让复盘的长期存储指向刚建的集合
+    store = LongTermMemoryStore(session, "mem-revert-test")
+    monkeypatch.setattr(
+        "app.memory.long_term_store.long_term_store_for",
+        _async_return(store),
+    )
+
+    session.add(_failure())
+    await session.commit()
+    service = RetrospectiveService(session)
+    result = await service.run(
+        thread_id="t1", task="做点事", model=FakeModel(reply=_proposal())
+    )
+    assert result is not None
+    assert result.status == STATUS_APPLIED
+    assert result.target_id.startswith("l:"), "复盘写的应该是长期记忆"
+
+    reverted, message = await service.revert(result.id)
+    assert reverted is True, message
+
+    assert not await store.list_all(), "撤销之后那条长期记忆应该没了"
+
+    await session.refresh(result)
+    assert result.status == STATUS_REVERTED
+
+
+def _async_return(value: Any):
+    """造一个"await 一下就返回固定值"的协程。"""
+
+    async def _inner(*args: Any, **kwargs: Any) -> Any:
+        return value
+
+    return _inner
+
+
 async def test_撤销会把技能那段删回去(session):
     from app.schemas.skill import SkillCreate
     from app.services.skill import SkillService

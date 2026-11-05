@@ -261,6 +261,18 @@ return exit_code_of(record) not in (None, 0)
 > 撤销技能那段有个保护：`appended_block`（追加进 `knowledge` 的那段原文）不在当前
 > `knowledge` 里了就不撤 —— 别人后来改过这一段，硬删会伤到别人的内容。
 
+**撤销记忆必须走 `_memory_service()`**（`services/retrospective.py`），不能自己造
+一个 `MemoryService`。`forget_any` 按 id 前缀判 scope（`l:` → 长期），长期存储没接上
+就直接返回 False —— 撤销报"目标已经不在了"，可它明明在。
+
+这条不是设想：**2026-11-05 实测发现的**。当时 `_revert_memory` 自己造服务、没传
+`long_term_store`，于是**长期记忆那层的撤销在生产里是坏的** —— 而复盘默认就写长期
+（`_apply_memory` 把 `SCOPE_LONG_TERM` 排在 `SCOPE_SESSION` 前面），所以坏的正是
+最常走的那条路。会话内的改进（`s:` 前缀）撤销正常 —— 旧测试覆盖的只有这一条，
+所以这个洞在测试里看不见。
+
+回归测试：`tests/test_autonomy.py::test_撤销会删掉落在长期记忆里的那条改进`。
+
 ### 3.10 落地的三个细节
 
 **记忆**：优先写**长期**（跨会话）—— 一次任务的经验下次也要能用。长期集合没建好就
@@ -354,50 +366,53 @@ return exit_code_of(record) not in (None, 0)
 
 agent 能自动改自己的提示词、技能与记忆，**没有事前把关**。
 
-平台无鉴权 ⇒ **任何人能读全部复盘记录、能撤销别人的改进**，也**能写一条越界的技能
-知识**（技能的工具集复盘碰不到，但知识能写 —— `PUT /api/v1/skills/{id}` 能改
-`knowledge`，而且 `SkillUpdate` 里就有 `tool_ids` 字段）。
+平台无鉴权 ⇒ **任何人能读全部复盘记录、能撤销别人的改进**，也**能绕过复盘直接写技能**
+—— `PUT /api/v1/skills/{id}` 的 `SkillUpdate` 里有 `knowledge` **和 `tool_ids`
+两个字段**（`update_skill` 收到 `tool_ids` 就会 `replace_tools`）。
+
+所以"复盘碰不到技能的工具集"这条边界**只对复盘自己成立**：复盘写技能时只传
+`knowledge`；但任何人绕过复盘直接调技能接口，是能改工具集的。
 
 复盘的改进也不该被当成可信输入 —— 它是模型自己的推断。平台不验证改进是不是对的
 （用户可事后撤销）。
 
 范围守卫拦的是"规则文本里提到审批 / 权限" —— 若模型产出一条"把权限模式设成 bypass"
 的规则，它会被守卫拒掉并记录。**换句话说：复盘不能成为提权的路径，但既有的那条路
-仍然在**（平台无鉴权 + 同机 API + bypass 模式 —— `execute` 能跑 curl 打自己的 API；
-`auto` 模式下 execute 要人批所以那条路被审批挡着，bypass 模式下没有；`web_fetch`
-走不到那儿，SSRF 参数级规则拦了 localhost）。
+仍然在**（平台无鉴权 + 同机 API + bypass 模式）。
 
-### 4.2 长期记忆的改进撤不掉
+那条既有路径的细节（实测过，别照抄直觉）：
 
-**复盘写进长期记忆的改进，撤销会失败** —— 接口返回"撤销失败：目标已经不在了"，
-那条记忆留在库里。
+- **`execute` 走不到宿主 API** —— 它在 docker 沙箱容器里跑，容器是
+  `--network none`（`sandbox_backend.py`）。实测容器内连宿主 `127.0.0.1` 与
+  `host.docker.internal` 都连不上。所以"`execute` 能跑 curl 打自己的 API"是错的。
+- **`web_fetch` 才走得到** —— 它用平台进程里的 `httpx` 直接发请求，不经沙箱。
+  它的 URL 会过参数级 SSRF 规则：指向内网 → 风险顶到 `destructive`、
+  `require_admin=True`。但**bypass 分支在 `require_admin` 检查之前就返回
+  `approved`**（`policy.py::approval_decision`），中间件的 bypass 分支也只记
+  warning 不挂起 —— 于是 **bypass 模式下 `web_fetch` 打平台自己的 API 会真的执行**。
+  `auto` 模式下它 `pending`，被审批挡着。
+- 进 bypass 的口子：`POST /api/v1/agent/{thread_id}/permission` 没有鉴权，
+  知道 `thread_id` 就能把会话设成 bypass —— 但还要过进程级总闸
+  `capability_allow_bypass`（**默认关**）。
 
-原因：`RetrospectiveService._revert_memory` 造 `MemoryService` 时**没有传
-`long_term_store`**。于是 `forget_any` 按 id 前缀判断 scope（`l:` → 长期），
-但那个服务实例的长期存储是 `None` → 直接返回 False。
+`run_python` 跟 `execute` 一样在沙箱里（断网），走不到宿主。
 
-会话内的改进（`s:` 前缀）撤销正常 —— 现有回归测试覆盖的就是这条。
-
-影响面：长期记忆集合建好之后（也就是正常状态），复盘改进**默认**走长期
-（`_apply_memory` 把 `SCOPE_LONG_TERM` 插在 `SCOPE_SESSION` 前面），
-于是**这一层的撤销在生产里是坏的**。免审批的三道闸，第三道在长期记忆这层漏了。
-
-### 4.3 技能追加上限（8000 字）触发时不追加
+### 4.2 技能追加上限（8000 字）触发时不追加
 
 装不下就**不追加**（`status=rejected, reject_reason=limit`）—— 那条改进就没落下来，
 只留在 `retrospective` 表里（人看得见，但 agent 的技能里没有）。
 
-### 4.4 `prompt_rule` 块被上下文预算挤掉时规则不生效
+### 4.3 `prompt_rule` 块被上下文预算挤掉时规则不生效
 
 优先级 22、`overflow=DROP` —— 装不下就整块丢。那一轮规则不生效。
 （丢块时会记 warning —— 但那是装配器的通用提示，不是专门给规则这一块的。）
 
-### 4.5 记忆层写长期失败会降级成会话内
+### 4.4 记忆层写长期失败会降级成会话内
 
 用户以为记下了长期，其实是临时的。`retrospective` 表里 `target_id` 的前缀能看出来
 （`s:` = 会话内，`l:` = 长期），但界面上不显眼。
 
-### 4.6 后台复盘任务若进程重启就丢
+### 4.5 后台复盘任务若进程重启就丢
 
 `asyncio.create_task`，无持久化队列。进程重启 → 排上但没跑完的复盘任务消失。
 
@@ -406,7 +421,7 @@ agent 能自动改自己的提示词、技能与记忆，**没有事前把关**�
 也不会被释放 —— `release_failures` 只在 `except` 分支里跑，进程死了就没了。
 没有清理 `running` 状态的逻辑。）
 
-### 4.7 改进质量取决于模型判断
+### 4.6 改进质量取决于模型判断
 
 平台不验证改进是不是对的。"这次失败的原因是路径带空格没加引号"这类根因判断，
 是模型说的，不是平台查出来的。用户可事后撤销。
@@ -414,19 +429,19 @@ agent 能自动改自己的提示词、技能与记忆，**没有事前把关**�
 `has_insight=false` 也可能是模型偷懒 —— 复盘没产出改进，与"确实没有可改进的"
 在数据上长得一样（`status=no_insight`）。
 
-### 4.8 没有"预览这条改进会变成什么"的接口
+### 4.7 没有"预览这条改进会变成什么"的接口
 
 复盘记录的查看只有列表、度量、详情、撤销四个接口。看不到"这条改进如果应用了，
 agent 的技能里会多出哪段文字"—— 只能看 `content`（改进正文）与 `appended_block`
 （追加进技能的那段原文，在复盘详情里）。
 
-### 4.9 冷却期是按会话算的，跨会话的失败不会被复盘
+### 4.8 冷却期是按会话算的，跨会话的失败不会被复盘
 
 `list_uncovered_failures` 与 `_in_cooldown` 都按 `thread_id` 过滤。同一类失败在
 另一个会话里重演，那边会自己复盘一遍 —— 两边的改进可能重复记（记忆层有冲突检测，
 技能与提示词层没有）。
 
-### 4.10 复发率统计有口径偏差
+### 4.9 复发率统计有口径偏差
 
 `count_failures_for_capabilities` 在 SQL 里按 `Invocation.status.in_(FAILURE_STATUSES)`
 筛，**没有走 `is_failure`** —— 所以"退出码非零"的那类失败（代码 agent 最常见的那种）

@@ -540,12 +540,16 @@ class RetrospectiveService:
         return False, "撤销失败：目标已经不在了"
 
     async def _revert_memory(self, record: Retrospective) -> bool:
-        """删掉那条记忆。"""
-        from app.memory.service import MemoryService
+        """删掉那条记忆。
 
+        **必须用 ``_memory_service()``** —— 它把长期存储接上了。复盘写的
+        是长期记忆（``target_id`` 带 ``l:`` 前缀），而 ``forget_any`` 看到
+        ``l:`` 前缀却没接长期存储就直接返回 False —— 撤销会报"目标已经不在了"，
+        可它明明在。这是撤销那道闸的一个洞：改不掉的改进就撤不掉。
+        """
         if not record.target_id:
             return False
-        service = MemoryService(session=self.session, thread_id=record.thread_id or "")
+        service = await self._memory_service(record.thread_id or "")
         async with self.lock:
             return await service.forget_any(record.target_id)
 
