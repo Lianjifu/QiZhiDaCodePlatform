@@ -124,8 +124,6 @@ def get_chat_model() -> BaseChatModel:
 
     # 厂商名来自环境变量。国产模型要写 `openai`（配 base_url 指到厂商），
     # 写 `deepseek` 会去找没装的 langchain-deepseek 包。
-    # 厂商名来自环境变量。国产模型要写 `openai`（配 base_url 指到厂商），
-    # 找不到就装 langchain-deepseek 包。
     identity = "env:" + "|".join(
         [
             settings.llm_provider,
