@@ -231,6 +231,24 @@ class Settings(BaseSettings):
     # 时间衰减半衰期（天）。只影响排序微调，不影响召回资格
     memory_decay_half_life_days: int = 30
 
+    # ---------- 自主进化（复盘） ----------
+    #
+    # 复盘是**免审批**的：agent 自己改自己的记忆、技能与提示词规则。
+    # 唯一的机械闸是「范围守卫」（app/agents/autonomy.py）——
+    # 想改审批 / 权限 / 沙箱那一层的建议一律不应用。
+    #
+    # 这个总闸是给「不想让它自己改」的人留的。
+    autonomy_enabled: bool = True
+    # 同一个会话两次复盘的最小间隔（秒）。
+    # 防的是"一次连着失败十次就复盘十次"—— 那是同一件事，一次就够。
+    autonomy_cooldown_seconds: int = 300
+    # 只看这么长时间内的失败（秒）。
+    # 更早的失败多半是老账，翻出来只会让复盘跑题。
+    autonomy_lookback_seconds: int = 3600
+    # 复盘用哪个模型。留空 = 用主模型（犯错的同一个模型来复盘）。
+    # 想省钱就填一个便宜模型名。
+    autonomy_model: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

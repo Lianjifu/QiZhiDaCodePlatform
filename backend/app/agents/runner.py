@@ -38,6 +38,7 @@ does not match number of hanging tool calls (2)"，整轮直接失败。
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -238,7 +239,9 @@ class AgentRunner:
             {"messages": _input_messages(message, blocks)},
             config=self._config(thread_id),
         )
-        return await self._result_from(result, built.skills, thread_id, built.context, specs)
+        return await self._result_from(
+            result, built.skills, thread_id, built.context, specs, task=message
+        )
 
     async def history(
         self,
@@ -354,7 +357,9 @@ class AgentRunner:
             Command(resume=resume_value),
             config=self._config(thread_id),
         )
-        return await self._result_from(result, built.skills, thread_id, built.context, specs)
+        return await self._result_from(
+            result, built.skills, thread_id, built.context, specs, task=query
+        )
 
     async def _result_from(
         self,
@@ -363,6 +368,8 @@ class AgentRunner:
         thread_id: str,
         context: ExecutionContext | None,
         specs: list[CapabilitySpec] | None = None,
+        *,
+        task: str = "",
     ) -> AgentRunResult:
         """把图的结果整理成 ``AgentRunResult``。
 
@@ -394,6 +401,11 @@ class AgentRunner:
         await _attach_summaries(tool_calls, context, thread_id)
         final = turn_messages[-1] if turn_messages else None
         content = final.content if isinstance(final, AIMessage) else ""
+        # **这一轮跑完了** —— 若这轮有失败，排一次复盘（后台，不阻塞这一轮）。
+        #
+        # 挂起审批的那条路**不排** —— 那一轮还没结束（用户批完还要 resume
+        # 接着跑），那时候排就重复计一次。
+        self._schedule_retrospective(thread_id, task)
         return AgentRunResult(
             thread_id=thread_id,
             content=content if isinstance(content, str) else str(content),
@@ -401,6 +413,27 @@ class AgentRunner:
             tool_calls=tool_calls,
             skills=[skill.key for skill in skills],
         )
+
+    def _schedule_retrospective(self, thread_id: str, task: str) -> None:
+        """排一次复盘（后台跑，不拖慢这一轮）。
+
+        **绝大多数轮次什么都不会发生** —— 没失败就没有复盘，零成本。
+
+        复盘自己开数据库会话：触发它的这个 HTTP 请求的 session 随后就关了。
+        """
+        if not settings.autonomy_enabled:
+            return
+        # **延迟导入** —— 服务层反过来依赖 agent 层的话，顶层导入容易成环
+        from app.services.retrospective import run_retrospective_in_background
+
+        try:
+            asyncio.create_task(
+                run_retrospective_in_background(thread_id, task, self._resolve_model())
+            )
+        except RuntimeError:  # pragma: no cover - 没有运行中的事件循环
+            logger.debug("排不进复盘任务，跳过")
+        except Exception as exc:  # pragma: no cover - 排任务失败不该影响这一轮
+            logger.warning("排复盘任务失败: %s", exc)
 
     async def stream(
         self,
@@ -480,6 +513,8 @@ class AgentRunner:
             yield AgentStreamChunk(type="pending_approval", pending=pending)
             yield AgentStreamChunk(type="done", status=STATUS_PENDING_APPROVAL)
         else:
+            # 这一轮真跑完了 —— 若这轮有失败，排一次复盘（后台）
+            self._schedule_retrospective(thread_id, message)
             yield AgentStreamChunk(type="done", status=STATUS_COMPLETED)
 
     async def regenerate(

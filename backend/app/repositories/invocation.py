@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import Integer, func, select
 
-from app.models.invocation import Invocation
+from app.models.invocation import FAILURE_STATUSES, Invocation
 from app.repositories.base import BaseRepository
 
 # 幂等去重窗口：只在这么短时间内认为"是同一次调用的重放"。
@@ -152,6 +152,44 @@ class InvocationRepository(BaseRepository[Invocation]):
             stmt = stmt.where(Invocation.capability_key == capability_key)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def count_failures_for_capabilities(
+        self,
+        thread_id: str,
+        capability_keys: list[str],
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> int:
+        """这些能力在某个时间窗里失败了几次。
+
+        给"改进有没有用"算复发率用：同一批能力，在改进**之前**失败过几次、
+        在改进**之后**又失败过几次 —— 后者比前者少，才说明改进起作用了。
+
+        Args:
+            thread_id: 会话 ID。
+            capability_keys: 关注哪些能力。
+            since: 只算这个时间之后的（不含）。
+            until: 只算这个时间之前的（不含）。
+
+        Returns:
+            失败次数。
+        """
+        if not capability_keys:
+            return 0
+        stmt = (
+            select(func.count())
+            .select_from(Invocation)
+            .where(Invocation.thread_id == thread_id)
+            .where(Invocation.capability_key.in_(capability_keys))
+            .where(Invocation.status.in_(FAILURE_STATUSES))
+        )
+        if since is not None:
+            stmt = stmt.where(Invocation.created_at > since)
+        if until is not None:
+            stmt = stmt.where(Invocation.created_at <= until)
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one())
 
     async def sum_changes(self, thread_id: str | None) -> tuple[int, int]:
         """这个会话的改动量合计（新增行数, 删除行数）。

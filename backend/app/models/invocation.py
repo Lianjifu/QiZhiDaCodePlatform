@@ -83,6 +83,14 @@ class Invocation(Base):
     status: Mapped[str] = mapped_column(
         String(16), default=STATUS_PENDING, index=True, nullable=False
     )
+    # **哪次复盘覆盖了这条** —— 失败被复盘过之后，这里指向那一次。
+    #
+    # 为什么要有这一列：复盘要知道自己看过哪些失败（没复盘过的才该复盘），
+    # 而「这条失败有没有在改进之后又发生」是衡量改进有没有用的依据。
+    #
+    # **不加外键** —— ``retrospective`` 与 ``invocation`` 互相引用会成环，
+    # 删表顺序就没法定。这里只存 id，删复盘时把它置空即可。
+    retrospective_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     # 评估后的风险等级与权限要求
     risk: Mapped[str] = mapped_column(String(16), default="read", nullable=False)
     permission: Mapped[str] = mapped_column(String(16), default="none", nullable=False)

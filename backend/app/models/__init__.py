@@ -5,6 +5,8 @@ from app.models.invocation import Invocation
 from app.models.llm_provider import LLMProvider
 from app.models.mcp_server import MCPServer
 from app.models.memory import MemoryItem
+from app.models.prompt_rule import PromptRule
+from app.models.retrospective import Retrospective
 from app.models.skill import Skill
 from app.models.skill_tool import SkillTool
 from app.models.tool import Tool
@@ -19,9 +21,11 @@ __all__ = [
     "LLMProvider",
     "MemoryItem",
     "MCPServer",
+    "PromptRule",
     "RagChunk",
     "RagCollection",
     "RagDocument",
+    "Retrospective",
     "Skill",
     "SkillTool",
     "Tool",
