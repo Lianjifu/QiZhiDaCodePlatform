@@ -323,9 +323,9 @@ async def test_压缩会把历史外置成文件(tmp_path):
 async def test_外置的历史不进用户的工作区(tmp_path):
     """产物目录必须在工作区**外面** —— 否则对话历史会落进用户的仓库。
 
-    deepAgents 算 ``artifacts_root`` 用 ``isinstance(backend, CompositeBackend)``，
-    而我们传的 ``PlatformBackend`` 只是**包着** CompositeBackend（不是子类），
-    判定为 False 就退化成 ``"/"`` —— 那正落在工作区里。
+    deepAgents 算 ``artifacts_root`` 用 ``isinstance(backend, CompositeBackend)``。
+    我们的 ``PlatformBackend`` 是它的子类，所以判定为真，落点是
+    ``/.artifacts/``（工作区外面）。
     """
     workspace = tmp_path / "ws"
     workspace.mkdir()

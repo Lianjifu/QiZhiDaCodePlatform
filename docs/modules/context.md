@@ -305,7 +305,7 @@ required..."），整个 agent 起不来。
 
 | 不变量 | 改错了会怎样 |
 | --- | --- |
-| **`artifacts_root` 指到工作区外面，且必须显式修正**（`_fix_artifacts_root`） | deepAgents 用 `isinstance(backend, CompositeBackend)` 判定，我们的 `PlatformBackend` 只是包着它，判定为 False，产物目录退化成 `"/"` —— 被压缩掉的对话历史（含用户说过的话、agent 读到的代码）落进用户的工作区，可能被 `git commit` 一起提交上去 |
+| **`artifacts_root` 指到工作区外面**（`PlatformBackend` 继承 `CompositeBackend`，`_fix_artifacts_root` 兜底） | deepAgents 用 `isinstance(backend, CompositeBackend)` 判定 —— 只**包着**它就判定为 False，产物目录退化成 `"/"` —— 被压缩掉的对话历史（含用户说过的话、agent 读到的代码）落进用户的工作区，可能被 `git commit` 一起提交上去 |
 | 压缩中间件的 `name` 必须与框架默认一致（`"SummarizationMiddleware"`） | deepAgents 按 name 替换默认项，名字对不上就变成"多挂了一个"，两份摘要中间件同时跑。升级 deepAgents 时这条会**静默失效** |
 | 必须继承 **deepAgents 版**，不能继承 LangChain 版 | LangChain 版的 `__init__` 只认 `max_tokens_before_summary` / `messages_to_keep`，我们传的 `backend=` 被 `**deprecated_kwargs` **静默吞掉** —— 历史外置整个失效，压缩之后原始对话彻底没了，且无法回查 |
 | `trim_tokens_to_summarize=None` | 框架默认只送最后 4000 token 进摘要，更早的那部分**既不进摘要也不被保留**，直接消失（实测 120 条消息里索引 0~67 的内容就这么没了） |

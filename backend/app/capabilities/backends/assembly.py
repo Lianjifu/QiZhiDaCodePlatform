@@ -17,7 +17,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 
 from app.capabilities.backends.platform_backend import PlatformBackend
@@ -51,8 +50,8 @@ def build_backend(context: ExecutionContext, skills_dir: Path | None = None) -> 
     Returns:
         组装好的后端：文件操作本地、命令执行进沙箱。
 
-    外面包了一层 ``PlatformBackend`` —— 用来补 ``ls("/")`` 看不到子路由的
-    问题（见 ``platform_backend.py``）。
+    ``PlatformBackend`` 是 ``CompositeBackend`` 的子类 —— 补上 ``ls("/")``
+    看不到子路由的问题（见 ``platform_backend.py``）。
 
     沙箱不可用时（没有 docker）不静默降级 —— 宁可让 agent 直接失败，
     也不要让它在没有隔离的环境里执行命令。调用方（agent 组装）负责处理这个
@@ -86,14 +85,12 @@ def build_backend(context: ExecutionContext, skills_dir: Path | None = None) -> 
     routes[ARTIFACTS_ROUTE] = FilesystemBackend(
         root_dir=_artifacts_dir(context), virtual_mode=True
     )
-    # 包一层：补上 `ls("/")` 看不到子路由的问题（见 platform_backend.py）
+    # ``PlatformBackend`` 是 ``CompositeBackend`` 的子类（不是包一层）——
+    # 框架用 isinstance 判定产物目录的落点，包一层就判定不到。
     return PlatformBackend(
-        CompositeBackend(
-            default=default,
-            routes=routes,
-            artifacts_root=_artifacts_root(context),
-        ),
+        default=default,
         routes=routes,
+        artifacts_root=_artifacts_root(context),
     )
 
 

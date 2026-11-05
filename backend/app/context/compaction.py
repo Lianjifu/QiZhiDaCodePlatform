@@ -222,12 +222,13 @@ class PlatformSummarizationMiddleware(DeepAgentsSummarizationMiddleware):
         """把历史外置的落点指回**产物目录**（工作区外面）。
 
         deepAgents 算 ``artifacts_root`` 用的是 ``isinstance(backend, CompositeBackend)``
-        —— 而我们传给它的 ``PlatformBackend`` **只是包着** CompositeBackend，
-        不是它的子类，于是判定为 False，产物目录退化成 ``"/"``。
+        —— 我们传的 ``PlatformBackend`` **是** CompositeBackend 的子类，所以
+        框架自己算出来的就是 ``/.artifacts/``。
 
-        那个 ``"/"`` 落在**用户的工作区**里 —— 也就是被压缩掉的对话历史
-        （含用户说过的话、agent 读到的代码）会明晃晃地落进用户的仓库，
-        可能被 ``git commit`` 一起提交上去。
+        这段是**兜底**：万一框架换了判定方式（比如改成 duck typing），落点会
+        悄悄退化成 ``"/"`` —— 而 ``"/"`` 落在**用户的工作区**里，也就是被
+        压缩掉的对话历史（含用户说过的话、agent 读到的代码）会明晃晃地落进
+        用户的仓库，可能被 ``git commit`` 一起提交上去。
 
         所以这里显式把它指回 ``PlatformBackend.artifacts_root``（那是
         ``/.artifacts/``，挂在工作区外面）。

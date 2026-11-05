@@ -19,7 +19,10 @@ result = self.execute(_build_read_cmd(file_path, offset, limit))
 所以文件操作一律交给宿主侧的 ``FilesystemBackend``（见 ``assembly.py`` 的
 route ``"/"``）：快（不用每次起容器），而且路径天然就是虚拟路径。
 
-**本类覆写了全部文件方法，让误用立刻炸出来**，而不是静默返回"文件不存在"。
+**本类覆写了全部文件方法**：改单个文件的操作（读 / 写 / 改 / 删）让误用立刻
+炸出来，而不是静默返回"文件不存在"；**查找类**（列目录 / glob / grep）返回
+**空结果** —— 容器里的文件树不是平台的文件树（工作区挂在 ``/workspace``，
+平台的读写用宿主后端），把容器的系统文件当成工作区内容返回才是错的。
 
 隔离参数原样保留（``--network none`` / ``--cap-drop ALL`` / 限内存限进程），
 只挂载会话工作区 —— 这是 deepAgents 自带的 ``LocalShellBackend`` 给不了的
@@ -141,8 +144,10 @@ def _container_gone(completed: subprocess.CompletedProcess[str]) -> bool:
 class DockerSandbox(BaseSandbox):
     """在 docker 容器里执行命令的后端。
 
-    **只提供 execute** —— 文件操作由宿主侧的 ``FilesystemBackend`` 负责
-    （原因见模块说明）。基类的文件方法被覆写成报错，误用会立刻炸出来。
+    **只提供 execute** —— 改单个文件的操作（读 / 写 / 改 / 删）由宿主侧的
+    ``FilesystemBackend`` 负责（原因见模块说明），误用会立刻炸出来；
+    查找类（列目录 / glob / grep）返回**空结果** —— 容器里的文件树不是
+    平台的文件树。
 
     容器**按会话复用**（见 ``container_pool.py``）：环境变量、cd、装好的依赖
     都跨轮次保留。
@@ -201,13 +206,72 @@ class DockerSandbox(BaseSandbox):
         """
         return NotImplementedError(_FILE_METHODS_UNSUPPORTED.format(mount=self.mount))
 
+    # ---------- 查找类：空结果 ----------
+
+    # 容器里的文件树**不是**平台的文件树：工作区挂在 ``/workspace``，
+    # 平台的读读写用宿主后端（route "/"）。基类会拿虚拟路径去容器里跑
+    # ``ls`` / ``grep`` / ``find`` —— 搜出来的是容器的系统文件（/usr/share…），
+    # 不是工作区的内容。
+    #
+    # 所以这里返回空结果：``CompositeBackend`` 会把默认后端的结果与各路由的
+    # 结果**合并**，空结果不影响宿主后端给出的真实命中；而报错会让整个
+    # glob / grep 一起失败（框架不捕获后端异常）。
+
     def ls(self, path: str) -> LsResult:
-        raise self._unsupported()
+        """列目录 —— 容器里没有平台的文件树，返回空。"""
+        return LsResult(entries=[])
+
+    async def als(self, path: str) -> LsResult:
+        """异步列目录 —— 容器里没有平台的文件树，返回空。"""
+        return LsResult(entries=[])
+
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
+        """按名字模式找文件 —— 容器里没有平台的文件树，返回空。"""
+        return GlobResult(matches=[])
+
+    async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
+        """异步按名字模式找文件 —— 容器里没有平台的文件树，返回空。"""
+        return GlobResult(matches=[])
+
+    def grep(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        max_count: int | None = None,
+    ) -> GrepResult:
+        """搜文件内容 —— 容器里没有平台的文件树，返回空。
+
+        签名**必须**与框架一致：``CompositeBackend`` 按三个位置参数调用
+        ``grep(pattern, path, glob)`` 并可能带 ``max_count``。签名对不上
+        （比如只收两个位置参数）会在 docker 模式下直接抛 ``TypeError``。
+        """
+        return GrepResult(matches=[])
+
+    async def agrep(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        max_count: int | None = None,
+    ) -> GrepResult:
+        """异步搜文件内容 —— 容器里没有平台的文件树，返回空。"""
+        return GrepResult(matches=[])
+
+    # ---------- 改单个文件：响亮地炸 ----------
 
     def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
         raise self._unsupported()
 
+    async def aread(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+        raise self._unsupported()
+
     def write(self, file_path: str, content: str) -> WriteResult:
+        raise self._unsupported()
+
+    async def awrite(self, file_path: str, content: str) -> WriteResult:
         raise self._unsupported()
 
     def edit(
@@ -219,13 +283,19 @@ class DockerSandbox(BaseSandbox):
     ) -> EditResult:
         raise self._unsupported()
 
+    async def aedit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        raise self._unsupported()
+
     def delete(self, file_path: str) -> DeleteResult:
         raise self._unsupported()
 
-    def grep(self, pattern: str, path: str | None = None, **kwargs: object) -> GrepResult:
-        raise self._unsupported()
-
-    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
+    async def adelete(self, file_path: str) -> DeleteResult:
         raise self._unsupported()
 
     # ---------- 执行 ----------

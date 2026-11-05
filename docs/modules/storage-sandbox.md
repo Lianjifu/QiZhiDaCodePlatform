@@ -46,8 +46,8 @@ CompositeBackend(
 
 ```text
 app/capabilities/backends/
-  assembly.py          组装（挂 PlatformBackend 包装层）
-  platform_backend.py  包装层：ls("/") 补虚拟目录项 + 转发 execute
+  assembly.py          组装（PlatformBackend：CompositeBackend 的子类）
+  platform_backend.py  CompositeBackend 子类：ls("/") 补虚拟目录项 + glob/grep 去重
   sandbox_backend.py   DockerSandbox（只提供 execute + 容器复用）
   container_pool.py    容器生命周期：创建 / 复用 / 探活 / 回收 / 容量上限
 ```
@@ -181,12 +181,22 @@ deepAgents 的 `BaseSandbox` 的文件方法（`ls`/`read`/`grep`/`glob`）是**
 跑命令**实现的，路径**原样**进容器。而我们的容器里工作区挂在 `/workspace` ——
 虚拟路径 `/a.txt` 在容器里**根本不存在**（那是容器的根目录）。
 
-**今天为什么没炸** —— route `"/"` 把所有文件操作都截给了 `FilesystemBackend`，
-`DockerSandbox` 的文件方法是**死代码**。一旦哪天去掉 route `"/"`（比如为了
-让沙箱统一处理文件），立刻全线崩溃。
+所以 `DockerSandbox` 的文件方法分成两类处理：
 
-所以 `DockerSandbox` 的文件方法全部覆写成 `NotImplementedError` —— **响亮地
-失败**，而不是静默给出"文件不存在"。这是有意的边界，不是没实现。
+| 方法 | 行为 | 为什么 |
+| --- | --- | --- |
+| `read` / `write` / `edit` / `delete`（含异步版） | 抛 `NotImplementedError` | 改单个文件的操作由宿主后端做。基类会拿虚拟路径去容器里跑命令，返回"文件不存在"这种**看起来像正常结果**的错误 —— 宁可响亮地失败 |
+| `ls` / `glob` / `grep`（含异步版） | 返回**空结果** | 容器里的文件树**不是**平台的文件树（工作区挂在 `/workspace`，平台的读写走宿主后端）。基类搜出来的是容器的系统文件（`/usr/share…`），那不是工作区内容 |
+
+**查找类为什么返回空而不是报错** —— `CompositeBackend` 会把默认后端的结果与
+各路由的结果**合并**。空结果不影响宿主后端给出的真实命中；报错则会让整个
+glob / grep 一起失败（框架不捕获后端异常）。
+
+> 这一点在 2026-11-05 修过：此前 `grep` 的签名是 `(pattern, path=None, **kwargs)`，
+> 而框架按**三个位置参数**调用 `grep(pattern, path, glob)` —— 第三个参数挤到
+> `glob` 上就炸了（`TypeError`）。异步的 `agrep` / `aglob` 更糟：它们没被覆写，
+> 真的会**在容器里跑 `grep` / `find`**，搜出来的是容器的系统文件。现在签名与
+> 框架一致，异步版也被覆写。
 
 同理，`upload_files`/`download_files` 实现的是**工作区相对**路径，与沙箱内的
 `/workspace/...` 是另一套基准 —— 三方不一致，所以不实现。
@@ -206,8 +216,8 @@ agent 用 `ls /` 探索工作区时，看不到 `/skills/` 和 `/.artifacts/` �
 
 原因：`route "/"` 命中后走的是"单 backend 分支"，root 聚合分支不可达。
 
-修法是包一层 `PlatformBackend` —— `ls("/")` 时把 `/skills/`、`/.artifacts/`
-作为目录条目补进结果。
+修法是在 `PlatformBackend` 里覆写 `ls` —— `ls("/")` 时把 `/skills/`、
+`/.artifacts/` 作为目录条目补进结果。
 
 > 另一个思路是把 skills/artifacts 做成工作区里的**真实子目录**，用 `.qzd/`
 > 前缀藏起来。但那样 agent 就能看见目录名 —— 反而更糟。
@@ -226,9 +236,22 @@ grep('x')   -> ['/a.py', '/a.py']
 agent 用 glob 找产物时会看到一堆重复项。已在 `PlatformBackend` 里去重
 （按 path + 行号 / path + 行号 + 行文本），并加了回归测试。
 
-### 3.9 `PlatformBackend` 必须继承 `SandboxBackendProtocol`
+> docker 模式下默认后端返回空结果，所以不会有重复；去重是为 **local 模式**
+> 准备的（`LocalShellBackend` 也能搜文件）。
 
-deepAgents 的 `supports_execution()` 用 `isinstance` 判断后端能不能执行命令：
+### 3.9 `PlatformBackend` 必须继承 `CompositeBackend`
+
+deepAgents 多处用 `isinstance(backend, CompositeBackend)` 判断后端的形态 ——
+最要命的是**产物目录的落点**（`middleware/filesystem.py:1993`）：
+
+```python
+artifacts_root = self.backend.artifacts_root if isinstance(self.backend, CompositeBackend) else "/"
+```
+
+**只是包一层就判定为 False** → 产物目录退化成 `"/"` → 落进用户的工作区
+（见 §3.10）。所以 `PlatformBackend` **继承** `CompositeBackend`，不是包一层。
+
+`supports_execution()` 也走同一个 `isinstance`：
 
 ```python
 if isinstance(backend, CompositeBackend):
@@ -236,8 +259,9 @@ if isinstance(backend, CompositeBackend):
 return isinstance(backend, SandboxBackendProtocol)
 ```
 
-包一层之后 `PlatformBackend` 两个都不是 —— execute 工具会直接报"后端不支持
-执行"。所以它继承 `SandboxBackendProtocol` 并转发 `id` / `execute`。
+继承 `CompositeBackend` 之后它查的是 `backend.default` —— 那正是沙箱
+（`DockerSandbox` 继承 `BaseSandbox`，而 `BaseSandbox` 是
+`SandboxBackendProtocol`），所以 execute 工具照常可用。
 
 ### 3.10 `artifacts_root` 不是路由
 
@@ -256,10 +280,13 @@ return isinstance(backend, SandboxBackendProtocol)
 所以它指到工作区**外面**的目录，跟技能导出目录同理：agent 的文件工具不该
 看见这些。
 
-> ⚠️ 另有一个坑：deepAgents 算 `artifacts_root` 用
-> `isinstance(backend, CompositeBackend)`，而 `PlatformBackend` 只是**包着**
-> CompositeBackend、不是它的子类 —— 判定为 False，产物目录退化成 `/`。
-> `context/compaction.py` 的 `_fix_artifacts_root()` 显式把它指回去。
+> ⚠️ 曾经踩过的坑（2026-11-05 修）：deepAgents 算 `artifacts_root` 用
+> `isinstance(backend, CompositeBackend)`，而当时的 `PlatformBackend` 只是
+> **包着** CompositeBackend、不是它的子类 —— 判定为 False，产物目录退化成
+> `/`。`context/compaction.py` 的 `_fix_artifacts_root()` 只补了**摘要中间件**
+> 那一半，框架 `FilesystemMiddleware` 那一半没补 → **被淘汰的对话历史落进
+> 用户工作区**。现在 `PlatformBackend` 继承了 `CompositeBackend`，两半都对；
+> `_fix_artifacts_root()` 保留作兜底（万一框架换了判定方式）。
 
 ---
 
@@ -316,8 +343,8 @@ return isinstance(backend, SandboxBackendProtocol)
 
 | 文件 | 负责什么 |
 | --- | --- |
-| `app/capabilities/backends/assembly.py` | 组装（挂 PlatformBackend 包装层；路由表；artifacts_root） |
-| `app/capabilities/backends/platform_backend.py` | 包装层：`ls("/")` 补虚拟目录项、glob/grep 去重、转发 execute |
+| `app/capabilities/backends/assembly.py` | 组装（`PlatformBackend`：路由表 + artifacts_root） |
+| `app/capabilities/backends/platform_backend.py` | `CompositeBackend` 子类：`ls("/")` 补虚拟目录项、glob/grep 去重 |
 | `app/capabilities/backends/sandbox_backend.py` | `DockerSandbox`：只提供 execute、隔离参数、挂载预检、脚本写入 |
 | `app/capabilities/backends/container_pool.py` | 容器生命周期：创建 / 复用 / 探活 / 回收 / 容量上限 / 启动清理 |
 | `app/capabilities/execution/context.py` | `ExecutionContext`：工作区、会话工作区、沙箱配置、MCP 通道 |

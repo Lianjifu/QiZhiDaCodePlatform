@@ -1,63 +1,60 @@
-"""平台后端：在 ``CompositeBackend`` 外面包一层。
+"""平台后端：``CompositeBackend`` + 两处平台补丁。
 
-## 为什么要有这一层
+## 为什么必须**继承** ``CompositeBackend``（而不是包一层）
 
-``CompositeBackend`` 的路由有个不一致：**``ls("/")`` 看不到子路由**。
+deepAgents 多处用 ``isinstance(backend, CompositeBackend)`` 决定产物目录的
+落点（``middleware/filesystem.py:1993``、``middleware/summarization.py:739``）：
 
-实测（三个 backend：工作区、技能目录、产物目录）：
-
-```text
-ls('/')          -> ['/main.py']                     ← 看不到 /skills/、/.artifacts/
-glob('**/*.md')  -> ['/.artifacts/h.md', '/skills/SKILL.md']
-grep('y')        -> ['/skills/SKILL.md']
+```python
+artifacts_root = self.backend.artifacts_root if isinstance(self.backend, CompositeBackend) else "/"
 ```
 
-原因是 route ``"/"`` 命中后走的是"单 backend 分支"，root 聚合分支不可达。
+只包不继承 → 判定为 False → 产物目录退化成 ``"/"``。而 ``"/"`` 落在**用户的
+工作区**里 —— 被淘汰的对话历史（含用户说过的话、agent 读到的代码）会落进用户
+的仓库，可能被 ``git commit`` 一起提交上去。
 
-**同一个后端集合、三种操作、三种可见性** —— 模型 ``ls /`` 看不到技能目录，
-会以为技能不存在。所以这里补一层：``ls("/")`` 时把子路由作为**虚拟目录项**
-加进结果。
+继承之后，这些判定自然成立，产物目录回到 ``/.artifacts/``（工作区外面）。
 
-只补 ``ls``，别的操作（``glob`` / ``grep``）本来就聚合所有 backend，不用动。
+## 补的两件事
+
+1. ``ls("/")`` 要看得见子路由。``CompositeBackend`` 的根聚合分支在存在
+   ``"/"`` 路由时**不可达**（路由 ``"/"`` 先命中，走单 backend 分支）——
+   模型 ``ls /`` 看不到技能目录，会以为技能不存在。
+2. ``glob`` / ``grep`` 去重。默认后端（沙箱）与路由 ``"/"``（宿主
+   ``FilesystemBackend``）指向同一个工作区，不去重的话每个文件出现两次。
+
+其余方法全部继承 ``CompositeBackend`` —— 不重复实现它的逻辑。
 """
 
 from __future__ import annotations
 
-from typing import Any
-
+from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import (
-    DeleteResult,
-    EditResult,
-    ExecuteResponse,
     GlobResult,
     GrepResult,
     LsResult,
-    ReadResult,
-    SandboxBackendProtocol,
-    WriteResult,
 )
 
 
-class PlatformBackend(SandboxBackendProtocol):
-    """给 ``CompositeBackend`` 补上"子路由可见性"。
+class PlatformBackend(CompositeBackend):
+    """``CompositeBackend`` 的平台版。
 
-    只改 ``ls``：``ls("/")`` 时把每条子路由的根作为目录条目补进去。
+    只做两处补丁，其余原样继承：
 
-    其余方法原样转发 —— 不重复实现 backend 的逻辑。
-
-    **必须继承 ``SandboxBackendProtocol``**：deepAgents 的
-    ``supports_execution()`` 用 ``isinstance`` 判断能不能执行命令 ——
-    只实现 ``BackendProtocol`` 的话，execute 工具会直接报"后端不支持执行"。
+    - ``ls`` / ``als``：根目录时把子路由作为虚拟目录项补进去；
+    - ``glob`` / ``grep`` / ``aglob`` / ``agrep``：去掉重复项。
     """
 
-    def __init__(self, inner: Any, *, routes: dict[str, Any]) -> None:
+    def __init__(self, default, routes, *, artifacts_root: str = "/") -> None:
         """构造。
 
         Args:
-            inner: 内部的 ``CompositeBackend``。
-            routes: 路由表（与 inner 的一致），用来知道有哪些子路由。
+            default: 默认后端（命令执行走它）。
+            routes: 路由表（路径前缀 → 后端）。
+            artifacts_root: 产物目录前缀。必须是工作区**外面**的路径 ——
+                被淘汰的对话历史会写到它下面。
         """
-        self._inner = inner
+        super().__init__(default=default, routes=routes, artifacts_root=artifacts_root)
         # 只关心根路由之外的（"/" 本身就是根）
         self._sub_routes = sorted(
             (prefix for prefix in routes if prefix not in ("", "/")),
@@ -65,13 +62,15 @@ class PlatformBackend(SandboxBackendProtocol):
             reverse=True,
         )
 
+    # ---------- ls：补子路由 ----------
+
     def ls(self, path: str) -> LsResult:
         """列目录。根目录时补上子路由的虚拟目录项。"""
-        return self._merge_virtual_dirs(self._inner.ls(path), path)
+        return self._merge_virtual_dirs(super().ls(path), path)
 
     async def als(self, path: str) -> LsResult:
         """异步列目录。"""
-        return self._merge_virtual_dirs(await self._inner.als(path), path)
+        return self._merge_virtual_dirs(await super().als(path), path)
 
     def _merge_virtual_dirs(self, result: LsResult, path: str) -> LsResult:
         """把子路由的根作为虚拟目录项补进根目录的列表。
@@ -98,97 +97,44 @@ class PlatformBackend(SandboxBackendProtocol):
         merged.sort(key=lambda entry: str(entry.get("path", "")))
         return LsResult(error=None, entries=merged)
 
-    # ---------- 其余方法原样转发 ----------
+    # ---------- 搜索：去重 ----------
 
-    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
-        return self._inner.read(file_path, offset=offset, limit=limit)
-
-    async def aread(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
-        return await self._inner.aread(file_path, offset=offset, limit=limit)
-
-    def write(self, file_path: str, content: str) -> WriteResult:
-        return self._inner.write(file_path, content)
-
-    async def awrite(self, file_path: str, content: str) -> WriteResult:
-        return await self._inner.awrite(file_path, content)
-
-    def edit(
+    def grep(
         self,
-        file_path: str,
-        old_string: str,
-        new_string: str,
-        replace_all: bool = False,
-    ) -> EditResult:
-        return self._inner.edit(file_path, old_string, new_string, replace_all=replace_all)
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        max_count: int | None = None,
+    ) -> GrepResult:
+        """搜索文件内容（去掉重复项）。"""
+        return _dedupe_grep(super().grep(pattern, path, glob, max_count=max_count))
 
-    async def aedit(
+    async def agrep(
         self,
-        file_path: str,
-        old_string: str,
-        new_string: str,
-        replace_all: bool = False,
-    ) -> EditResult:
-        return await self._inner.aedit(file_path, old_string, new_string, replace_all=replace_all)
-
-    def delete(self, file_path: str) -> DeleteResult:
-        return self._inner.delete(file_path)
-
-    async def adelete(self, file_path: str) -> DeleteResult:
-        return await self._inner.adelete(file_path)
-
-    def grep(self, pattern: str, path: str | None = None, **kwargs: Any) -> GrepResult:
-        return _dedupe_grep(self._inner.grep(pattern, path, **kwargs))
-
-    async def agrep(self, pattern: str, path: str | None = None, **kwargs: Any) -> GrepResult:
-        return _dedupe_grep(await self._inner.agrep(pattern, path, **kwargs))
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        max_count: int | None = None,
+    ) -> GrepResult:
+        """异步搜索文件内容（去掉重复项）。"""
+        return _dedupe_grep(await super().agrep(pattern, path, glob, max_count=max_count))
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-        return _dedupe_glob(self._inner.glob(pattern, path))
+        """按名字模式找文件（去掉重复项）。"""
+        return _dedupe_glob(super().glob(pattern, path))
 
     async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
-        return _dedupe_glob(await self._inner.aglob(pattern, path))
-
-    def upload_files(self, files: list[tuple[str, bytes]]) -> list[Any]:
-        return self._inner.upload_files(files)
-
-    async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[Any]:
-        return await self._inner.aupload_files(files)
-
-    def download_files(self, paths: list[str]) -> list[Any]:
-        return self._inner.download_files(paths)
-
-    async def adownload_files(self, paths: list[str]) -> list[Any]:
-        return await self._inner.adownload_files(paths)
+        """异步按名字模式找文件（去掉重复项）。"""
+        return _dedupe_glob(await super().aglob(pattern, path))
 
     # ---------- 透传属性 ----------
 
     @property
-    def routes(self) -> dict[str, Any]:
-        """路由表。"""
-        return self._inner.routes
-
-    @property
-    def default(self) -> Any:
-        """默认后端（命令执行走它）。"""
-        return self._inner.default
-
-    @property
-    def artifacts_root(self) -> str:
-        """产物目录前缀。"""
-        return self._inner.artifacts_root
-
-    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        """执行命令（转发给默认后端）。"""
-        return self._inner.execute(command, timeout=timeout)
-
-    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        """异步执行命令。"""
-        return await self._inner.aexecute(command, timeout=timeout)
-
-    @property
     def id(self) -> str:
         """沙箱标识（转发给默认后端）。"""
-        return self._inner.default.id
+        return self.default.id
 
 
 def _dedupe_glob(result: GlobResult) -> GlobResult:
@@ -232,7 +178,7 @@ def _dedupe_grep(result: GrepResult) -> GrepResult:
         key = (
             str(item.get("path", "")),
             item.get("line_number"),
-            str(item.get("line_text", "")),
+            item.get("line_text", ""),
         )
         if key in seen:
             continue

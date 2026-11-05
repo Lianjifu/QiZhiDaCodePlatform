@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from deepagents.backends.composite import CompositeBackend
 
 from app.capabilities.backends import sandbox_backend
 from app.capabilities.backends.assembly import ARTIFACTS_ROUTE, SKILLS_ROUTE, build_backend
@@ -72,10 +73,10 @@ def test_ls_of_sub_route_unchanged(tmp_path):
 
 
 def test_backend_supports_execution(tmp_path):
-    """包装层必须被 deepAgents 认作"支持执行命令"。
+    """后端必须被 deepAgents 认作"支持执行命令"。
 
-    deepAgents 的 supports_execution() 用 isinstance 判断 —— 只实现
-    BackendProtocol 的话，execute 工具会直接报"后端不支持执行"。
+    deepAgents 的 supports_execution() 用 isinstance 判断 —— 传进去的后端
+    认不出能执行，execute 工具会直接报"后端不支持执行"。
     """
     from deepagents.middleware.filesystem import supports_execution
 
@@ -99,6 +100,105 @@ def test_platform_backend_forwards_default_properties(tmp_path):
     assert backend.artifacts_root == ARTIFACTS_ROUTE
     assert "/" in backend.routes
     assert backend.default is not None
+
+
+# ---------------------------------------------------------------- 产物目录
+
+
+def test_平台后端是复合后端的子类(tmp_path):
+    """必须是**子类**，不是包一层。
+
+    框架多处用 ``isinstance(backend, CompositeBackend)`` 决定产物目录的落点
+    （``middleware/filesystem.py:1993``、``middleware/summarization.py:739``）。
+    包一层 → 判定为 False → 产物目录退化成 ``"/"`` → 落进用户工作区。
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    context = ExecutionContext.build(workspace)
+    backend = build_backend(context, None)
+
+    assert isinstance(backend, CompositeBackend)
+
+
+def test_产物目录落在工作区外面(tmp_path):
+    """被淘汰的对话历史不能落进用户的工作区。
+
+    框架那行判定：``artifacts_root = backend.artifacts_root
+    if isinstance(backend, CompositeBackend) else "/"``。
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    context = ExecutionContext.build(workspace)
+    backend = build_backend(context, None)
+
+    root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
+    assert root == ARTIFACTS_ROUTE, f"产物目录退化了：{root}"
+
+    backend.write(f"{root}/conversation_history/abc.md", "被淘汰的对话历史")
+
+    inside = list(workspace.rglob("conversation_history"))
+    assert not inside, f"对话历史落进工作区了：{inside}"
+    outside = list((tmp_path / ".artifacts").rglob("abc.md"))
+    assert outside, "对话历史没落在产物目录里"
+
+
+def test_框架的文件中间件把历史外置到工作区外面(tmp_path):
+    """走框架**自己**的判定 —— 不是我们复述一遍那行 isinstance。
+
+    ``FilesystemMiddleware`` 算前缀的逻辑是
+    ``middleware/filesystem.py:1993``，它决定被淘汰的对话历史写到哪儿。
+    """
+    from deepagents.middleware.filesystem import FilesystemMiddleware
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    context = ExecutionContext.build(workspace)
+    backend = build_backend(context, None)
+
+    middleware = FilesystemMiddleware(backend=backend)
+    prefix = middleware._conversation_history_prefix
+    assert prefix.startswith(ARTIFACTS_ROUTE), f"历史外置的落点不对：{prefix}"
+
+
+# ---------------------------------------------------------------- docker 模式
+
+
+def test_docker_模式下_glob_与_grep_走得通(tmp_path):
+    """docker 模式下 glob / grep 不能报错 —— 结果由宿主后端给出。
+
+    默认后端是沙箱（容器里没有平台的文件树，返回空），路由 ``"/"`` 是宿主
+    ``FilesystemBackend``（真实的工作区）。两个合并，命中的是宿主那份。
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "a.py").write_text("needle here\n", encoding="utf-8")
+
+    context = ExecutionContext.build(workspace)
+    context.sandbox_type = "docker"
+    backend = build_backend(context, None)
+
+    paths = [m["path"] for m in backend.glob("**/*").matches or []]
+    assert paths == ["/a.py"], f"glob 不通或结果不对：{paths}"
+
+    hits = [m["path"] for m in backend.grep("needle").matches or []]
+    assert hits == ["/a.py"], f"grep 不通或结果不对：{hits}"
+
+
+async def test_docker_模式下_异步_glob_与_grep_走得通(tmp_path):
+    """agent 走的正是异步那条路。"""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "a.py").write_text("needle here\n", encoding="utf-8")
+
+    context = ExecutionContext.build(workspace)
+    context.sandbox_type = "docker"
+    backend = build_backend(context, None)
+
+    paths = [m["path"] for m in (await backend.aglob("**/*")).matches or []]
+    assert paths == ["/a.py"], f"异步 glob 不通或结果不对：{paths}"
+
+    hits = [m["path"] for m in (await backend.agrep("needle")).matches or []]
+    assert hits == ["/a.py"], f"异步 grep 不通或结果不对：{hits}"
 
 
 def test_glob_does_not_duplicate_files(tmp_path):
@@ -165,30 +265,100 @@ def test_file_tools_operate_in_workspace(tmp_path):
 # ---------------------------------------------------------------- 沙箱边界
 
 
-def test_sandbox_file_methods_raise(tmp_path):
-    """DockerSandbox 的文件方法必须报错，不能静默给"文件不存在"。
+def test_sandbox_mutation_methods_raise(tmp_path):
+    """DockerSandbox 改单个文件的操作必须报错，不能静默给"文件不存在"。
 
     基类的文件方法把虚拟路径原样塞进容器命令（/a.txt），而我们的工作区挂在
     /workspace —— 那个路径在容器里不存在，基类会返回看起来像正常结果的错误。
+
+    **异步版本同样要报错** —— 基类的 ``aread`` / ``awrite`` / ``aedit`` 会在
+    容器里真的跑命令，而 agent 走的正是异步那条路。
     """
     workspace = tmp_path / "ws"
     workspace.mkdir()
     sandbox = DockerSandbox(workspace, session_id="t-bound")
 
-    with pytest.raises(NotImplementedError):
-        sandbox.ls("/")
-    with pytest.raises(NotImplementedError):
-        sandbox.read("/a.txt")
-    with pytest.raises(NotImplementedError):
-        sandbox.write("/a.txt", "x")
-    with pytest.raises(NotImplementedError):
-        sandbox.edit("/a.txt", "a", "b")
-    with pytest.raises(NotImplementedError):
-        sandbox.delete("/a.txt")
-    with pytest.raises(NotImplementedError):
-        sandbox.grep("x")
-    with pytest.raises(NotImplementedError):
-        sandbox.glob("*")
+    for call in (
+        lambda: sandbox.read("/a.txt"),
+        lambda: sandbox.write("/a.txt", "x"),
+        lambda: sandbox.edit("/a.txt", "a", "b"),
+        lambda: sandbox.delete("/a.txt"),
+    ):
+        with pytest.raises(NotImplementedError):
+            call()
+
+
+async def test_sandbox_async_mutation_methods_raise(tmp_path):
+    """异步的改文件操作也要响亮地炸 —— 不能在容器里跑命令。"""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sandbox = DockerSandbox(workspace, session_id="t-bound-async")
+
+    for call in (
+        sandbox.aread("/a.txt"),
+        sandbox.awrite("/a.txt", "x"),
+        sandbox.aedit("/a.txt", "a", "b"),
+        sandbox.adelete("/a.txt"),
+    ):
+        with pytest.raises(NotImplementedError):
+            await call
+
+
+def test_sandbox_search_methods_return_empty(tmp_path):
+    """查找类返回**空结果**，不报错。
+
+    容器里的文件树不是平台的文件树（工作区挂在 /workspace，平台的读写走宿主
+    后端）。基类会拿虚拟路径去容器里跑 ls / grep / find —— 搜出来的是容器的
+    系统文件，不是工作区内容。
+
+    返回空还有个好处：``CompositeBackend`` 会把默认后端与各路由的结果**合并**，
+    空结果不影响宿主后端给出的真实命中；报错则会让整个 glob / grep 一起失败。
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sandbox = DockerSandbox(workspace, session_id="t-search")
+
+    assert sandbox.ls("/").entries == []
+    assert sandbox.glob("*").matches == []
+    assert sandbox.grep("x").matches == []
+
+
+async def test_sandbox_async_search_methods_return_empty(tmp_path):
+    """异步的查找同样返回空 —— 更重要的是**不在容器里跑命令**。
+
+    基类的 ``agrep`` / ``aglob`` / ``als`` 会真的调 ``aexecute``。
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sandbox = DockerSandbox(workspace, session_id="t-search-async")
+
+    def explode(*args, **kwargs):
+        raise AssertionError("查找操作不该在容器里跑命令")
+
+    monkey = sandbox.aexecute
+    sandbox.aexecute = explode  # type: ignore[method-assign]
+    try:
+        assert (await sandbox.als("/")).entries == []
+        assert (await sandbox.aglob("*")).matches == []
+        assert (await sandbox.agrep("x")).matches == []
+    finally:
+        sandbox.aexecute = monkey  # type: ignore[method-assign]
+
+
+def test_sandbox_grep_accepts_framework_call_shape(tmp_path):
+    """框架按三个位置参数调 grep —— 签名对不上就整条 grep 报废。
+
+    ``CompositeBackend._grep_backend`` 调用 ``backend.grep(pattern, path, glob)``，
+    可能再带 ``max_count``。旧签名只收两个位置参数，第三个挤到 ``glob`` 上 →
+    ``TypeError``。
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sandbox = DockerSandbox(workspace, session_id="t-signature")
+
+    result = sandbox.grep("pattern", None, "*.py", max_count=10)
+    assert result.matches == []
+    assert result.error is None
 
 
 def test_sandbox_execute_is_available(tmp_path):

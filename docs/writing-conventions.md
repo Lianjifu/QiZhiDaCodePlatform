@@ -103,7 +103,9 @@
 - 隔离参数：`--network none --memory 512m --cpus 1 --pids-limit 256
   --cap-drop ALL --security-opt no-new-privileges`，只挂载会话工作区。
 - 文件操作走**宿主** `FilesystemBackend`（快，路径已经虚拟），
-  `DockerSandbox` **只提供 execute**，文件方法全部 `NotImplementedError`。
+  `DockerSandbox` **只提供 execute**：改单个文件的操作全部
+  `NotImplementedError`，查找类（`ls`/`glob`/`grep`）返回**空结果** ——
+  容器里的文件树不是平台的文件树。
 - **沙箱不可用时不静默降级** —— 宁可 agent 直接失败。
 
 ### 平台无鉴权（平台级的既有决策）
