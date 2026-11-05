@@ -20,8 +20,9 @@
 | 自我进化 | [modules/evolution.md](modules/evolution.md) | 失败 → 复盘 → 改进落进记忆 / 技能 / 提示词；三层都可撤销 |
 
 **写新文档时**看 [writing-conventions.md](writing-conventions.md) —— 里面是这份
-文档集的语气约定、结构模板，以及**跨模块共享的事实**（权限模式、审批的两级、
-风险分档、沙箱、记忆分层），每篇都要对得上。
+文档集的语气约定、结构模板、**框架的红线**（哪些框架件不能引进、为什么），
+以及**跨模块共享的事实**（权限模式、审批的两级、风险分档、沙箱、记忆分层），
+每篇都要对得上。
 
 ---
 
@@ -72,7 +73,6 @@
 
 | | |
 | --- | --- |
-| [framework-vs-custom.md](framework-vs-custom.md) | 框架能力 vs 自研实现：哪些能改用框架、哪些框架给的是另一层、哪些是红线 |
 | [../README.md](../README.md) | 仓库总览：起服务、目录结构、两条要记住的坑 |
 | [../backend/README.md](../backend/README.md) | 后端：分层、目录、配置、迁移、风险 |
 | [../frontend/README.md](../frontend/README.md) | 前端：起服务、主题、组件、约定 |

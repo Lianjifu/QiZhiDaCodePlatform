@@ -83,7 +83,7 @@
 
 ### 审批闸的位置不能变（2026-11-05 修过的一个真 bug）
 
-**闸挂在哪些工具上，不能随权限模式变。** 变了的���候：挂起期间用户把模式切到
+**闸挂在哪些工具上，不能随权限模式变。** 变了的时候：挂起期间用户把模式切到
 「绕过权限」，图被重建成没有闸的样子，checkpoint 里那条挂起的中断就"看不见"了，
 恢复变成空转 —— 接口返回 200，工具根本没跑，界面表现是"审批后无法继续"。
 
@@ -134,3 +134,56 @@
 
 **AGENTS.md 不是记忆** —— 它是工作区级、agent 自己维护的说明文件，
 每轮全量注入、不受预算控制、不做相关性排序。
+
+## 框架的红线
+
+写新代码时**能用框架就用框架** —— deepAgents / LangChain / LangGraph 里已有的
+东西不要自己再写一遍。但平台有几条硬规矩。
+
+判据只有一条：
+
+> **凡是会让工具调用绕过七阶段能力流水线的框架件，一律不能拿来替换自研实现。**
+> 只能在流水线**之下**复用（当执行器用），不能在上游接管。
+
+三条安全底线同样不可让步：**沙箱隔离**、**参数级风险判定**（`rm -rf` / SSRF）、
+**调用留痕**。
+
+### 绝对不能引进来的框架件
+
+| 框架件 | 为什么不行 |
+| --- | --- |
+| `langgraph/prebuilt/chat_agent_executor.py` `create_react_agent` / `langgraph/prebuilt/tool_node.py` `ToolNode` | 会让工具脱离平台流水线 —— 无留痕、无审批、无风险判定。**注意 LangChain 1.x 的 `langchain/agents/factory.py` 只有 `create_agent`，`create_react_agent` 已经搬到 LangGraph 的 prebuilt 里** |
+| `langchain/agents/middleware/shell_tool.py` `ShellToolMiddleware` + `DockerExecutionPolicy` | 绕开沙箱隔离与能力流水线；框架的沙箱没有平台的 `--network none` / `--cap-drop ALL` / `no-new-privileges`，而且**每条命令起一个新容器**（没有复用） |
+| `langgraph/store/` 当长期记忆 | 放弃 hybrid 召回 + 记忆写入硬校验（凭据拦截、冲突拒绝、取代语义） |
+| `langgraph/types.py` `Send` / 框架原生 handoff | 会让子代理调度绕开平台的 `delegate_worker`（独立 worktree + 递归封顶 + git 能力收窄） |
+| 框架 `permissions=[FilesystemPermission]` | 在可执行后端上直接抛 `NotImplementedError`；且会引入第二个审批事实源，与 `policy.py::approval_decision` 打架 |
+| `langchain/agents/middleware/tool_retry.py` `ToolRetryMiddleware` | 重试包在工具调用**外层** → 连整个七阶段流水线一起重跑 → **每次重试多一条 `Invocation` 留痕**，审计失真。平台的重试在阶段⑤内部，留痕只一条 |
+
+### 框架有、但给的是"另一层"的
+
+| 框架的 | 平台的 | 为什么不是一回事 |
+| --- | --- | --- |
+| `FilesystemPermission`（`deepagents/middleware/filesystem.py`） | `app/agents/permissions.py` + `app/capabilities/registration/policy.py` | 框架按**路径模式** allow/deny/interrupt；平台按**风险档位 × 会话模式** |
+| `ContextEditingMiddleware` | `app/context/{blocks,assembler,budget}.py` | 框架是"清掉旧工具结果"；平台是"按优先级重装上下文块 + 外置历史" |
+| `langgraph/store/` | `app/memory/` | 框架是通用 KV + 向量索引；平台是 RAG 集合 + hybrid 召回 + 写入硬校验 |
+| `DockerExecutionPolicy` | `sandbox_backend.py` + `container_pool.py` | 框架版每次命令起新容器；平台的容器按会话复用（框架无 session_id / 复用 / 池钩子） |
+| `langchain_text_splitters` | `app/rag/chunking.py` | 切法不同 —— 平台的切法**为记忆层服务**（分块 meta 带 `kind` / `memory_kind` / `tags`，记忆层按它过滤） |
+| `langchain_core` 的 `VectorStore` | `app/rag/vector_store.py` | 框架是**文档导向**（字符串 / `Document`）；平台是**分块导向 + 集合作用域**（三个检索接口都带 `collection_id`） |
+| `LLMToolSelectorMiddleware` | `app/capabilities/intent/middleware.py`（plan 模式裁工具集） | 框架用 LLM 挑工具 = 模型**先看见全部工具名**再筛；平台在 plan 模式下**直接把写类工具摘掉** |
+
+### 已经在用框架的
+
+| 平台用的 | 框架提供方 |
+| --- | --- |
+| `app/context/compaction.py` `PlatformSummarizationMiddleware` | 继承 deepAgents 的 `SummarizationMiddleware`，同名替换 |
+| `app/context/skills_quota.py` `QuotaSkillsMiddleware` | 继承框架 `SkillsMiddleware`，只覆写清单配额 |
+| `app/agents/builder.py` 的 `MemoryMiddleware` / `TodoListMiddleware` / `interrupt_on` | 框架的 |
+| `app/agents/checkpointer.py` `AsyncSqliteSaver` | LangGraph 的 |
+| `app/capabilities/backends/assembly.py` `FilesystemBackend(virtual_mode=True)` | deepAgents 的 |
+| `app/capabilities/mcp_client.py` `MultiServerMCPClient` | `langchain_mcp_adapters` 的 |
+
+**框架默认自动生效、平台没意识到自己在受益的**：提示词缓存（`_prompt_caching.py`）、
+二进制外置（`_blob_offload.py`，**默认关着**，平台也没开）、大结果预览替换与
+溢出裁尾（`_message_eviction.py` / `_overflow_clip.py`）、tool call 修补
+（`patch_tool_calls.py`）、按模型 profile 过滤 content block
+（`unsupported_content.py`）。

@@ -82,7 +82,7 @@ checkpoint、权限模式文件、环境绑定、短期记忆、工作区目录�
   （GET / POST / DELETE），属于工作区模块。
 - `approve` / `reject` 的请求体是可选的（`AgentDecisionIn`）。带
   `{"decisions": ["approve", "reject"]}` 就是逐条决定，一条挂起的调用一个决定，
-  顺序与 `pending` 清单一致；**不带 = 全部批准（或全部拒绝，取决���调的是哪个接口）**。
+  顺序与 `pending` 清单一致；**不带 = 全部批准（或全部拒绝，取决于调的是哪个接口）**。
 - `regenerate` 的请求体只有 `provider_id` 与 `skill_ids`，**不需要传消息** ——
   它用的是历史里最后一条用户消息。
 - `fork` 的请求体是 `{"message_id": "..."}`，那个 id 是 checkpoint 里的消息 id
@@ -596,8 +596,12 @@ token 数是**估算**（4 字符约 1 token），口径与后端 `status.py::es
 - **压缩中间件的接管依赖 deepAgents 的同名替换约定。** 名字对不上就变成「多挂
   了一个」，两份摘要中间件同时跑，谁先谁后说不清；升级框架时会**静默失效**。
   `build_compaction_middleware()` 里有一道自检（名字不对就记 error 日志）。
-- **`_fix_artifacts_root()` 是必需的，不是保险。** 不修正的话产物目录退化成 `"/"`，
-  被压缩的对话历史会落进用户仓库。改 `PlatformBackend` 的继承关系时必须一起看这里。
+- **`_fix_artifacts_root()` 现在是兜底，不是必需。** 产物目录的落点由框架用
+  `isinstance(backend, CompositeBackend)` 判定 —— `PlatformBackend` **是**
+  `CompositeBackend` 的子类，所以判定为真，落点是 `/.artifacts/`（工作区外面）。
+  `_fix_artifacts_root()` 只是万一框架换了判定方式时的保险。
+  **改 `PlatformBackend` 的继承关系时必须一起看这里** —— 那会让被压缩的对话
+  历史落进用户仓库。
 - **图的缓存键是手写的。** 新增一个影响图行为的东西（比如又一种沙箱配置）却忘了
   加进 `_graph_key`，后果不是"慢一点"，而是"用错了规则"，而且不报错。
 - **历史里的工具结果靠特征识别失败。** deepAgents 的文件工具与 `execute` 失败时
@@ -612,6 +616,18 @@ token 数是**估算**（4 字符约 1 token），口径与后端 `status.py::es
   分支点，取 `messages[: index + 1]`。如果分支点正好落在一个带 `tool_calls`
   的 AIMessage 上，而对应的 ToolMessage 被裁在边界之后，新会话的第一次请求
   就会带着一条**有发起、无结果**的 AIMessage —— 兼容端点会 400。
+- **模型调用层没有重试与回退。** `app/agents/llm.py` 建模型时不传 `max_retries`，
+  全仓也没有任何重试中间件 —— 一次网络抖动或厂商 5xx 就是整轮失败，
+  模型换不动。框架的 `ModelRetryMiddleware` / `ModelFallbackMiddleware` 能补，
+  但回退要先有多厂商的 key（平台现在是单模型单厂商）。
+- **派子 agent 会阻塞主 agent。** `delegate_worker` 是 `await agent.ainvoke` ——
+  worker 跑完，这一轮的工具调用才返回。派几个 worker 就串行等几个。
+  框架的 `AsyncSubAgentMiddleware` 能后台跑，但它那套是给**远程 Agent Protocol
+  服务器**上的子代理用的，平台的 worker 是进程内现造的 deep agent，接不上。
+- **没有"打分到满意为止"的质量闭环。** 失败会记进反思块、会触发复盘
+  （见自我进化模块），但没有 grader 给这一轮的产出打分并驱动重做。
+  框架的 `RubricMiddleware` 能做这件事，但它的 grader 是另一个模型调用 ——
+  那次调用目前不在能力清单里，不声明也不留痕。
 
 ## 5. 相关文件
 

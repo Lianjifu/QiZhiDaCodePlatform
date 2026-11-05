@@ -779,6 +779,9 @@ async def call(**kwargs: Any) -> str:
 | 14 | **并发闸门只管住了"自己调能力"那条路** | deepAgents 自带的文件工具（`execute` / `write_file` / `edit_file`）**不走执行层流水线** —— 它们直接落到 backend。闸门在 `pipeline.py::_invoke` 之前拦，拦不到它们 | agent 一次回复发八个工具调用，八个文件操作会**一起跑** —— 闸门形同虚设 |
 | 15 | **谁把哪个会话提成了 bypass，没有留痕** | 会话级权限模式写文件（`app/agents/permissions.py`），写入时不记"谁在什么时候改的" | 提权这件事本身没有审计线索 —— 出事后查不出是谁提的 |
 | 16 | **平台无鉴权** | 所有接口都不校验身份（这是平台级的既有决策） | 能调工具管理接口的人可以让平台 import 并执行任意 Python 代码 —— `source` 白名单校验只挡了越界的写法，接口本身没有身份。知道 `thread_id` 就能读写别人的会话、文件与记忆 |
+| 17 | **文件与命令那 8 个工具不在流水线里** | `registration/builtin/__init__.py` 明写"文件与命令类工具不在这里 —— 它们由 deepAgents 的文件系统中间件提供"。于是 `ls` / `read_file` / `write_file` / `edit_file` / `delete` / `glob` / `grep` / `execute` **不走七阶段**，只在 `intent/middleware.py::_record()` 落一份简化的调用记录（没有分阶段结论） | **"每次能力调用都过同一条流水线"这句话对文件 / 命令族不成立** —— 而这恰恰是风险最高的一族（`delete` 不可逆、`execute` 能跑任意命令）。它们**仍过**参数级风险判定（`middleware.py` 的 `assess_call`），但**没有** schema 校验、权限校验、幂等去重、熔断、结果验证 |
+| 18 | **技能全量拼接是死代码** | `app/capabilities/prompt.py::assemble_prompt()` 把技能的 knowledge / checklist / constraints / examples 全量拼进系统提示词，但全仓只有两个调用点 —— `capabilities/__init__.py` 的再导出，与 `services/capability.py` 的技能预览接口。agent 主路径走 `context/service.py::assemble()`，技能那条路是导出成 `SKILL.md`（框架的渐进披露） | 留了两条路，活的只有一条。读代码的人会以为技能正文进的是系统提示词 —— 实际没有 |
+| 19 | **脱敏只认 6 类凭据** | `execution/redaction.py` 只认 `sk-` / `sk-ant-` / `gh[pousr]_` / `AKIA` / `AIza` / `password=` 六类，掩码 `***`，且**只脱敏落库副本** —— 给模型看的原文不动 | 邮箱、手机号、身份证这类**个人信息**在轨迹里是明文。框架的 `PIIMiddleware` 能补上，但它会改写消息体，与"原样落库 `Invocation.arguments`"的语义冲突 —— 两者方向相反，只能叠加不能替换 |
 
 ---
 
