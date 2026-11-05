@@ -89,6 +89,13 @@ STATUS_COMPLETED = "completed"
 STATUS_PENDING_APPROVAL = "pending_approval"
 STATUS_FAILED = "failed"
 
+# 后台任务的强引用集。
+#
+# **必须留着** —— 事件循环只持有弱引用，不留着的任务可能在中途被垃圾回收：
+# 复盘刚排上就没了，而且**没有任何报错**（最难查的那种故障）。
+# 任务结束时自己从集里摘掉（done_callback）。
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
 # 记忆文件名：deepAgents 的记忆中间件按这个约定读工作区里的长期记忆
 MEMORY_FILE = "AGENTS.md"
 
@@ -427,13 +434,19 @@ class AgentRunner:
         from app.services.retrospective import run_retrospective_in_background
 
         try:
-            asyncio.create_task(
+            job = asyncio.create_task(
                 run_retrospective_in_background(thread_id, task, self._resolve_model())
             )
         except RuntimeError:  # pragma: no cover - 没有运行中的事件循环
             logger.debug("排不进复盘任务，跳过")
+            return
         except Exception as exc:  # pragma: no cover - 排任务失败不该影响这一轮
             logger.warning("排复盘任务失败: %s", exc)
+            return
+        # **必须留一个强引用** —— 事件循环只持有弱引用，不留着的任务
+        # 可能在中途被垃圾回收：复盘刚排上就没了，而且**没有任何报错**。
+        _BACKGROUND_TASKS.add(job)
+        job.add_done_callback(_BACKGROUND_TASKS.discard)
 
     async def stream(
         self,

@@ -158,8 +158,11 @@ class RetrospectiveService:
             await self._produce(record, task=task, failures=mine, model=model)
         except Exception as exc:  # pragma: no cover - 复盘失败不该拖垮任何东西
             logger.warning("复盘失败 thread=%s: %s", thread_id, exc, exc_info=True)
+            # **把认领还回去** —— 抢了不还，这批失败就永远不会被复盘了。
+            #
+            # 还回去之后，下一轮的复盘会重新捡起它们（还没被复盘过）——
+            # 所以复盘失败是**自愈**的，不必重试机制。
             await self.repo.set_status(record.id, STATUS_FAILED, reject_reason=None)
-            # **把失败还回去** —— 抢了不还，它们就永远不会被复盘
             await self.repo.release_failures(record.id)
             await self.session.commit()
             return record

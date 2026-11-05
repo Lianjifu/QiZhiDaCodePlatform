@@ -753,3 +753,22 @@ async def test_有相关记忆时复盘也能跑完(session):
     )
     assert result is not None
     assert result.status == STATUS_APPLIED
+
+
+async def test_复盘失败会把认领还回去(session):
+    """复盘自己没跑成时，那批失败要能被下一轮重新捡起来。"""
+    class BoomModel(FakeModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            raise RuntimeError("模型挂了")
+
+    failure = _failure()
+    session.add(failure)
+    await session.commit()
+
+    service = RetrospectiveService(session)
+    result = await service.run(thread_id="t1", task="做点事", model=BoomModel())
+    assert result is not None
+    assert result.status == "failed"
+
+    fresh = await session.get(Invocation, failure.id)
+    assert fresh.retrospective_id is None, "认领要还回去，否则永远不会被复盘"
