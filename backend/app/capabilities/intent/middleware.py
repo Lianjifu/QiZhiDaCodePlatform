@@ -407,6 +407,13 @@ class CapabilityMiddleware(AgentMiddleware):
             result: dict[str, Any] = {"content": text[:2000]}
             if isinstance(diff, dict):
                 result["diff"] = diff
+            # **退出码也存进记录** —— ``execute`` 跑出来的命令失败时，
+            # 记录的状态是"成功"（工具本身履行了"跑命令并把输出带回来"的
+            # 职责），但那条命令**没成**。不留退出码，反思就看不出
+            # "上次那条命令挂了" —— 而那恰恰是代码 agent 最常见的失败形态。
+            artifact = getattr(message, "artifact", None)
+            if isinstance(artifact, dict) and isinstance(artifact.get("exit_code"), int):
+                result["exit_code"] = artifact["exit_code"]
 
             record = Invocation(
                 thread_id=self.thread_id or None,

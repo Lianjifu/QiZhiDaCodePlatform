@@ -566,6 +566,49 @@ BUILTIN_SPECS: dict[str, BuiltinSpec] = {
                 ["content", "id"],
             ),
         ),
+        # ---------- 反思 ----------
+        # 平台早就把每次调用的轨迹写进了 ``invocation`` 表，但那张表只有人在
+        # 管理界面看得见 —— agent 自己查不到。于是它会在同一轮里反复试同一个
+        # 失败的做法：不是它不长记，是**没有记可读**。
+        #
+        # 只读、幂等、无副作用 → 风险 read，不触发任何审批。
+        BuiltinSpec(
+            key="invocation_recent_failures",
+            source="app.capabilities.registration.builtin.invocation:make_invocation_recent_failures",
+            display_name="查最近的失败",
+            description=(
+                "列出本会话最近几次没成功的能力调用（失败、被拒绝、被阻塞、审批过期），"
+                "带错误码与完整报错。用来避免重蹈覆辙 —— 同一件事换个做法，"
+                "或先看清上次到底错在哪。"
+            ),
+            tags=("反思", "排障"),
+            permission=PermissionLevel.NONE,
+            risk=RiskLevel.READ,
+            timeout_s=20,
+            annotations=Annotations(read_only=True, idempotent=True),
+            input_schema=_obj(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": "返回多少条，默认 5，最多 10",
+                    },
+                    "capability_key": {
+                        "type": "string",
+                        "description": "只看某个能力（比如 run_python）；不给就看全部",
+                    },
+                },
+                [],
+            ),
+            output_schema=_obj(
+                {
+                    "content": {"type": "string"},
+                    "items": {"type": "array", "items": {"type": "object"}},
+                },
+                ["content", "items"],
+            ),
+        ),
     )
 }
 

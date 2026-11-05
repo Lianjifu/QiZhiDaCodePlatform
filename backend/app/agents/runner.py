@@ -55,6 +55,7 @@ from langgraph.graph.message import RemoveMessage
 from app.agents.builder import build_agent
 from app.agents.dynamic_context import (
     PLACEHOLDER_MEMORY,
+    PLACEHOLDER_REFLECTION,
     PLACEHOLDER_UPLOADS,
     PromptHolder,
 )
@@ -636,6 +637,26 @@ class AgentRunner:
             logger.warning("召回记忆目录失败，本轮不带记忆: %s", exc)
             return ""
 
+    async def _reflection_block(
+        self,
+        context: ExecutionContext | None,
+    ) -> str:
+        """本会话最近几次没成功的调用，渲染成可注入上下文的块。
+
+        **没有会话上下文就跳过** —— 直接调 API 的场景没有"这个会话的历史"。
+        查失败也不该让整轮对话挂掉：反思是加分项，不是前提。
+        """
+        if context is None or context.session is None or not context.thread_id:
+            return ""
+        from app.agents.reflection import build_reflection_block
+
+        try:
+            async with context.db():
+                return await build_reflection_block(context.session, context.thread_id)
+        except Exception as exc:  # pragma: no cover - 查表失败不该拖垮对话
+            logger.warning("取反思记录失败，本轮不带反思: %s", exc)
+            return ""
+
     async def _last_user_message(self, agent: Any, thread_id: str) -> str:
         """这个会话最后一条用户消息。
 
@@ -660,11 +681,12 @@ class AgentRunner:
         context: ExecutionContext | None,
         attachments: list[Attachment] | None,
     ) -> None:
-        """把这一轮的内容填进 holder（记忆目录 + 上传件清单）。
+        """把这一轮的内容填进 holder（记忆目录 + 上传件清单 + 反思记录）。
 
-        **每轮都重填** —— 这两块内容每轮都不一样，而图是跨轮复用的。
+        **每轮都重填** —— 这三块内容每轮都不一样，而图是跨轮复用的。
         """
         memory_block = await self._memory_block(message, context) if context else ""
+        reflection_block = await self._reflection_block(context)
         uploads_note = ""
         if context is not None:
             uploads_note = build_uploads_note(
@@ -672,7 +694,11 @@ class AgentRunner:
                 attachments=attachments,
                 max_entries=settings.uploads_block_max_entries,
             )
-        holder.update(memory_catalog=memory_block, uploads_note=uploads_note)
+        holder.update(
+            memory_catalog=memory_block,
+            uploads_note=uploads_note,
+            reflection=reflection_block,
+        )
 
     async def _build(
         self,
@@ -786,6 +812,7 @@ class AgentRunner:
                 memory_catalog=PLACEHOLDER_MEMORY,
                 policy_note=policy_note,
                 uploads_note=PLACEHOLDER_UPLOADS,
+                reflection_note=PLACEHOLDER_REFLECTION,
                 context_window=model_window(model),
             )
         )

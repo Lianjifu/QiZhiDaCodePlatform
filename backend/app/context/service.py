@@ -19,7 +19,16 @@
 | 策略说明 | 能力层（审批策略） | 20 | 丢（**会警告**） |
 | 上传件 | 文件模块（`uploads/` 清单） | 25 | 丢 |
 | 工作区说明 | AGENTS.md | 30 | 截断 |
+| 反思记录 | agent 层（最近的失败） | 35 | 丢 |
 | 记忆目录 | 记忆模块 | 40 | 丢 |
+
+## 为什么反思记录比记忆目录更该保住
+
+记忆目录是**背景资料** —— 丢了 agent 少知道点事，下次还能再召。
+反思记录是**"你刚才失败过"** —— 丢了 agent 就会在同一个坑里再摔一次，
+而且它自己不知道。
+
+两者都短，但这条更贵：重复摔同一个坑要花真的 token 与时间。
 
 ## 为什么策略说明的优先级比工作区说明高
 
@@ -51,6 +60,7 @@ KEY_POLICY = "policy"
 KEY_WORKSPACE = "workspace"
 KEY_MEMORY = "memory"
 KEY_UPLOADS = "uploads"
+KEY_REFLECTION = "reflection"
 
 # 优先级
 PRIORITY_BASE = 0
@@ -60,6 +70,8 @@ PRIORITY_POLICY = 20
 # 里的项目规矩晚一轮再读也来得及。
 PRIORITY_UPLOADS = 25
 PRIORITY_WORKSPACE = 30
+# 反思记录比记忆目录更该保住 —— 详见模块文档。
+PRIORITY_REFLECTION = 35
 PRIORITY_MEMORY = 40
 
 # 运行时说明的标题
@@ -73,6 +85,7 @@ class ContextRequest:
     - ``base_prompt`` —— 基准提示词（必装）；
     - ``workspace`` —— 工作区路径，给模型解释路径该怎么用；
     - ``memory_catalog`` —— 记忆目录的正文（记忆模块给的）；
+    - ``reflection_note`` —— 反思记录（agent 层给的：最近的失败）；
     - ``policy_note`` —— 策略说明（能力层给的）；
     - ``context_window`` —— 模型窗口（token），0 = 未知。
     """
@@ -80,6 +93,7 @@ class ContextRequest:
     base_prompt: str = ""
     workspace: Path | None = None
     memory_catalog: str = ""
+    reflection_note: str = ""
     policy_note: str = ""
     uploads_note: str = ""
     context_window: int = 0
@@ -178,6 +192,18 @@ class ContextService:
                 )
             )
 
+        if request.reflection_note.strip():
+            blocks.append(
+                ContextBlock(
+                    key=KEY_REFLECTION,
+                    content=request.reflection_note,
+                    priority=PRIORITY_REFLECTION,
+                    # 同样自带 XML 标签
+                    title="",
+                    overflow=OVERFLOW_DROP,
+                )
+            )
+
         if request.uploads_note.strip():
             blocks.append(
                 ContextBlock(
@@ -252,12 +278,14 @@ __all__ = [
     "KEY_BASE_PROMPT",
     "KEY_MEMORY",
     "KEY_POLICY",
+    "KEY_REFLECTION",
     "KEY_RUNTIME",
     "KEY_UPLOADS",
     "KEY_WORKSPACE",
     "PRIORITY_BASE",
     "PRIORITY_MEMORY",
     "PRIORITY_POLICY",
+    "PRIORITY_REFLECTION",
     "PRIORITY_RUNTIME",
     "PRIORITY_UPLOADS",
     "PRIORITY_WORKSPACE",

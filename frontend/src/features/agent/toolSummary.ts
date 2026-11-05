@@ -23,6 +23,7 @@ const TOOL_LABELS: Record<string, string> = {
   memory_search: '召回记忆',
   memory_read: '读取记忆',
   memory_write: '写入记忆',
+  invocation_recent_failures: '查最近的失败',
   web_fetch: '抓取网页',
   web_search: '联网搜索',
   // git 与协作

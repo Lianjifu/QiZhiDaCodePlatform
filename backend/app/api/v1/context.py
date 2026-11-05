@@ -40,12 +40,14 @@ async def preview_context(
     memory_catalog = await _memory_catalog(session, thread_id, query)
     policy_note = await _policy_note(session)
     uploads_note = _uploads_note(thread_id)
+    reflection_note = await _reflection_note(session, thread_id)
     service = build_context_service()
     result = service.assemble(
         ContextRequest(
             base_prompt=CODE_AGENT_PROMPT,
             workspace=Path(workspace) if workspace else None,
             memory_catalog=memory_catalog,
+            reflection_note=reflection_note,
             policy_note=policy_note,
             uploads_note=uploads_note,
             context_window=settings.llm_context_window,
@@ -80,6 +82,16 @@ async def _memory_catalog(session: AsyncSession, thread_id: str, query: str) -> 
         )
         return (await service.recall_catalog(query)).render()
     except Exception:  # pragma: no cover - 预览不该因为召回失败而报错
+        return ""
+
+
+async def _reflection_note(session: AsyncSession, thread_id: str) -> str:
+    """反思记录（预览用）。失败不阻塞预览。"""
+    from app.agents.reflection import build_reflection_block
+
+    try:
+        return await build_reflection_block(session, thread_id)
+    except Exception:  # pragma: no cover - 预览不该因为反思查表失败而失败
         return ""
 
 

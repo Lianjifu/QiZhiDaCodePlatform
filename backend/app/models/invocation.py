@@ -38,6 +38,18 @@ TERMINAL_STATUSES = (
     STATUS_BLOCKED,
 )
 
+# **没成功**的状态 —— 反思时喂给 agent 的就是这些。
+#
+# 不含 ``pending``（还在等人批）与 ``cancelled``（人主动取消）：
+# 前者不是失败，后者不是 agent 的错。把它俩算进去，agent 会看到
+# "上次 run_python 失败了" —— 其实那次是人自己取消的。
+FAILURE_STATUSES = (
+    STATUS_FAILED,
+    STATUS_BLOCKED,
+    STATUS_DENIED,
+    STATUS_EXPIRED,
+)
+
 # 人工已经处理完的状态（无论是批准、拒绝还是取消）。
 DECIDED_STATUSES = (
     STATUS_APPROVED,

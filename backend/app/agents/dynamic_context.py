@@ -20,6 +20,11 @@
 
 代价：装配器算预算时看到的是占位符的长度（几十个字符），不是真实目录的
 长度。记忆模块自己管召回条数与预算，所以这块的溢出风险由它兜着。
+
+## 反思记录也是占位符
+
+同一套道理：最近失败过哪几次，每轮都不一样（这一轮失败了，下一轮的
+列表就变了）。它跟记忆目录一样是**每轮重填**的。
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from langchain_core.messages import SystemMessage
 # 提示词里的占位符 —— 内容在模型调用时才替换
 PLACEHOLDER_MEMORY = "<!--qzd:memory-catalog-->"
 PLACEHOLDER_UPLOADS = "<!--qzd:uploads-->"
+PLACEHOLDER_REFLECTION = "<!--qzd:reflection-->"
 
 
 class PromptHolder:
@@ -40,16 +46,24 @@ class PromptHolder:
     **可变是故意的** —— 图复用时，holder 也跟着复用，每轮把内容换掉。
     """
 
-    __slots__ = ("memory_catalog", "uploads_note")
+    __slots__ = ("memory_catalog", "uploads_note", "reflection")
 
     def __init__(self) -> None:
         self.memory_catalog = ""
         self.uploads_note = ""
+        self.reflection = ""
 
-    def update(self, *, memory_catalog: str = "", uploads_note: str = "") -> None:
+    def update(
+        self,
+        *,
+        memory_catalog: str = "",
+        uploads_note: str = "",
+        reflection: str = "",
+    ) -> None:
         """换成本轮的内容。"""
         self.memory_catalog = memory_catalog
         self.uploads_note = uploads_note
+        self.reflection = reflection
 
 
 class DynamicContextMiddleware(AgentMiddleware):
@@ -85,6 +99,7 @@ def _replace_placeholders(
     replacements = {
         PLACEHOLDER_MEMORY: holder.memory_catalog,
         PLACEHOLDER_UPLOADS: holder.uploads_note,
+        PLACEHOLDER_REFLECTION: holder.reflection,
     }
     blocks: list[dict[str, Any]] = []
     changed = False
@@ -113,6 +128,7 @@ def _replace_placeholders(
 
 __all__ = [
     "PLACEHOLDER_MEMORY",
+    "PLACEHOLDER_REFLECTION",
     "PLACEHOLDER_UPLOADS",
     "DynamicContextMiddleware",
     "PromptHolder",

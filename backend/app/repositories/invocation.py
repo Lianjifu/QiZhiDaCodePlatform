@@ -122,6 +122,37 @@ class InvocationRepository(BaseRepository[Invocation]):
         records.reverse()
         return records
 
+    async def list_recent_any(
+        self,
+        thread_id: str | None,
+        *,
+        limit: int = 20,
+        capability_key: str | None = None,
+    ) -> list[Invocation]:
+        """最近的调用记录，**新的在前**，不筛状态。
+
+        给反思用 —— agent 得知道自己失败过，否则它会在同一个坑里再摔一次。
+
+        **为什么不在这里筛状态**：什么算"失败"有两层 —— 记录的状态（失败、
+        被拒、被阻塞）只是一层；另一层是"工具跑成了但**要做的事没做成**"
+        （退出码非零）。后者的判断要看结果里的退出码，放在 Python 里做更合适
+        （见 ``app/agents/reflection.py``），也省得 SQL 里写 JSON 查询。
+
+        **按窗口取而不是按时间取**：窗口天然把陈旧的失败挤出去 —— 后面又跑
+        了几十次调用，早先那次失败就不在最近 20 次里了，不用引入"多久算
+        过期"这种拍脑袋的时间阈值。
+
+        只查 ``thread_id`` 匹配的记录：别人的会话的失败跟本会话无关，
+        混进来只会误导。
+        """
+        stmt = select(Invocation).order_by(Invocation.id.desc()).limit(limit)
+        if thread_id:
+            stmt = stmt.where(Invocation.thread_id == thread_id)
+        if capability_key:
+            stmt = stmt.where(Invocation.capability_key == capability_key)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def sum_changes(self, thread_id: str | None) -> tuple[int, int]:
         """这个会话的改动量合计（新增行数, 删除行数）。
 
