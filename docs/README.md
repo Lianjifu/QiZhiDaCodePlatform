@@ -72,6 +72,7 @@
 
 | | |
 | --- | --- |
+| [framework-vs-custom.md](framework-vs-custom.md) | 框架能力 vs 自研实现：哪些能改用框架、哪些框架给的是另一层、哪些是红线 |
 | [../README.md](../README.md) | 仓库总览：起服务、目录结构、两条要记住的坑 |
 | [../backend/README.md](../backend/README.md) | 后端：分层、目录、配置、迁移、风险 |
 | [../frontend/README.md](../frontend/README.md) | 前端：起服务、主题、组件、约定 |
