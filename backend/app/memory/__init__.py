@@ -20,7 +20,7 @@
 | `catalog.py` | 目录组装、预算装箱、MMR 去冗余 |
 | `service.py` | 统一入口：按 scope 分发、打分、写入校验 |
 
-设计细节见 ``docs/plans/memory-module.md``。
+设计细节见 ``docs/modules/memory.md``。
 """
 
 from app.memory.models import (

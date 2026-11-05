@@ -220,6 +220,8 @@ backend/
 deepAgents 额外带来规划（`write_todos`）、子代理（`task`）、技能（`SKILL.md`）、
 记忆（`AGENTS.md`）、上下文摘要与 prompt caching。
 
+实现细节见 [`../docs/modules/agent-chat.md`](../docs/modules/agent-chat.md)。
+
 ```text
 POST /api/v1/agent/chat             跑完一轮再整体返回
 POST /api/v1/agent/stream           SSE 流式推送（一帧一种事件）
@@ -427,7 +429,7 @@ agent 装完 pnpm，下一轮还能用。
 **回收**：平台里没有"会话结束"这个事件，所以靠空闲超时（默认 30 分钟）+
 容器数上限（默认 32）+ 启动时清理残留。
 
-实现细节见 [`docs/implementation/backend-strategy.md`](docs/implementation/backend-strategy.md)。
+实现细节见 [`../docs/modules/storage-sandbox.md`](../docs/modules/storage-sandbox.md)。
 
 ## 能力层（注册 / 意图 / 执行）
 
@@ -456,10 +458,8 @@ agent 装完 pnpm，下一轮还能用。
 三层都是动词，正好是同一条流水线上的三步：**注册**声明能力，**意图**形成这次调用意图，
 **执行**真正动手。
 
-能力与实现梳理见 [`docs/implementation/capability-module.md`](docs/implementation/capability-module.md)：
-统一能力清单、声明式契约、工具清单与逐段实现、治理能力。
-已知限制与待办见 [`docs/plans/capability-followups.md`](docs/plans/capability-followups.md)。
-deepAgents 迁移的方案与决策见 [`docs/plans/agent-migration-deepagents.md`](docs/plans/agent-migration-deepagents.md)。
+实现细节见 [`../docs/modules/capability.md`](../docs/modules/capability.md)：
+统一能力清单、声明式契约、工具清单与逐段实现、治理能力、已知限制。
 
 ### 执行层是唯一的执行路径
 
@@ -711,7 +711,7 @@ POST   /api/v1/agent/{thread_id}/permission  改权限模式（auto/manual/accep
 > 同样地，`POST /agent/{thread_id}/approve` 能替别人批准挂起的破坏性调用。
 > 这比「文件接口无鉴权」高一档 —— 建议把 `bypass` 收在进程级开关后面
 > （环境变量打开），并给这两类操作加审计日志。
-> 详见 [docs/plans/agent-review-2026-11.md](docs/plans/agent-review-2026-11.md) P0-4。
+> 详见 [`../docs/modules/capability.md`](../docs/modules/capability.md) 的已知限制。
 
 对话时用 `skill_ids` 指定要挂载的技能；不传则导出全部启用的技能，由模型按
 描述自己挑（渐进披露）：
@@ -840,8 +840,7 @@ v1 的向量存在 SQL 的 JSON 列里，检索在进程内算余弦 —— 几�
 **不引入新依赖**。规模上去了在 `VectorStore` 这一层后面换 pgvector / FTS5，
 接口不变。
 
-设计细节见 [`docs/implementation/rag-architecture.md`](docs/implementation/rag-architecture.md)，
-待办见 [`docs/plans/rag-followups.md`](docs/plans/rag-followups.md)。
+实现细节见 [`../docs/modules/knowledge.md`](../docs/modules/knowledge.md)。
 
 ### RAG 也给 agent 用：`rag_search` / `rag_read`
 
@@ -1002,7 +1001,7 @@ embedding 的供应商 → 环境变量兜底 → 都没有就建**纯关键词*
 > ⚠️ 记忆接口**当前没有鉴权**（整个平台都没做）。任何人都能读别人的会话内记忆、
 > 读长期记忆集合、往里塞东西。上线前必须补。
 
-实现细节见 [`docs/implementation/memory-module.md`](docs/implementation/memory-module.md)。
+实现细节见 [`../docs/modules/memory.md`](../docs/modules/memory.md)。
 
 ## 上下文模块
 
@@ -1050,12 +1049,14 @@ deepAgents 自带摘要中间件，而且比 LangChain 原版多做了一件事�
 curl 'http://127.0.0.1:8000/api/v1/context/preview?query=pnpm&workspace=/tmp/ws'
 ```
 
-实现细节见 [`docs/implementation/context-module.md`](docs/implementation/context-module.md)。
+实现细节见 [`../docs/modules/context.md`](../docs/modules/context.md)。
 
 ## 工作目录与多智能体协作
 
 会话默认在平台自带的**会话工作区**（一个空白目录）里干活。这套能力让会话可以
 绑一个**真实的代码仓库**当工作目录，还能把任务拆开、派子 agent 并行做。
+
+实现细节见 [`../docs/modules/workspace.md`](../docs/modules/workspace.md)。
 
 ```text
 GET    /api/v1/environments                    白名单下的目录、仓库、已有 worktree
@@ -1220,7 +1221,7 @@ curl -X POST 'http://127.0.0.1:8000/api/v1/agent/chat' \
 > ⚠️ **文件接口目前没有鉴权** —— 知道 `thread_id` 就能下载别人会话里的所有
 > 文件。这是"记忆接口无鉴权"那条风险的更严重版本，上线前必须补。
 
-实现细节见 [`docs/implementation/file-module.md`](docs/implementation/file-module.md)。
+实现细节见 [`../docs/modules/files.md`](../docs/modules/files.md)。
 
 ## 数据库迁移（Alembic）
 

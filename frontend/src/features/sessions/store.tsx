@@ -2,8 +2,8 @@
  * 会话元数据（本地）。
  *
  * **后端没有会话表** —— 消息在 checkpoint 里，会话本身（标题、置顶、列表）
- * 只存在浏览器。这是已知缺口（见 backend/docs/plans/file-storage.md 的
- * 「会话管理模块」），第一版先用 localStorage 顶着。
+ * 只存在浏览器。这是已知缺口（见 docs/modules/agent-chat.md 的
+ * 已知限制），第一版先用 localStorage 顶着。
  *
  * 清了浏览器数据会话列表就没了，但消息还在后端 —— 两者不完全一致，接受。
  */

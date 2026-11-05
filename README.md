@@ -40,11 +40,14 @@ React + TypeScript + Vite + Tailwind，深浅两套主题（跟随系统 / 浅�
 
 ## 文档
 
+按**功能模块**组织 —— 一篇讲清一个模块：它是什么、接口有哪些、怎么实现的、
+哪些地方改错了会出事、现在还差什么。
+
 | | |
 | --- | --- |
-| [backend/README.md](backend/README.md) | 后端：分层、模块、接口、配置 |
-| [backend/docs/README.md](backend/docs/README.md) | 后端文档索引（已实现 / 待做分开） |
-| [frontend/README.md](frontend/README.md) | 前端：起服务、目录结构、阶段划分 |
+| [docs/README.md](docs/README.md) | **功能模块文档索引**（编码助手 / 能力 / 记忆 / 知识库 / 上下文 / 文件 / 工作目录 / 模型接入 / 沙箱 / 自我进化） |
+| [backend/README.md](backend/README.md) | 后端：分层、目录、接口、配置、迁移、风险 |
+| [frontend/README.md](frontend/README.md) | 前端：起服务、目录结构、主题、约定 |
 
 ## 两条要记住的坑
 
