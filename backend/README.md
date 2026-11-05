@@ -17,6 +17,8 @@ FastAPI 后端脚手架，采用**简化分层架构（Service Layer）**。
    （422），不是静默忽略。
    但总闸开着的时候，"谁能提权"这件事仍然没有身份校验：知道 `thread_id` 的人
    就能给自己提权。**这条链要真正闭上，还是得先有鉴权。**
+   - 当前这台机器的 `.env` 里 `CAPABILITY_ALLOW_BYPASS=true`（用户明确要求开启
+     并可点击）；`.env.example` 里仍是 `false`，新部署默认关。
 
 2. **能写宿主机的接口一律没有鉴权。**
    能力调用（`/api/v1/capabilities/{key}/invoke`）能执行命令、建 git 分支、

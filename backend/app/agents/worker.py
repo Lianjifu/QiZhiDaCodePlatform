@@ -67,7 +67,9 @@ WORKER_PROMPT = """你是一个子 agent，主 agent 把一段明确的子任务
 - **命令沙箱里没有 git，也没有仓库的 .git 目录** —— 沙箱只挂载你这个
   worktree，里面的 .git 是个指向主仓库的指针文件，容器里解析不了；
 - 所以**不要在 execute 里敲 git 命令**，那一定失败；
-- 要看状态用 git_status，要提交用 git_commit —— 平台在宿主机上代做。
+- 要看状态用 git_status，要提交用 git_commit —— 平台在宿主机上代做；
+- 你**没有**开 worktree、删 worktree、合并分支的能力 —— 那些会影响别的
+  分支与别的子 agent 的产出，由平台和主 agent 负责。你只管自己这个目录。
 
 工作准则：
 1. 先读现有代码再动手，不要凭空猜文件内容；
@@ -78,6 +80,34 @@ WORKER_PROMPT = """你是一个子 agent，主 agent 把一段明确的子任务
 
 # worker 不许再派活：递归到此为止
 NO_DELEGATE_KEY = "delegate_worker"
+
+# worker **不许碰**的 git 能力。
+#
+# **为什么收窄**：worker 的能力集是主 agent 传进来的，而主 agent 的那一份
+# 里有 ``git_worktree_add`` / ``git_worktree_remove`` / ``git_merge`` ——
+# 这三个是**破坏性**的（RiskLevel.DESTRUCTIVE），主 agent 走人工审批才放行。
+#
+# 但 worker 跑在 ``permissive``（= bypass）上且**没有界面**（见
+# ``app/agents/permissions.py`` 与 ``registration/policy.py``），审批对它
+# 不存在 —— 那三个能力到了 worker 手里就是**无人拦的破坏性操作**。
+#
+# 而 worker 根本不需要它们：
+#
+# - 它的 worktree 是平台为它建好的，它只管在里面干活、提交；
+# - ``git_worktree_remove(path)`` 的 path 由模型给 —— 不收窄的话，一个
+#   worker 能删掉同仓库**别的 worker** 的 worktree（实测复现）；
+# - ``git_merge(branch, target)`` 的 target 也由模型给 —— target 指向别的
+#   分支时会把那个分支的 ref 往前推（实测复现）。
+#
+# 所以这里直接把三个破坏性 git 能力从 worker 的清单里剔掉。worker 只留
+# 「看状态」与「提交」—— 正是它提示词里教的那两个。
+WORKER_BLOCKED_GIT_KEYS: frozenset[str] = frozenset(
+    {
+        "git_worktree_add",
+        "git_worktree_remove",
+        "git_merge",
+    }
+)
 
 
 @dataclass
@@ -145,8 +175,12 @@ async def run_worker(
     service = EnvironmentService()
     env = service.create_worktree(repo_root, branch, base=base, reuse=True)
 
-    # worker 的能力清单：去掉委派本身 —— 递归到此为止
-    worker_specs = [spec for spec in specs if spec.key != NO_DELEGATE_KEY]
+    # worker 的能力清单：去掉委派本身（递归封顶）与破坏性 git 能力
+    worker_specs = [
+        spec
+        for spec in specs
+        if spec.key != NO_DELEGATE_KEY and spec.key not in WORKER_BLOCKED_GIT_KEYS
+    ]
 
     context = ExecutionContext.build(env.path)
     context.session = session
@@ -181,9 +215,16 @@ async def run_worker(
         # （连同父图的 checkpointer），worker 的状态会写进主会话的 checkpoint
         # 谱系里，把主会话冲掉 —— 而且不报错。
         #
-        # recursion_limit 也要显式给：默认 25，worker 走二十几步工具
-        # 就会 GraphRecursionError。
-        config={"configurable": {"thread_id": worker_id}, "recursion_limit": max_steps + 20},
+        # recursion_limit 也要显式给：deepAgents 建图时把它绑成了 9999 ——
+        # 那等于没有上限，一个陷在循环里的 worker 能一直烧钱。
+        #
+        # **换算**：``max_steps`` 数的是「模型 ↔ 工具」往返的轮数，
+        # 一轮 = 两个 superstep（调模型 + 执行工具），再加收尾那次模型调用。
+        # 所以 ``轮数 × 2 + 余量`` —— 余量给收尾。
+        config={
+            "configurable": {"thread_id": worker_id},
+            "recursion_limit": max_steps * 2 + 20,
+        },
     )
 
     messages = result.get("messages", []) if isinstance(result, dict) else []

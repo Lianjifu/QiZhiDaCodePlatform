@@ -70,7 +70,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from langchain.agents.middleware.summarization import SummarizationMiddleware
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware as DeepAgentsSummarizationMiddleware,
+)
 from langchain_core.language_models import BaseChatModel
 
 from app.context.budget import (
@@ -110,12 +112,37 @@ def _profile_window(model: BaseChatModel) -> int | None:
     return int(value) if isinstance(value, int) and value > 0 else None
 
 
-class PlatformSummarizationMiddleware(SummarizationMiddleware):
+class PlatformSummarizationMiddleware(DeepAgentsSummarizationMiddleware):
     """平台的压缩中间件。
 
-    只改**阈值与摘要模型**，压缩的机制（历史外置、溢出重试、大参数预裁剪）
-    全部沿用框架的实现 —— 那些是 deepAgents 相对 LangChain 原版的改进，
-    自己重写等于放弃它们。
+    **继承 deepAgents 的那份，不是 LangChain 的那份** —— 这不是风格选择。
+
+    两者的差别正好是压缩最要紧的两件事：
+
+    - **被压缩的历史**：LangChain 版**直接丢**（用 ``RemoveMessage`` 重写
+      state）；deepAgents 版先**外置成文件**（``conversation_history/{id}.md``），
+      摘要里带上路径，agent 能用 ``read_file`` 回去翻。
+    - **改 state 的方式**：LangChain 版在 ``before_model`` 里改写；
+      deepAgents 版在 ``wrap_model_call`` 里记一个私有事件，
+      ``state["messages"]`` **原样不动**。
+
+    早先这里继承的是 LangChain 版，而 deepAgents 的那份构造函数把 ``backend``
+    当**必填关键字参数** —— 我们传进去的 ``backend=`` 被 LangChain 的
+    ``**deprecated_kwargs`` **静默吞掉**（那个 ``__init__`` 只认
+    ``max_tokens_before_summary`` / ``messages_to_keep``）。实测：
+
+    ```text
+    deepAgents 实例._backend             = <PlatformBackend ...>
+    ours._backend                        = MISSING（丢了）
+    ours._history_path_prefix            = MISSING（丢了）
+    ```
+
+    后果是**压缩之后原始对话彻底没了** —— 既没有外置文件，checkpoint 里的
+    消息也被重写掉了。长会话里 agent 会"忘记"早期做过什么，且**无法回查**。
+
+    继承 deepAgents 版把这三样能力都拿回来：历史外置、state 不被改写、
+    大工具参数预裁剪（``_truncate_args``）、以及超窗后的降级重试
+    （``_check_reduction``）。
     """
 
     # 同名替换的前提。改这个名字 = 接管失效（而且是静默失效）。
@@ -134,8 +161,8 @@ class PlatformSummarizationMiddleware(SummarizationMiddleware):
 
         Args:
             model: 主模型（框架用它算默认阈值）。
-            backend: 文件后端。给了才会把被压缩的历史外置成文件 ——
-                不给的话历史直接不可恢复。
+            backend: 文件后端。**必填** —— 给了才会把被压缩的历史外置成
+                文件，不给的话历史直接不可恢复。
             summarizer: 摘要用的模型。不给就用主模型。**应该是便宜的** ——
                 压缩是信息搬运，不需要旗舰模型的推理能力；但必须是同一家
                 厂商的，摘要文本要进主对话，跨厂商会有格式与风格差异。
@@ -154,14 +181,65 @@ class PlatformSummarizationMiddleware(SummarizationMiddleware):
 
         super().__init__(
             model=model,
+            # **backend 是 deepAgents 版的必填参数** —— 少了它就没有历史外置。
             backend=backend,
             summarizer=summarizer,
             trigger=kwargs.pop("trigger", trigger),
             keep=kwargs.pop("keep", keep),
+            # **摘要要涵盖全部被压缩的历史** —— deepAgents 版默认只送最后
+            # 4000 token 进摘要（``trim_tokens_to_summarize``），更早的那部分
+            # **既不进摘要也不被保留**，直接消失（实测：120 条消息里索引
+            # 0~67 的内容就这么没了）。设成 None = 全量送进摘要。
+            trim_tokens_to_summarize=kwargs.pop("trim_tokens_to_summarize", None),
             **kwargs,
         )
         self._keep_messages = keep_messages
         self._window = window
+        self._fix_artifacts_root()
+
+    # ---------- 阈值的只读视图 ----------
+    #
+    # deepAgents 版把 ``trigger`` / ``keep`` 放在内部的 LangChain 助手上，
+    # 自己身上没有这两个属性。但它们是**平台定的**（不是框架默认的），
+    # 测试与排障都要看得见 —— 所以在这里透出来。
+
+    @property
+    def trigger(self) -> Any:
+        """触发压缩的条件。"""
+        return self._lc_helper.trigger
+
+    @property
+    def keep(self) -> Any:
+        """压缩时保留多少历史。"""
+        return self._lc_helper.keep
+
+    @property
+    def trim_tokens_to_summarize(self) -> int | None:
+        """送进摘要模型的历史上限（token）；``None`` = 全量送。"""
+        return self._lc_helper.trim_tokens_to_summarize
+
+    def _fix_artifacts_root(self) -> None:
+        """把历史外置的落点指回**产物目录**（工作区外面）。
+
+        deepAgents 算 ``artifacts_root`` 用的是 ``isinstance(backend, CompositeBackend)``
+        —— 而我们传给它的 ``PlatformBackend`` **只是包着** CompositeBackend，
+        不是它的子类，于是判定为 False，产物目录退化成 ``"/"``。
+
+        那个 ``"/"`` 落在**用户的工作区**里 —— 也就是被压缩掉的对话历史
+        （含用户说过的话、agent 读到的代码）会明晃晃地落进用户的仓库，
+        可能被 ``git commit`` 一起提交上去。
+
+        所以这里显式把它指回 ``PlatformBackend.artifacts_root``（那是
+        ``/.artifacts/``，挂在工作区外面）。
+        """
+        backend = getattr(self, "_backend", None)
+        root = getattr(backend, "artifacts_root", "") or ""
+        if not root or root == "/":
+            return
+        root = root.rstrip("/")
+        self._history_path_prefix = f"{root}/conversation_history"
+        self._large_tool_results_prefix = f"{root}/large_tool_results"
+        self._media_prefix = f"{self._history_path_prefix}/media"
 
     def _should_summarize(self, messages: list[Any], total_tokens: int) -> bool:
         """两条度量各用各的阈值。
@@ -190,7 +268,11 @@ class PlatformSummarizationMiddleware(SummarizationMiddleware):
         if total_tokens >= conversation_limit:
             return True
         total_limit = int(limit * TOTAL_REQUEST_FRACTION)
-        return self._should_summarize_based_on_reported_tokens(messages, float(total_limit))
+        # **走 ``_lc_helper``** —— deepAgents 版把这条判断放在它的 LangChain
+        # 助手上，自己身上没有这个方法（直接调会 AttributeError）。
+        return self._lc_helper._should_summarize_based_on_reported_tokens(
+            messages, float(total_limit)
+        )
 
 
 def build_compaction_middleware(

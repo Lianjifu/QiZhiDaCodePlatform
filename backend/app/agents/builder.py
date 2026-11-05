@@ -242,7 +242,7 @@ async def build_agent(
     #
     # 框架默认的 `MEMORY_SYSTEM_PROMPT` 有四千多字符（约一千 token），**每次
     # 请求都带** —— 而且它教模型「用 edit_file 更新记忆」，跟我们自己的
-    # `memory_write` 规则（`app/agents/prompts.py` 准则 7）直接打架。
+    # `memory_write` 规则（`app/agents/prompts.py` 准则 8）直接打架。
     #
     # 只留 `{agent_memory}` 那一段：工作区说明（AGENTS.md）还是要进提示词的，
     # 那是项目规矩；只是不用再附带一份跟我们重复（还矛盾）的使用指南。

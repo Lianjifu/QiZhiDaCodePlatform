@@ -65,6 +65,31 @@ def _guard(action: str, func: Callable[[], Any]) -> Any:
         ) from exc
 
 
+def _own_repo(context: ExecutionContext) -> str:
+    """当前工作目录所属仓库的 ``.git`` 目录（绝对路径）。
+
+    **用 common_dir 而不是仓库根** —— worktree 里的 ``.git`` 是个指针文件，
+    指向主仓库的 ``.git``。两个 worktree 属于同一个仓库时，common_dir 相同；
+    属于不同仓库时不同。这正是"是不是同一个仓库"的判据。
+
+    不是仓库就返回空串。
+    """
+    common = GitService(context.workspace).common_dir()
+    return str(common) if common else ""
+
+
+def _same_repo(context: ExecutionContext, path: Path) -> bool:
+    """``path`` 是不是和当前工作目录属于同一个仓库。
+
+    用来卡住"跨仓库"的操作 —— 比如删掉**别的仓库**的 worktree。
+    """
+    own = _own_repo(context)
+    if not own:
+        return False
+    other = GitService(path).common_dir()
+    return bool(other) and str(other) == own
+
+
 def make_git_status(context: ExecutionContext) -> Callable[[], Awaitable[dict[str, Any]]]:
     """构造"看当前 git 状态"能力。"""
 
@@ -180,8 +205,18 @@ def make_git_worktree_remove(
         Returns:
             ``content`` 是结果说明。
         """
+        target = Path(path)
+        # **只能删同一个仓库的 worktree** —— path 是模型给的，
+        # 不卡这一道的话，删别的仓库的 worktree 也在白名单里（白名单管的是
+        # "哪个目录"，不是"哪个仓库"）。
+        if not _same_repo(context, target):
+            raise CapabilityError(
+                "只能删除当前仓库下的 worktree —— "
+                "目标不在当前工作目录所属的仓库里",
+                code=ErrorCode.INVALID_ARGUMENTS,
+            )
         service = EnvironmentService()
-        _guard("删除 worktree", lambda: service.remove_worktree(Path(path)))
+        _guard("删除 worktree", lambda: service.remove_worktree(target))
         return {"content": f"已删除 worktree：{path}", "path": path, "removed": True}
 
     return git_worktree_remove

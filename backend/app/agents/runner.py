@@ -172,8 +172,23 @@ class AgentRunner:
         **checkpointer 按请求带，不编进图里** —— 图要跨请求复用，而
         checkpointer 是每次请求新开的一个 SQLite 连接（用完就关）。编进去
         的话，复用时就拿着上个请求那个已经关掉的连接写 checkpoint。
+
+        **recursion_limit 显式给** —— deepAgents 建图时把它绑成了 9999，
+        那等于**没有上限**：一个陷在循环里的 agent 能一口气跑几千轮，
+        token 和钱都是真的烧掉了。
+
+        换算：``agent_max_steps`` 数的是「模型 ↔ 工具」往返的**轮数**，
+        一轮 = 两个 superstep（调模型 + 执行工具），再加收尾那次模型调用。
+        所以 ``轮数 × 2 + 余量`` —— 余量给审批恢复（恢复走同一张图，
+        再走一遍被挂起的那段）与收尾。
+
+        平台自己的置信度机制只管"反复填错参数"，管不到"反复做无用功
+        但每次都成功"的循环 —— 这个上限就是管那个的。
         """
-        config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+        config: dict[str, Any] = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": settings.agent_max_steps * 2 + 20,
+        }
         if self.checkpointer is not None:
             config[CONFIG_KEY_CHECKPOINTER] = self.checkpointer
         return config

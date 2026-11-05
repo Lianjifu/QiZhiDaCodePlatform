@@ -452,8 +452,11 @@ class MemoryService:
 def _apply_scoring(entries: list[MemoryEntry]) -> list[MemoryEntry]:
     """给召回结果算综合分并排序。
 
-    相关度主导，时间与使用次数只做微调 —— 这样"很久没用但依然相关"的记忆
-    不会被一条"刚用过但不太相关"的记忆挤下去。
+    相关度主导，时间、使用次数与来源只做微调 —— 这样"很久没用但依然相关"的
+    记忆不会被一条"刚用过但不太相关"的记忆挤下去。
+
+    **来源也参与排序**（权重 1.0 vs 0.9）—— 用户明确说的比模型推断的权威一点。
+    以前这个字段只存不看，等于没有。
     """
     now = datetime.now(UTC)
     scored: list[MemoryEntry] = []
@@ -464,6 +467,7 @@ def _apply_scoring(entries: list[MemoryEntry]) -> list[MemoryEntry]:
             entry.last_used_at or entry.created_at,
             settings.memory_decay_half_life_days,
             now,
+            entry.source,
         )
         scored.append(entry)
     scored.sort(key=lambda item: item.relevance, reverse=True)

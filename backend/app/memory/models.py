@@ -72,6 +72,34 @@ TIME_FACTOR_FLOOR = 0.7
 USAGE_FACTOR_FLOOR = 0.85
 # 使用次数的封顶值（用满 10 次就不再加分）
 USAGE_SATURATION = 10
+# 来源权重：用户明确说的比模型推断的更权威
+#
+# **用户说的（source=user）= 1.0，模型推断的（model-inferred）= 0.9**。
+#
+# 为什么模型推断的不能跟用户说的平起平坐：模型推断的东西**可能猜错**，
+# 而用户明确表达的偏好与约定不会。用户说"用 pnpm"是事实；模型从代码里
+# 看出"好像用 pnpm"是推断 —— 两者混为一谈时，召回会把推断当承诺。
+#
+# 只降 10% 而不是更多：降太多就变成"事实上的淘汰"，违背"降权 ≠ 淘汰"；
+# 10% 足以在同等相关度时把用户说的排在前面。
+SOURCE_WEIGHTS: dict[str, float] = {
+    SOURCE_USER: 1.0,
+    SOURCE_MODEL: 0.9,
+}
+# 未知来源按模型推断算（保守的那一侧 —— 宁可低估权威性）
+SOURCE_DEFAULT_WEIGHT = SOURCE_WEIGHTS[SOURCE_MODEL]
+
+
+def source_weight(source: str) -> float:
+    """来源权重 —— 参与召回排序。
+
+    Args:
+        source: 来源标记（``user`` / ``model-inferred``）。
+
+    Returns:
+        权重系数。未知来源按模型推断算。
+    """
+    return SOURCE_WEIGHTS.get(str(source or ""), SOURCE_DEFAULT_WEIGHT)
 
 
 @dataclass
@@ -198,17 +226,35 @@ def effective_score(
     last_used_at: datetime | None,
     half_life_days: int,
     now: datetime | None = None,
+    source: str = SOURCE_MODEL,
 ) -> float:
     """综合排序分。
 
     相关度主导，时间与使用次数只做微调 —— 这样"很久没用但依然相关"的记忆
     不会被一条"刚用过但不太相关"的记忆挤下去。
 
-    两项微调都有地板：时间最低 0.7、使用次数最低 0.85，合计最多打三折。
-    再多就会把"排序靠后"变成"事实上的消失"，那就违背了"降权不等于淘汰"。
+    三项微调都有地板：时间最低 0.7、使用次数最低 0.85、来源最低 0.9，
+    合计最多打三折。再多就会把"排序靠后"变成"事实上的消失"，
+    那就违背了"降权不等于淘汰"。
+
+    Args:
+        relevance: 相关度（召回时的原始分）。
+        use_count: 被召回过多少次。
+        last_used_at: 最后一次被召回的时间。
+        half_life_days: 时间衰减的半衰期（天）。
+        now: 当前时间（测试可注入）。
+        source: 来源标记 —— 用户说的比模型推断的权威一点。
+
+    Returns:
+        综合分。
     """
     usage_term = USAGE_FACTOR_FLOOR + (1 - USAGE_FACTOR_FLOOR) * usage_factor(use_count)
-    return max(0.0, relevance) * time_factor(last_used_at, half_life_days, now) * usage_term
+    return (
+        max(0.0, relevance)
+        * time_factor(last_used_at, half_life_days, now)
+        * usage_term
+        * source_weight(source)
+    )
 
 
 __all__ = [
@@ -224,6 +270,9 @@ __all__ = [
     "SCOPE_SESSION",
     "SOURCE_MODEL",
     "SOURCE_USER",
+    "SOURCE_DEFAULT_WEIGHT",
+    "SOURCE_WEIGHTS",
+    "source_weight",
     "TIME_FACTOR_FLOOR",
     "MemoryEntry",
     "content_hash",

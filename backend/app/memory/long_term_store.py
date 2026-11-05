@@ -39,7 +39,7 @@ from app.core.config import settings
 from app.core.locking import TaskLock
 from app.memory.models import (
     SCOPE_LONG_TERM,
-    SOURCE_USER,
+    SOURCE_MODEL,
     MemoryEntry,
     content_hash,
     ensure_utc,
@@ -401,7 +401,16 @@ def _to_entry(document: RagDocument) -> MemoryEntry:
         tags=list(meta.get("tags") or []),
         strength=float(meta.get("strength", 0.5)),
         use_count=int(meta.get("use_count", 0)),
-        source=str(meta.get("source") or SOURCE_USER),
+        # **来源默认按 model-inferred 算** —— 不是 user。
+        #
+        # 写进长期记忆的唯一路径是 ``memory_write`` 工具，而它恒定传
+        # ``SOURCE_MODEL``（模型写的）。meta 里没有 source 只可能是老数据或
+        # 手工塞进去的文档 —— 那时**默认当成"用户说的"就是在替模型背书**：
+        # 模型自己总结的东西，读回来却标成用户授权过的。
+        #
+        # 默认成 model-inferred 是保守的那一侧 —— 宁可低估来源的权威性，
+        # 也不要高估。
+        source=str(meta.get("source") or SOURCE_MODEL),
         source_thread_id=str(meta.get("source_thread_id") or ""),
         superseded=bool(meta.get("superseded", False)),
         created_at=ensure_utc(created_at or document.created_at),

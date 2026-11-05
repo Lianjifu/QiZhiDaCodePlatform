@@ -23,9 +23,14 @@ from app.core.config import settings
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
-    """权限文件写到临时目录 —— 别动真实的会话目录。"""
+    """权限文件写到临时目录 —— 别动真实的会话目录。
+
+    **bypass 总闸也钉死** —— 它默认关着，但部署的 ``.env`` 可能把它打开
+    （那是运维的选择）。测试不能跟着部署配置变 —— 该测什么由测试自己说。
+    """
     monkeypatch.setattr(settings, "workspace_root", str(tmp_path / "workspace"))
     monkeypatch.setattr(settings, "capability_trust_mode", "balanced")
+    monkeypatch.setattr(settings, "capability_allow_bypass", False)
     yield
 
 
@@ -153,9 +158,34 @@ def test_全局配置写bypass也要过总闸(monkeypatch):
 
 
 async def test_bypass被拒要报422(client):
-    """请求不合法 —— 该是 4xx（平台的校验错误码是 422），不是 500。"""
+    """请求不合法 —— 该是 4xx（平台的校验错误码是 422），不是 500。
+
+    总闸关着的时候（fixture 里钉死的）切 bypass 要被拒。
+    """
     response = await client.post(
         "/api/v1/agent/t-perm-3/permission",
         json={"mode": "bypass"},
     )
     assert response.status_code == 422
+
+
+async def test_总闸开着时bypass可切且前端能拿到(client):
+    """总闸开着 → 切 bypass 成功，且接口要告诉前端"这一项可选"。
+
+    ``allow_bypass`` 是前端那个选择器用来决定「绕过权限」可不可点的 ——
+    它为 false 时界面把那一项置灰。
+    """
+    response = await client.get("/api/v1/agent/t-perm-4/permission")
+    assert response.status_code == 200
+    assert response.json()["data"]["allow_bypass"] is False
+
+    settings.capability_allow_bypass = True
+    response = await client.get("/api/v1/agent/t-perm-4/permission")
+    assert response.json()["data"]["allow_bypass"] is True
+
+    response = await client.post(
+        "/api/v1/agent/t-perm-4/permission",
+        json={"mode": "bypass"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["permission_mode"] == "bypass"

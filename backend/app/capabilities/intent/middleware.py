@@ -42,7 +42,7 @@ from app.agents.tasks import REGISTRY, describe_call
 from app.capabilities.errors import CapabilityError
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.redaction import redact
-from app.capabilities.execution.risk import assess_call
+from app.capabilities.execution.risk import RiskAssessment, assess_call
 from app.capabilities.execution.task_state import adjust_confidence, load_task_state
 from app.capabilities.registration.policy import (
     PermissionMode,
@@ -169,7 +169,11 @@ class CapabilityMiddleware(AgentMiddleware):
         args = dict(tool_call.get("args") or {})
 
         # 1) 参数级风险：命中就挂起等人批
-        denied = await self._check_param_risk(name, args)
+        #
+        # **判定只算一次** —— 这次结果既用来决定要不要挂起，也用来写调用记录
+        # （记录里的风险档位要是参数级上调后的，不是工具的基线档位）。
+        assessment = assess_call(name, args, self.specs)
+        denied = await self._check_param_risk(name, args, assessment)
         if denied is not None:
             return denied
 
@@ -206,14 +210,19 @@ class CapabilityMiddleware(AgentMiddleware):
         # 3) 留痕 + 置信度（只对文件工具；我们自己的工具由执行层写记录）
         blocked = False
         if name in FS_TOOL_NAMES:
-            blocked = await self._record(name, args, message, duration_ms)
+            blocked = await self._record(name, args, message, duration_ms, assessment)
             if blocked:
                 # 任务越过阻塞线 → 明确告诉模型停下来，别再重试
                 message = _with_blocked_notice(message)
 
         return message
 
-    async def _check_param_risk(self, name: str, args: dict[str, Any]) -> ToolMessage | None:
+    async def _check_param_risk(
+        self,
+        name: str,
+        args: dict[str, Any],
+        assessment: RiskAssessment | None = None,
+    ) -> ToolMessage | None:
         """参数级风险规则：命中就挂起等人批。
 
         挂起用 LangGraph 的 ``interrupt()``：它在工具执行过程中抛中断，
@@ -236,12 +245,28 @@ class CapabilityMiddleware(AgentMiddleware):
         Args:
             name: 工具名。
             args: 工具参数。
+            assessment: 已经算好的风险评估。**没给就现算** ——
+                调用方算过了就别算第二遍（规则要跑正则，不便宜）。
 
         Returns:
             人工拒绝时返回一条错误消息；批准或没命中时返回 ``None``（继续执行）。
         """
+        if assessment is None:
+            assessment = assess_call(name, args, self.specs)
+
         if not self.interrupt_enabled:
-            # worker：没有前端界面，挂起就永远等不到人批
+            # worker：没有前端界面，挂起就永远等不到人批。
+            #
+            # **但判定已经跑过了**（上面算的），结果照样落到调用记录里 ——
+            # "不让人批"不等于"不记账"。事后要能查"worker 干过什么、
+            # 有没有命中风险规则"，靠的就是这条记录。
+            if assessment.needs_review:
+                logger.warning(
+                    "worker 放行了命中风险规则的调用（无人工审批）：tool=%s risk=%s reasons=%s",
+                    name,
+                    assessment.risk,
+                    assessment.reasons,
+                )
             return None
 
         if name in self._approval_tool_names():
@@ -254,7 +279,6 @@ class CapabilityMiddleware(AgentMiddleware):
             # 而不是只看到工具的基线档位。
             return None
 
-        assessment = assess_call(name, args, self.specs)
         if not assessment.needs_review:
             # 没有威胁信号 —— 只是风险分类被调整了（比如"会向固定出口发数据"
             # 记成 write）。那不是危险，不该再挂一次让人批。
@@ -331,11 +355,22 @@ class CapabilityMiddleware(AgentMiddleware):
         args: dict[str, Any],
         message: Any,
         duration_ms: int,
+        assessment: RiskAssessment | None = None,
     ) -> bool:
         """给文件工具写一条调用记录，并更新任务置信度。
 
         我们的工具（web_* / run_python / MCP）由执行层写记录 —— 那条路径有
         完整的阶段结论；文件工具不走执行层，所以在这里补一条简化的。
+
+        Args:
+            name: 工具名。
+            args: 工具参数。
+            message: 工具返回的消息。
+            duration_ms: 耗时（毫秒）。
+            assessment: 参数级风险评估。给了就用它算风险档位 ——
+                **记录里要的是参数级上调后的档位**（"破坏性"而不是
+                "执行命令"），不然事后翻记录会以为那条 ``rm -rf``
+                只是普通命令。
 
         Returns:
             任务是否已经越过阻塞线。
@@ -355,6 +390,13 @@ class CapabilityMiddleware(AgentMiddleware):
         error_code = "EXECUTION_ERROR" if failed else None
 
         policy = policy_for_tool(name)
+        # **风险档位取参数级上调后的那个** —— 评估算出来的风险只会上调，
+        # 不会下调（`risk.max_risk`），所以直接用评估结果就是最严格的。
+        #
+        # 为什么重要：一条 ``rm -rf`` 走的也是 ``execute`` 工具。只记工具的
+        # 基线档位（"执行命令"），事后翻记录会以为那只是普通命令 ——
+        # 而它其实已经被参数级规则判定成破坏性了。
+        risk = str(assessment.risk) if assessment is not None else policy.risk
         async with self.context.db():
             state = await load_task_state(self.context.session, self.thread_id, name)
             confidence = adjust_confidence(state.confidence, error_code)
@@ -376,7 +418,7 @@ class CapabilityMiddleware(AgentMiddleware):
                     if blocked
                     else (STATUS_FAILED if failed else STATUS_SUCCEEDED)
                 ),
-                risk=policy.risk,
+                risk=risk,
                 permission=policy.permission,
                 decision_reason="文件工具经由 deepAgents 后端执行",
                 result=result,

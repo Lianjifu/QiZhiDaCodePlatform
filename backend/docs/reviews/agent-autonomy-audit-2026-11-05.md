@@ -11,12 +11,42 @@
 | --- | --- | --- | --- | --- |
 | 自主规划 | 弱（只有 write_todos 记事） | 无 | 弱 | **弱** |
 | 自主执行 | 强 | 中 | **强** | **强** |
-| 自主迭代 | 弱（压缩丢链） | 弱 | 中（重试上限 1） | **弱** |
+| 自主迭代 | 弱（压缩丢链） | 弱 | 中（重试上限 1） | **弱**（压缩丢链**已修**） |
 | 自主反思 | 无 | 无 | 无 | **无** |
-| 自主进化 | 无 | 无（只记用户说的） | 无 | **无** |
+| 自主进化 | 无 | 弱（只记用户说的 → **已放开记验证过的经验**） | 无 | **无** |
 
 三个"强"是真实的：工具集完整、执行层七阶段严谨、参数级风险判定看得见真实参数。
 四个"弱/无"也是真实的，而且其中三处是**主动设计的直接后果**（提示词明确禁止、代码路径不存在），不是"还没来得及做"。
+
+---
+
+## 0.5 修复状态（同日推进，2026-11-05）
+
+审查出的风险里，**R1 / R1b / R2 / R3 / R5 / R7 已修**，回归测试见
+`backend/tests/test_autonomy_fixes.py`（14 条，每条盯一个**实测复现过**的缺陷）。
+
+| # | 状态 | 怎么修的 |
+| --- | --- | --- |
+| **R1** | 已修 | worker 的 `trust_mode` **保持 `permissive`**（改成 `auto` 会挂起等不到人批，worker 会直接卡死），但补上了两件事：参数级风险判定**不再整段跳过** —— `interrupt_enabled=False` 时仍然 `assess_call` 算一遍并把风险写进调用记录（只记不拦）；命中风险规则时打 warning 日志。见 `capabilities/intent/middleware.py` |
+| **R1b** | 已修 | 两层：**能力层**——`git_worktree_add` / `git_worktree_remove` / `git_merge` 从 worker 的能力清单里整个剔掉（`agents/worker.py` `WORKER_BLOCKED_GIT_KEYS`），worker 根本看不到这三个工具；**能力实现层**——`git_worktree_remove` 增加同仓库校验（`GitService.common_dir()` 比对），跨仓库的目标直接拒 |
+| **R2** | 已修 | `PlatformSummarizationMiddleware` 改成继承 **deepAgents 版**（不再是 LangChain 版）—— `backend=` 不再被 `**deprecated_kwargs` 吞掉，历史外置回来了，state 不再被 `RemoveMessage` 改写。见 `context/compaction.py` |
+| **R3** | 已修 | `trim_tokens_to_summarize=None` —— 被压缩的历史**全量**进摘要，不再只送最后 4000 token |
+| **R5** | 已修 | 主 agent 与 worker 都显式设 `recursion_limit`（见 §3.1 的更正 —— 原报告的前提是错的）；`agent_max_steps` 从死配置接上，默认 20→60 |
+| **R7** | 已修 | `compaction.py` 的注释改写为"为什么接管"（含实测证据），不再说谎 |
+
+**另修的一处**（原报告没列）：deepAgents 算 `artifacts_root` 用的是
+`isinstance(backend, CompositeBackend)`，而平台的 `PlatformBackend` 只是**包着**
+CompositeBackend、不是它的子类 —— 判定为 False，产物目录退化成 `"/"`，
+**被压缩掉的对话历史会落进用户的工作区**（可能被 `git commit` 一起提交上去）。
+现在 `_fix_artifacts_root()` 显式把它指回 `/.artifacts/`。
+
+**仍然开放**：
+
+- **R4（无鉴权 + bypass 自提权）** —— 用户已决定**开启** bypass 并做成可点击的开关。
+  这条风险**依然成立**：平台没有任何鉴权，知道 `thread_id` 就能把会话设成 bypass，
+  而 bypass 会让能力调用直接执行。缓解只有白名单根目录 + 沙箱容器。
+- **R6**（worker 无 checkpointer、无中断恢复）—— 未动。
+- §4 自主反思、§5 自主进化、§6 意图层工具收敛 —— 未动，见 §8。
 
 ---
 
@@ -86,14 +116,26 @@
 
 没有 loop/continue 工具。多轮靠 LangGraph 的 ReAct 循环（模型持续调工具直到出最终消息）。
 
-- 主 agent **没有设 `recursion_limit`** → 用框架默认 **25**（`langchain_core/runnables/config.py:171` `DEFAULT_RECURSION_LIMIT = 25`）。
+- 主 agent **没有设 `recursion_limit`** → **不是**框架默认的 25。deepAgents 在
+  `create_deep_agent` 里用 `.with_config()` 把 `recursion_limit: 9999` 绑在了图上，
+  而 LangChain 的 config 合并里**调用时的值只有不等于 25 时才覆盖绑定值**
+  （`langchain_core/runnables/config.py:487`）。实测：平台此前既没传 `recursion_limit`
+  也没改绑定值 → **实际生效的是 9999，等于没有上限**。
   `config.py:69` 的 `agent_max_steps: int = 20` **全仓无人读取** —— 死配置。
-- worker 设了（`agents/worker.py:186` `recursion_limit = max_steps + 20 = 60`）。
+  - 原报告在这里写的是"用框架默认 25"，**前提是错的** —— 见文末「复核时修正的四处」。
+- worker 设了（`agents/worker.py` `recursion_limit = max_steps + 20 = 60`）——
+  但那个值同样**压不住** deepAgents 绑的 9999 之外的情况：worker 走的是
+  `build_agent` + `ainvoke`，config 是显式传进去的，所以它那 60 是生效的。
+  真正的问题在主 agent 那一侧。
 - 跨轮迭代只能靠用户：`api/v1/agent.py:344` regenerate、`:376` fork。
 - 执行层自动重试基本不发生：默认 `capability_retry_max_attempts = 1`（`config.py:153`），
   且要同时满足"错误码在白名单 + 运行时 retryable + 能力幂等"（`pipeline.py:389-393`）。
 
-### 3.2 压缩会断迭代链 —— 已实测确认
+### 3.2 压缩会断迭代链 —— 已实测确认，**已修**
+
+> **修复状态**：本节描述的缺陷全部已修（方案 A：继承改成 deepAgents 版 +
+> `trim_tokens_to_summarize=None` + 注释改写）。下面的实测证据保留作为
+> "曾经真的这样"的记录 —— 回归测试 `test_autonomy_fixes.py` 会盯着它不许退回去。
 
 `context/compaction.py` 声称接管 deepAgents 的摘要中间件，并明确写了它带来的收益：
 
@@ -179,6 +221,9 @@
 
 ## 5. 自主进化 —— 无，且被提示词主动堵死
 
+> **修复状态**：本节的两处（提示词封堵、source 维度是死的且是反的）**已修**。
+> 5.2（长期记忆默认不可用）、5.3（无淘汰、无 RAG 工具、无自动提炼）仍然开放。
+
 ### 5.1 提示词层面的封堵
 
 `agents/prompts.py:60-63`（准则 7）：
@@ -188,6 +233,11 @@
 
 这条规则**直接把自省式写入挡在门外**。agent 试过一次、发现某个写法不行，
 这个"经验"恰恰是模型推断出来的，按规则不能记。
+
+> **已修**：准则改写为 —— 用户明确说出的照记；**模型自己**验证过的经验（"这类问题
+> 上次是怎么解决的"）也允许记，但**必须验证过**，且要带上任务/技术关键词。
+> 未经验证的推断仍然不许记（那会把幻觉写进长期记忆）。同时新增准则 7
+> （先出计划再动手、遇阻要重规划），记忆准则顺延为 8。
 
 **服务层并不禁止**：`MemoryService.remember()` 的 `source` 参数默认 `SOURCE_MODEL`
 （`memory/service.py:227`），`memory_write` 工具也硬编码传 `SOURCE_MODEL`
@@ -203,6 +253,12 @@
 而召回排序**完全不看 source 字段**（`_apply_scoring` 只算相关性/时间/使用次数，
 `service.py:452-470`）。所以这个维度不只是"死的" —— 它还是**反的**，且被静默默认成
 "用户说的"，模型写的东西因此在召回时看起来像是用户授权过的。
+
+> **已修**：- `effective_score` 引入 `source` 维度（`SOURCE_WEIGHTS`：
+>   user 1.0 / model 0.9）—— 来源参与排序，且**只微调不淘汰**（0.9 是再乘的系数，
+>   压不过时间与使用次数）；
+> - `long_term_store._to_entry` 的默认从 `SOURCE_USER` 改成 `SOURCE_MODEL` ——
+>   读回来的是模型写的，就不该标成"用户说的"。
 
 ### 5.2 长期记忆默认不可用
 
@@ -221,10 +277,10 @@
 
 ### 5.4 要补的
 
-1. **把来源维度用起来**：`source` 区分 `user`（用户说的）/ `model-inferred`（agent 自己总结的）。
+1. ~~**把来源维度用起来**：`source` 区分 `user`（用户说的）/ `model-inferred`（agent 自己总结的）。
    两者都存，但**召回排序上给 user 来源更高权重**，并修掉长期记忆读回时默认按 user 算的偏差
    —— 现在这个字段不但没参与排序，还被静默默认成"用户说的"。
-   同时放开提示词：允许模型记"这类问题上次是怎么解决的"这类**经验**，但要求带上任务/技术关键词。
+   同时放开提示词：允许模型记"这类问题上次是怎么解决的"这类**经验**，但要求带上任务/技术关键词。~~ ✅
 2. **执行后自动提炼**：任务收尾时把"这次的做法"写成一条 `kind=note, source=model-inferred` 的记忆。
    这是"进化"最小可用的形态。
 3. **长期记忆开箱可用**：平台在首次启用时自动建集合并写好 `MEMORY_COLLECTION_NAME`，
@@ -256,43 +312,45 @@
 
 ## 7. 风险清单（按严重度）
 
-| # | 问题 | 位置 | 后果 |
-| --- | --- | --- | --- |
-| **R1** | **worker 跑在 `permissive`（= bypass）上** | `agents/worker.py:171` | 子 agent 里的破坏性操作**无人拦**。legacy 映射 `permissive→BYPASS` 见 `registration/policy.py:116-120`；`policy.py:231` bypass 直接 APPROVED，**且 bypass 分支在 `require_admin` 检查之前就返回**（实测：同一次 destructive 调用，`permissive`/`bypass` → approved，`auto`/`accept_edits`/`manual` → pending）。worker 本就无审批（`worker.py:172` `allow_interrupt=False`），加上 bypass，**参数级风险判定整段被跳过**（实测 `interrupt_enabled=False` 时 `_check_param_risk` 直接返回 None，连评估都不做）。唯一的防线是"自己的 worktree + 断网容器"这条物理隔离 |
-| **R1b** | **worker 能删掉别人的 worktree** | `builtin/git.py:173` `git_worktree_remove` + `worker.py:171` | `path` 参数**由模型给**，能力直接把它交给 `EnvironmentService.remove_worktree()`；而那个方法只校验"在白名单内 + 是平台建的 worktree"，**不校验归属**。实测：worker A 用 worker B 的路径调用，**B 的 worktree 被真删了**。加上 R1（bypass + 无审批），一个 worker 能干掉同仓库其他 worker 的产出。`git_worktree_add` 同理（能开别人的分支） |
-| **R2** | **压缩丢历史且不可恢复** | `context/compaction.py:73` | 见 §3.2。长会话迭代链断，agent 无法回查 |
-| **R3** | **压缩静默截断被丢的历史** | `trim_tokens_to_summarize=4000` 默认 | 历史既不进摘要也不保留 |
-| **R4** | **平台无鉴权 + bypass 可自提权** | 平台级（记忆 `no-auth-for-now`） | 知道 `thread_id` 就能把会话设成 bypass，接口无认证。**这是本清单里唯一需要外部决策的一条** |
-| **R5** | 主 agent 无显式步数/递归预算 | `agents/runner.py:176` `_config()` | 用框架默认 25；`config.py:69` 的 `agent_max_steps=20` 是死配置 |
-| **R6** | worker 无 checkpointer、无中断恢复 | `agents/worker.py:167` | worker 中途失败整个白跑；无断点续跑 |
-| **R7** | `compaction.py:6-8` 的注释与实现不符 | `context/compaction.py` | 文档说谎，误导后续维护者 |
+| # | 问题 | 位置 | 后果 | 状态 |
+| --- | --- | --- | --- | --- |
+| **R1** | **worker 跑在 `permissive`（= bypass）上** | `agents/worker.py:171` | 子 agent 里的破坏性操作**无人拦**。legacy 映射 `permissive→BYPASS` 见 `registration/policy.py:116-120`；`policy.py:231` bypass 直接 APPROVED，**且 bypass 分支在 `require_admin` 检查之前就返回**（实测：同一次 destructive 调用，`permissive`/`bypass` → approved，`auto`/`accept_edits`/`manual` → pending）。worker 本就无审批（`worker.py:172` `allow_interrupt=False`），加上 bypass，**参数级风险判定整段被跳过**（实测 `interrupt_enabled=False` 时 `_check_param_risk` 直接返回 None，连评估都不做）。唯一的防线是"自己的 worktree + 断网容器"这条物理隔离 | **已修**（判定照跑并记账，不拦） |
+| **R1b** | **worker 能删掉别人的 worktree** | `builtin/git.py:173` `git_worktree_remove` + `worker.py:171` | `path` 参数**由模型给**，能力直接把它交给 `EnvironmentService.remove_worktree()`；而那个方法只校验"在白名单内 + 是平台建的 worktree"，**不校验归属**。实测：worker A 用 worker B 的路径调用，**B 的 worktree 被真删了**。加上 R1（bypass + 无审批），一个 worker 能干掉同仓库其他 worker 的产出。`git_worktree_add` 同理（能开别人的分支） | **已修**（能力层剔除 + 同仓库校验） |
+| **R2** | **压缩丢历史且不可恢复** | `context/compaction.py:73` | 见 §3.2。长会话迭代链断，agent 无法回查 | **已修** |
+| **R3** | **压缩静默截断被丢的历史** | `trim_tokens_to_summarize=4000` 默认 | 历史既不进摘要也不保留 | **已修** |
+| **R4** | **平台无鉴权 + bypass 可自提权** | 平台级（记忆 `no-auth-for-now`） | 知道 `thread_id` 就能把会话设成 bypass，接口无认证。**这是本清单里唯一需要外部决策的一条** | **开放**（用户已决定开启 bypass） |
+| **R5** | 主 agent 无显式步数/递归预算 | `agents/runner.py:176` `_config()` | 实际生效的是 deepAgents 绑的 **9999**（不是框架默认 25）—— 陷在循环里的 agent 能一口气跑几千轮；`config.py:69` 的 `agent_max_steps=20` 是死配置 | **已修** |
+| **R6** | worker 无 checkpointer、无中断恢复 | `agents/worker.py:167` | worker 中途失败整个白跑；无断点续跑 | **开放** |
+| **R7** | `compaction.py:6-8` 的注释与实现不符 | `context/compaction.py` | 文档说谎，误导后续维护者 | **已修** |
 
 ---
 
 ## 8. 建议的推进顺序
 
-**第一梯队（低成本、高回报）**
+**第一梯队（低成本、高回报）** —— **1~4 已于同日完成**
 
-1. 修压缩：继承改成 deepAgents 版（或至少 `trim_tokens_to_summarize=None`），
-   并改正注释 —— **R2/R3/R7**
-2. 主 agent 显式设 `recursion_limit`（把 `agent_max_steps` 从死配置接上）—— **R5**
-3. worker 的 `trust_mode` 从 `permissive` 改成 `auto`：
-   worker 没有界面，`auto` 会挂起等不到人批 —— 但**参数级判定与风险记录仍然要跑**
-   （这是"不让人批但要记账"，与主 agent 的 `bypass` 语义不同）—— **R1**
-4. `git_worktree_remove` / `git_worktree_add` 校验 worktree **归属**：
-   至少限制在自己 worktree 所在仓库内，且删除要走平台自己的登记 —— **R1b**
-5. `invocation` 近期失败做成只读工具 + 每轮注入 —— 反思的最小形态
+1. ~~修压缩：继承改成 deepAgents 版（或至少 `trim_tokens_to_summarize=None`），
+   并改正注释 —— **R2/R3/R7**~~ ✅
+2. ~~主 agent 显式设 `recursion_limit`（把 `agent_max_steps` 从死配置接上）—— **R5**~~ ✅
+3. ~~worker 的 `trust_mode` 从 `permissive` 改成 `auto`~~ —— **改成 `auto` 这条否决了**：
+   worker 没有界面，`auto` 会挂起等不到人批，worker 直接卡死。改成**"不让人批但要记账"**：
+   参数级判定照跑、风险写进调用记录、命中风险打 warning 日志 —— **R1** ✅
+4. ~~`git_worktree_remove` / `git_worktree_add` 校验 worktree **归属**——
+   改为"从 worker 的能力清单里整个剔掉 + `git_worktree_remove` 增加同仓库校验" ——
+   **R1b** ✅
+5. `invocation` 近期失败做成只读工具 + 每轮注入 —— 反思的最小形态　**← 下一个**
 
 **第二梯队（补齐五维）**
 
-5. 提示词加规划准则 + `write_todos` 支持"重规划"语义 —— 规划
-6. 记忆 `source` 语义落地 + 放开"记经验" + 执行后自动提炼 —— 进化
-7. 长期记忆一键初始化 + `rag_search` 工具 —— 进化
+6. 提示词加规划准则 + `write_todos` 支持"重规划"语义 —— 规划　**（准则已加，重规划语义待做）**
+7. 记忆 `source` 语义落地 + 放开"记经验" + 执行后自动提炼 —— 进化　**（source 已落地）**
+8. 长期记忆一键初始化 + `rag_search` 工具 —— 进化
 
 **需要用户决策**
 
-8. **R4（无鉴权 + bypass 自提权）** —— 这条不是技术债，是产品决策。
-   至少要保证"能设成 bypass 的接口"与"能调能力的接口"不是同一批无认证端点。
+9. **R4（无鉴权 + bypass 自提权）** —— 用户已决定**开启** bypass 并做成可点击开关，
+   风险随之**依然成立**。至少要保证"能设成 bypass 的接口"与"能调能力的接口"
+   不是同一批无认证端点 —— 目前它们是。
 
 ---
 
@@ -312,6 +370,27 @@
 | 参数级规则确实会挂起 | 用一个声明为 `write`（不在声明级名单）的工具喂 `shutil.rmtree` | 抛 interrupt → 人工审批 |
 | worker 能删别人的 worktree | 建两个 worktree，用 A 的能力传 B 的路径调 `remove_worktree` | **B 被真删了**（已清理测试产物） |
 
+### 修复后的验证（2026-11-05 晚）
+
+| 结论 | 怎么验的 | 结果 |
+| --- | --- | --- |
+| 压缩后原始对话还在 | 跑真实 `create_agent` + 压缩后读 checkpoint | `msg number 0` **在** checkpoint 里 |
+| 历史外置回来了 | 同一场景查 artifacts 目录 | 有 `conversation_history/*.md`，且 agent 能 `read_file` 读回 |
+| 外置不进用户工作区 | 检查工作区里有没有 `conversation_history` | 没有（落点在 `/.artifacts/`） |
+| 摘要涵盖全部历史 | 读中间件的 `trim_tokens_to_summarize` | `None`（全量送摘要） |
+| 递归预算有限 | 读 `AgentRunner._config()` / worker 的 config | 主 agent `= agent_max_steps*2+20`（< 9999）、worker `= max_steps*2+20` |
+| worker 拿不到破坏性 git | 跑一次 `run_worker`，看实际组出来的 spec 清单 | `git_worktree_remove` / `git_merge` 不在里面 |
+| 跨仓库删 worktree 被拒 | 两个仓库各建 worktree，用 A 的上下文删 B 的 | 抛错，**B 的目录还在** |
+| worker 的风险判定照跑 | `interrupt_enabled=False` 下调 `_check_param_risk` | 不挂起，但风险等级确实算出来（destructive） |
+| 来源参与排序 | `effective_score` 对比 user / model | user > model，且使用次数与时间的权重仍压过来源 |
+| 回归测试真的会咬人 | 把修复 stash 掉再跑新测试 | 旧代码**确实失败**（`msg number 0` 不在 checkpoint、无 `_history_path_prefix`、没设 `recursion_limit`） |
+| 活体端到端 | 真模型（DeepSeek）跑 `run_python` 算 17×23，bypass 模式下自动放行 | 工具真的执行（289ms），模型回「**391**」 |
+
+最后一条是关键：压缩中间件换基类是最容易把 agent 循环改坏的那种改动 ——
+只有真跑一遍活体才知道它有没有把工具调用链打断。
+
+**当前状态**：backend **431 项测试全绿**，ruff 干净。
+
 ### 复核时修正的三处
 
 1. **R1 的措辞过宽**。原写法暗示"参数级判定被绕过"，实测是**整段不执行**
@@ -323,3 +402,26 @@
    `execute` + `rm -rf` 在 auto 模式下走的是声明级（档位仍按参数重算）。已补上分工说明。
 
 新增 **R1b**（worker 能删别人的 worktree）—— 这是复核时实测出来的，原报告没有。
+
+### 修复阶段的修正（2026-11-05 晚）
+
+4. **R5 的前提是错的 —— 已更正**。原报告 §3.1 与 §7 写的是"主 agent 没设
+   `recursion_limit` → 用框架默认 **25**"。**实测不是**：
+   - deepAgents 的 `create_deep_agent` 用 `.with_config()` 把 `recursion_limit: 9999`
+     绑在了图上；
+   - LangChain 的 config 合并里，**调用时的值只有 != 25 时才覆盖绑定值**
+     （`langchain_core/runnables/config.py:487`）；
+   - 平台此前既没传 `recursion_limit`、也没改绑定值 → **实际生效的是 9999**，
+     不是 25。
+
+   所以真实情况比原报告写的**更糟**：不是"上限太紧（25）"，而是"**没有上限**"。
+   一个陷在循环里的 agent 能一口气跑几千轮，token 与费用都是真的烧掉了。
+
+   修复按 superstep 换算：一轮「模型 ↔ 工具」= 2 个 superstep，
+   所以 `recursion_limit = 轮数 × 2 + 余量`。主 agent 用
+   `agent_max_steps * 2 + 20`（默认 60 → 140），worker 用 `max_steps * 2 + 20`。
+   `agent_max_steps` 从死配置接上。
+
+   ⚠️ 这条是**先做错了再改对的**：第一版按"框架默认 25"的错误前提把上限设成
+   `max_steps + 20 = 40` —— 那会把 9999 **收紧**到 40，属于把"没上限"变成
+   "上限太紧"的另一种坑。实测 `merge_configs` 的覆盖规则后才发现。

@@ -66,7 +66,17 @@ class Settings(BaseSettings):
     # 对话里上传的图片是直接内联进消息发给模型的，模型不认就会报错。
     # 走数据库供应商配置时，用那条配置上的 vision_enabled 列。
     llm_vision_enabled: bool = False
-    agent_max_steps: int = 20
+    # agent 一轮里最多走多少个「模型 ↔ 工具」往返（**轮**，不是 token）。
+    #
+    # **这个值是怎么变成 LangGraph 的 recursion_limit 的**：一轮往返 = 两个
+    # superstep（调一次模型 + 执行一次工具），再加收尾那一次模型调用。
+    # 所以 ``recursion_limit ≈ 轮数 × 2 + 余量``（余量给审批恢复与收尾）。
+    #
+    # **为什么要有这个上限**：deepAgents 建图时把 ``recursion_limit`` 绑成了
+    # 9999 —— 那等于**没有上限**。一个陷在循环里的 agent 能一口气跑几千轮，
+    # token 和钱都是真的烧掉了。平台自己的置信度机制只管"反复填错参数"，
+    # 管不到"反复做无用功但每次都成功"的循环。
+    agent_max_steps: int = 60
     # 代码沙箱模式：docker（默认，有隔离）| local（开发用，无隔离）
     #
     # 默认 docker —— 平台执行的是 LLM 生成的代码，隔离是安全底线，不是可选项。
