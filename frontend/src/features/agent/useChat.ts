@@ -659,6 +659,10 @@ export function useChat() {
         await loadHistory(threadId)
       } catch (cause) {
         setPendingDecision(null)
+        // **卡片可能是旧的** —— 后端已经没有待批的了（比如已经批过一遍，
+        // 或者权限模式变了导致那张图不再挂着它）。重读历史让它消失，
+        // 再把原因报出来 —— 静默重载只会让人以为"点了没反应"。
+        await loadHistory(threadId).catch(() => undefined)
         setError(cause instanceof Error ? cause.message : String(cause))
       } finally {
         busyRef.current = false

@@ -72,7 +72,7 @@ from app.capabilities.registration.spec import KIND_SKILL, CapabilitySpec
 from app.capabilities.skills_export import export_skills
 from app.context.service import ContextRequest, build_context_service
 from app.core.config import settings
-from app.core.exceptions import NotFoundError, ValidationError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.files.attachments import Attachment, build_attachments, build_uploads_note
 from app.schemas.agent import (
     AgentHistoryMessage,
@@ -359,6 +359,18 @@ class AgentRunner:
         # 少给一个就报 "Number of human decisions (1) does not match number of
         # hanging tool calls (2)"，整轮直接失败。
         interrupts = await self._interrupts_of(built.agent, thread_id)
+        if not interrupts:
+            # **没有可批的就明说，别静默空转**。
+            #
+            # 以前这里直接返回 `{"decisions": [...]}`，图上没挂着中断时
+            # `Command(resume=...)` 是个空操作 —— 接口返回 200，什么也没发生，
+            # 界面表现就是"审批后无法继续"（工具块一直转圈/未完成，看不出
+            # 出了什么事）。现在明确报冲突：要么已经批过了，要么权限模式变了
+            # 导致那张图不再挂着它。
+            raise ConflictError(
+                "这个会话现在没有待批准的调用 —— 可能已经批过了，"
+                "或者权限模式变了（图不再挂着这条中断）。"
+            )
         resume_value = _build_resume_value(interrupts, decision, decisions, specs)
         result = await built.agent.ainvoke(
             Command(resume=resume_value),

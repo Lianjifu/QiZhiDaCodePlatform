@@ -36,6 +36,7 @@ deepAgents 额外带来规划（write_todos）、子代理（task）、技能（
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -48,8 +49,14 @@ from app.capabilities.backends.assembly import build_backend
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.tooling import build_tools
 from app.capabilities.intent.middleware import CapabilityMiddleware
+from app.capabilities.registration.policy import normalize_mode
 from app.capabilities.registration.spec import CapabilitySpec
-from app.capabilities.registration.tool_policy import FS_TOOL_NAMES, approval_required_tools
+from app.capabilities.registration.tool_policy import (
+    FS_TOOL_NAMES,
+    approval_candidate_tools,
+    declared_policies,
+    tool_needs_approval,
+)
 from app.context.compaction import build_compaction_middleware
 from app.context.skills_quota import QuotaSkillsMiddleware
 from app.core.config import settings
@@ -261,7 +268,11 @@ async def build_agent(
 
     # 声明级审批闸：哪些工具在执行**之前**就要人批。
     # worker（allow_interrupt=False）不挂闸 —— 它没有界面，挂起就等不到人批。
-    interrupt_on = _interrupt_on(specs, trust_mode, allowed_tool_keys) if allow_interrupt else {}
+    interrupt_on = (
+        _interrupt_on(specs, trust_mode, allowed_tool_keys, thread_id=thread_id)
+        if allow_interrupt
+        else {}
+    )
     if subagents is None:
         subagents = _general_subagent(
             governance=governance,
@@ -332,14 +343,73 @@ def _interrupt_on(
     specs: list[CapabilitySpec],
     trust_mode: str,
     allowed_tool_keys: set[str] | None,
-) -> dict[str, bool]:
+    *,
+    thread_id: str = "",
+) -> dict[str, Any]:
     """算出"哪些工具要人工审批"。
 
-    规则只有一份（``tool_policy.approval_required_tools``）—— 中间件告诉模型的
-    那句话、执行层的判定，用的都是它。三处各写一套，批准过了又被拦一次就是这么来的。
+    **闸的位置固定，要不要拦运行时判**。
+
+    以前这里是按当前模式算出来的集合（``{name: True}``）：自动模式只挂写类，
+    绕过模式一道都不挂。问题出在**挂起期间用户改了模式** —— 图被重建成没有
+    审批闸的样子，checkpoint 里那条挂起的中断就"看不见"了，恢复变成空转
+    （返回 200，工具根本没跑），界面表现就是"审批后无法继续"。
+
+    所以现在：闸挂在**所有可能需要审批的工具**上（结构不随模式变），
+    拦不拦交给 ``when`` 谓词在运行时判当前模式。模式改了，恢复时重新判一次
+    —— 改成绕过权限就直接放行跑掉，改严了就照常按人的决定走。
+
+    规则只有一份（``tool_policy``）—— 中间件告诉模型的那句话、执行层的判定、
+    这里的谓词，用的都是它。三处各写一套，批准过了又被拦一次就是这么来的。
     """
-    names = approval_required_tools(specs, trust_mode, allowed_tool_keys)
-    return {name: True for name in names}
+    from langchain.agents.middleware import InterruptOnConfig
+
+    names = approval_candidate_tools(specs, allowed_tool_keys)
+    if not names:
+        return {}
+    declared = declared_policies(specs)
+    resolve = _mode_resolver(thread_id, trust_mode)
+    return {
+        name: InterruptOnConfig(
+            # 平台只给"批准 / 拒绝"两种决定 —— 界面就这两个按钮。
+            allowed_decisions=["approve", "reject"],
+            when=_needs_approval_now(name, declared, resolve),
+        )
+        for name in names
+    }
+
+
+def _mode_resolver(thread_id: str, trust_mode: str) -> Callable[[], str]:
+    """取**当前**的权限模式（不是建图时那个）。
+
+    挂起期间用户改了模式 —— 恢复时要用新的模式判"这次还要不要人批"。
+    """
+
+    def resolve() -> str:
+        if thread_id:
+            from app.agents.permissions import resolve_permission_mode
+
+            return resolve_permission_mode(thread_id)
+        return normalize_mode(trust_mode)
+
+    return resolve
+
+
+def _needs_approval_now(
+    name: str,
+    declared: dict[str, tuple[str, str]],
+    resolve: Callable[[], str],
+) -> Callable[[Any], bool]:
+    """审批谓词 —— 每次判定都重新读当前模式。
+
+    **恢复时它会再跑一次**：这正是我们要的 —— 挂起期间把模式改成绕过权限，
+    恢复时谓词返回 False，工具直接跑（"绕过权限"就是不问人）。
+    """
+
+    def when(_request: Any) -> bool:
+        return tool_needs_approval(name, resolve(), declared)
+
+    return when
 
 
 def _general_subagent(

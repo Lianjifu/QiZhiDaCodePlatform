@@ -188,7 +188,86 @@ __all__ = [
     "SUPERSEDED_BUILTIN_TOOLS",
     "TOOL_POLICIES",
     "ToolPolicy",
+    "approval_candidate_tools",
     "approval_required_tools",
     "approval_tool_names",
+    "declared_policies",
     "policy_for_tool",
+    "tool_needs_approval",
 ]
+
+def approval_candidate_tools(
+    specs: list[Any],
+    allowed_keys: set[str] | None = None,
+) -> set[str]:
+    """所有**可能**需要审批的工具（不管当前是什么权限模式）。
+
+    **为什么要有"候选集"这个概念**：审批闸的**结构**不能随权限模式变。
+
+    以前闸是按当前模式算出来的（自动模式 → 只挂写类，绕过模式 → 一道都不挂）。
+    问题出在**挂起期间用户改了模式**：图被重建成没有审批闸的样子，
+    checkpoint 里那条挂起的中断就"看不见"了 —— 恢复变成空转（返回 200，
+    但工具根本没跑），界面表现就是"审批后无法继续"。
+
+    所以闸的**位置**固定（所有可能需要审批的工具都挂上），**要不要拦**交给
+    运行时判定（``interrupt_on`` 的 ``when`` 谓词）：模式变了，恢复时重新
+    判一次就行。
+
+    Args:
+        specs: 统一能力清单（我们的工具用它）。
+        allowed_keys: 本次允许的能力集；``None`` 表示不限制。
+
+    Returns:
+        工具名集合。
+    """
+    # deepAgents 的文件工具：只要不是只读，就有可能要人批
+    # （手动模式里写入也要人批）。
+    names = {name for name, policy in TOOL_POLICIES.items() if policy.risk != RiskLevel.READ}
+    for spec in specs:
+        if spec.kind != "tool" or not spec.enabled:
+            continue
+        if allowed_keys is not None and spec.key not in allowed_keys:
+            continue
+        if spec.key in names:
+            continue
+        if spec.risk != RiskLevel.READ or spec.permission != PermissionLevel.NONE:
+            names.add(spec.key)
+    return names
+
+
+def declared_policies(specs: list[Any]) -> dict[str, tuple[str, str]]:
+    """我们自己的能力声明 → ``{key: (permission, risk)}``。
+
+    deepAgents 的文件工具不在里面 —— 它们走 :func:`policy_for_tool` 的基线。
+    """
+    return {
+        spec.key: (spec.permission, spec.risk)
+        for spec in specs
+        if spec.kind == "tool" and spec.enabled
+    }
+
+
+def tool_needs_approval(
+    name: str,
+    mode: str,
+    declared: dict[str, tuple[str, str]] | None = None,
+) -> bool:
+    """这个工具在**当前模式**下要不要人批。
+
+    Args:
+        name: 工具名。
+        mode: 权限模式（``auto`` / ``manual`` / ``accept_edits`` / ``plan`` /
+            ``bypass``）。老名字也认。
+        declared: 我们自己的能力声明 ``{key: (permission, risk)}``；
+            没有就用策略表里的基线（deepAgents 的文件工具走那条路）。
+
+    Returns:
+        要人批返回 ``True``。
+    """
+    if declared and name in declared:
+        permission, risk = declared[name]
+    else:
+        policy = policy_for_tool(name)
+        permission, risk = policy.permission, policy.risk
+    return needs_approval(permission, risk, mode)
+
