@@ -26,12 +26,14 @@ import { BranchIcon, CopyIcon, RefreshIcon } from '../../components/icons'
 import Markdown from '../markdown/Markdown'
 import ApprovalCard, { type ApprovalDecision } from './ApprovalCard'
 import { messageWindow } from './messageWindow'
+import StatusLine from './StatusLine'
 import ToolCallBlock from './ToolCallBlock'
-import type { ChatMessage } from './useChat'
+import type { ChatMessage, TurnStatus } from './useChat'
 
 export default function MessageList({
   messages,
   busy,
+  turnStatus,
   visibleCount,
   onLoadEarlier,
   onApprove,
@@ -41,6 +43,8 @@ export default function MessageList({
 }: {
   messages: ChatMessage[]
   busy: boolean
+  /** 这一轮的状态 —— 状态行画的就是它 */
+  turnStatus: TurnStatus
   /** 渲染最近多少条 */
   visibleCount: number
   /** 往上再加载一批 */
@@ -68,18 +72,24 @@ export default function MessageList({
         </button>
       ) : null}
 
-      {shown.map((message, index) => (
-        <MessageRow
-          key={message.id}
-          message={message}
-          busy={busy}
-          streaming={busy && index === lastIndex}
-          onApprove={onApprove}
-          onReject={onReject}
-          onRegenerate={onRegenerate}
-          onFork={onFork}
-        />
-      ))}
+      {shown.map((message, index) => {
+        const streaming = busy && index === lastIndex
+        return (
+          <MessageRow
+            key={message.id}
+            message={message}
+            busy={busy}
+            streaming={streaming}
+            // **只给正在流的那一行** —— 别的行拿到 null，memo 才拦得住
+            // （状态每变一次就换个对象，全传的话几百行全得重渲染）
+            turnStatus={streaming ? turnStatus : null}
+            onApprove={onApprove}
+            onReject={onReject}
+            onRegenerate={onRegenerate}
+            onFork={onFork}
+          />
+        )
+      })}
     </div>
   )
 }
@@ -93,6 +103,7 @@ const MessageRow = memo(function MessageRow({
   message,
   busy,
   streaming,
+  turnStatus,
   onApprove,
   onReject,
   onRegenerate,
@@ -101,6 +112,8 @@ const MessageRow = memo(function MessageRow({
   message: ChatMessage
   busy: boolean
   streaming: boolean
+  /** 这一轮的状态（只在正在流的那一行有值） */
+  turnStatus: TurnStatus | null
   onApprove: (decisions?: ApprovalDecision[]) => void
   onReject: (decisions?: ApprovalDecision[]) => void
   onRegenerate: () => void
@@ -136,18 +149,24 @@ const MessageRow = memo(function MessageRow({
         </div>
       ) : null}
 
+      {/*
+        状态行 —— **领在正文前面**。
+        它是"这一轮正在发生什么"的抬头：四叶草 + 耗时 + token + 阶段，
+        正文从它下面开始流出来。
+      */}
+      {streaming && turnStatus?.startedAt ? (
+        <StatusLine
+          phase={turnStatus.phase}
+          startedAt={turnStatus.startedAt}
+          toolName={turnStatus.toolName}
+          content={message.content}
+          className="mb-1.5"
+        />
+      ) : null}
+
       {message.content ? (
         <div className={streaming ? 'stream-cursor' : undefined}>
           <Markdown>{message.content}</Markdown>
-        </div>
-      ) : null}
-
-      {!message.content && !message.toolCalls.length && busy ? (
-        <div className="flex items-center gap-1 text-sm text-ink-faint">
-          <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-current" />
-          <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-current" />
-          <span className="thinking-dot h-1.5 w-1.5 rounded-full bg-current" />
-          <span className="ml-1">思考中</span>
         </div>
       ) : null}
 

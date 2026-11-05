@@ -43,6 +43,10 @@
   --accent-text: oklch(1 0 0);
   /* 更浅一档的主色 —— 选中项底色、浅底强调 */
   --accent-muted: oklch(0.92 0.045 40);
+  /* 四叶草指示器 —— 比主色更橙一档。
+     主色是朱砂橙（hue 38），14px 的小图标在深底上会读成"红点"，
+     四叶草得一眼看出是"橙"。 */
+  --clover: oklch(0.64 0.16 50);
   /* 品牌渐变（logo 方块、hero 光晕用） */
   --brand-gradient: linear-gradient(135deg, oklch(0.62 0.17 42), oklch(0.52 0.16 22));
 
@@ -103,6 +107,7 @@
   --accent-soft: oklch(0.3 0.075 38);
   --accent-text: oklch(0.18 0.04 38);
   --accent-muted: oklch(0.34 0.06 38);
+  --clover: oklch(0.80 0.15 54);
   --brand-gradient: linear-gradient(135deg, oklch(0.7 0.16 45), oklch(0.58 0.15 25));
 
   --ring: oklch(0.76 0.15 45 / 0.4);

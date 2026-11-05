@@ -25,6 +25,7 @@ import {
   streamChat,
 } from '../../api/resources'
 import type { AgentStreamChunk, PendingApproval, ToolCall } from '../../types/api'
+import type { TurnPhase } from './turnStatus'
 import { TextBatcher } from './textBatcher'
 import { isFailedResult } from './toolSummary'
 
@@ -67,6 +68,20 @@ export interface ChatMessage {
   name?: string
   /** checkpoint 里的消息 id —— 分支会话靠它定位分支点（流式产生的消息没有） */
   sourceId?: string | null
+}
+
+/**
+ * 这一轮的状态 —— 状态行（正文下面那行）画的就是它。
+ *
+ * **阶段由事件流推出来，不靠猜**：来了文本就是在写，来了工具调用就是在跑
+ * 工具，来了待批就是在等审批，一帧都没有就是在想。
+ */
+export interface TurnStatus {
+  phase: TurnPhase
+  /** 这一轮开始的时刻（毫秒时间戳）—— 0 = 没在跑 */
+  startedAt: number
+  /** 正在跑的工具名（阶段是 tool 时才有） */
+  toolName: string | null
 }
 
 let messageSeq = 0
@@ -220,6 +235,14 @@ interface Turn {
    * 共享的 ref 已经被新一轮接管，旧轮攒着的字就没人刷了（会丢）。
    */
   batcher: TextBatcher | null
+  /**
+   * 还没回来的工具调用（id + 名字）。
+   *
+   * **工具可以并行跑** —— 一个结果回来不代表都回来了，状态行得等最后一个。
+   */
+  runningTools: { id: string; name: string }[]
+  /** 这一轮开始的时刻 */
+  startedAt: number
 }
 
 export function useChat() {
@@ -228,6 +251,12 @@ export function useChat() {
   const [error, setError] = useState('')
   /** 历史正在加载 —— 空会话页要靠它区分「没内容」和「还没加载完」 */
   const [loading, setLoading] = useState(false)
+  /** 这一轮的状态 —— 状态行画的就是它 */
+  const [turnStatus, setTurnStatus] = useState<TurnStatus>({
+    phase: 'thinking',
+    startedAt: 0,
+    toolName: null,
+  })
   /** 当前这一轮 */
   const currentTurnRef = useRef<Turn | null>(null)
   /** 轮次计数器 */
@@ -271,10 +300,18 @@ export function useChat() {
         case 'text':
           // **攒着一起上** —— 每帧都 setState 的话，长回答会重渲染上百次
           if (event.text) turn.batcher?.push(event.text)
+          // 有字出来了就是在写 —— 不管之前在干什么。
+          // **返回 prev 本身**时 React 会跳过重渲染（阶段没变就别折腾）
+          setTurnStatus((prev) => (prev.phase === 'writing' ? prev : { ...prev, phase: 'writing' }))
           break
         case 'tool_call':
           if (event.tool_call) {
             const call = event.tool_call
+            turn.runningTools.push({
+              id: call.tool_call_id ?? '',
+              name: call.name,
+            })
+            setTurnStatus((prev) => ({ ...prev, phase: 'tool', toolName: call.name }))
             patchTurnAssistant(turn, (message) => ({
               ...message,
               toolCalls: [
@@ -288,6 +325,10 @@ export function useChat() {
           const result = event.tool_result
           if (!result) break
           const resultId = result.tool_call_id ?? ''
+          // **工具可以并行跑** —— 回来一个不等于都回来了，状态行等最后一个
+          turn.runningTools = turn.runningTools.filter(
+            (entry) => entry.id !== resultId && entry.id !== '',
+          )
           patchTurnAssistant(turn, (message) => {
             // 先按 id 找；两边都没 id 就取第一个"进行中"且没 id 的块
             let index = message.toolCalls.findIndex(
@@ -313,9 +354,17 @@ export function useChat() {
             }
             return { ...message, toolCalls }
           })
+          const stillRunning = turn.runningTools[turn.runningTools.length - 1]
+          setTurnStatus((prev) => ({
+            ...prev,
+            phase: stillRunning ? 'tool' : 'thinking',
+            toolName: stillRunning?.name ?? null,
+          }))
           break
         }
         case 'pending_approval':
+          // **不改阶段** —— 审批卡片自己会说"需要你批准"；等批的时候这一轮
+          // 马上就结束（后端发完 pending_approval 就收尾），状态行会跟着消失。
           patchTurnAssistant(turn, (message) => ({ ...message, pending: event.pending }))
           break
         case 'error':
@@ -392,6 +441,7 @@ export function useChat() {
 
   /** 开一轮新的对话。 */
   const startTurn = useCallback((messageId: string): Turn => {
+    const startedAt = Date.now()
     const turn: Turn = {
       token: ++turnSeqRef.current,
       messageId,
@@ -399,7 +449,11 @@ export function useChat() {
       aborted: false,
       // **这一轮的攒批器** —— 增量先进它，到帧再一起上
       batcher: null,
+      runningTools: [],
+      startedAt,
     }
+    // 状态行从头开始计时 —— 阶段先当"思考中"，第一帧到了就改
+    setTurnStatus({ phase: 'thinking', startedAt, toolName: null })
     // **模型吐字很快 —— 一个 token 一帧。** 每帧都 setState 一次，就是每帧都
     // 重渲染一遍整条消息，Markdown 也要重解析一次。攒到下一帧再一起上：
     // 人眼看不出差别，渲染次数少一个数量级。
@@ -423,6 +477,8 @@ export function useChat() {
     currentTurnRef.current = null
     busyRef.current = false
     setBusy(false)
+    // 状态行跟着一起收 —— 它描述的是"正在发生"，停了就不该留着
+    setTurnStatus((prev) => (prev.startedAt === 0 ? prev : { ...prev, startedAt: 0 }))
   }, [])
 
   const send = useCallback(
@@ -590,6 +646,8 @@ export function useChat() {
       busyRef.current = true
       setBusy(true)
       setError('')
+      // 恢复也是一段"正在忙"的时间 —— 状态行的计时从头开始
+      setTurnStatus({ phase: 'thinking', startedAt: Date.now(), toolName: null })
       // **先给个交代** —— 后端 resume 是同步跑完整张图的，可能几十秒。
       // 卡片只是变灰的话，用户会以为页面卡死了。
       setPendingDecision('approved')
@@ -616,6 +674,7 @@ export function useChat() {
       busyRef.current = true
       setBusy(true)
       setError('')
+      setTurnStatus({ phase: 'thinking', startedAt: Date.now(), toolName: null })
       setPendingDecision('rejected')
       try {
         await rejectCall(threadId, decisions)
@@ -656,6 +715,7 @@ export function useChat() {
     busy,
     error,
     loading,
+    turnStatus,
     send,
     regenerate,
     forkAt,

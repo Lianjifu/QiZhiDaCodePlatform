@@ -34,6 +34,7 @@
   --color-accent-soft: var(--accent-soft);
   --color-accent-muted: var(--accent-muted);
   --color-accent-text: var(--accent-text);
+  --color-clover: var(--clover);
 
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
@@ -107,27 +108,27 @@
     }
   }
 
-  /* 「思考中」的三个呼吸点 */
-  .thinking-dot {
-    animation: thinking 1.2s ease-in-out infinite;
-  }
-  .thinking-dot:nth-child(2) {
-    animation-delay: 0.15s;
-  }
-  .thinking-dot:nth-child(3) {
-    animation-delay: 0.3s;
+  /*
+   * 四叶草指示器 —— 状态行前面的那个小图标。
+   *
+   * **动画挂在 svg 元素上，不挂内部的 g** —— CSS 的 transform 会盖掉 SVG 的
+   * transform 属性，挂在 g 上容易出岔子；挂在 svg 这一层，HTML 的
+   * `transform-origin: center` 直接生效。
+   */
+  .clover {
+    animation: clover-breathe 2.4s ease-in-out infinite;
+    transform-origin: center;
   }
 
-  @keyframes thinking {
+  @keyframes clover-breathe {
     0%,
-    60%,
     100% {
-      opacity: 0.25;
-      transform: translateY(0);
+      opacity: 0.72;
+      transform: scale(1) rotate(0deg);
     }
-    30% {
+    50% {
       opacity: 1;
-      transform: translateY(-2px);
+      transform: scale(1.08) rotate(10deg);
     }
   }
 }

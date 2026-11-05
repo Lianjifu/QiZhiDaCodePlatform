@@ -274,6 +274,7 @@ export default function ChatPage() {
         <MessageList
           messages={chat.messages}
           busy={chat.busy}
+          turnStatus={chat.turnStatus}
           visibleCount={visibleCount}
           onLoadEarlier={loadEarlier}
           onApprove={(decisions) => void chat.approve(threadId, decisions)}
