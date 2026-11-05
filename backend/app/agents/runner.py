@@ -63,7 +63,7 @@ from app.agents.dynamic_context import (
 from app.agents.graph_cache import GRAPH_CACHE, GraphEntry
 from app.agents.llm import get_chat_model, model_identity, supports_vision
 from app.agents.permissions import resolve_permission_mode
-from app.agents.prompts import base_prompt_for
+from app.agents.prompts import base_prompt_for, render_prompt_rules
 from app.capabilities.backends.assembly import MEMORY_ROUTE
 from app.capabilities.execution.context import ExecutionContext
 from app.capabilities.execution.risk import assess_call
@@ -692,6 +692,22 @@ class AgentRunner:
             logger.warning("取反思记录失败，本轮不带反思: %s", exc)
             return ""
 
+    async def _load_prompt_rules(self, context: ExecutionContext | None) -> list[Any]:
+        """启用中的自动积累规则。
+
+        没有数据库会话就当没有规则 —— 读不到规则不该让整轮对话起不来。
+        """
+        if context is None or context.session is None:
+            return []
+        from app.repositories.prompt_rule import PromptRuleRepository
+
+        try:
+            async with context.db():
+                return await PromptRuleRepository(context.session).list_enabled()
+        except Exception as exc:  # pragma: no cover - 查表失败不该拖垮对话
+            logger.warning("读自动积累的提示词规则失败，本轮不带规则: %s", exc)
+            return []
+
     async def _last_user_message(self, agent: Any, thread_id: str) -> str:
         """这个会话最后一条用户消息。
 
@@ -794,6 +810,12 @@ class AgentRunner:
         # 命令」之后，这个会话就是 permissive（中档自动放行）。
         trust_mode = resolve_permission_mode(thread_id)
 
+        # **自动积累的提示词规则** —— 复盘学到的行为准则。
+        #
+        # 它们要进**图**（不是占位符）：规则不常变，而每轮重查一遍不划算。
+        # 代价是规则变了必须重建图 —— 所以规则的身份进了缓存键。
+        prompt_rules = await self._load_prompt_rules(context)
+
         key = _graph_key(
             thread_id=thread_id,
             workspace=workspace,
@@ -804,6 +826,7 @@ class AgentRunner:
             skill_sources=skill_sources,
             memory_source=memory_source,
             context=context,
+            prompt_rules=prompt_rules,
         )
         cached = GRAPH_CACHE.get(key)
         if cached is not None:
@@ -848,6 +871,7 @@ class AgentRunner:
                 policy_note=policy_note,
                 uploads_note=PLACEHOLDER_UPLOADS,
                 reflection_note=PLACEHOLDER_REFLECTION,
+                prompt_rules=render_prompt_rules([rule.rule for rule in prompt_rules]),
                 context_window=model_window(model),
             )
         )
@@ -893,6 +917,7 @@ def _graph_key(
     skill_sources: list[str],
     memory_source: str,
     context: ExecutionContext,
+    prompt_rules: list[Any] | None = None,
 ) -> tuple[Any, ...]:
     """缓存键 —— **必须盖住所有影响图行为的东西**。
 
@@ -901,7 +926,8 @@ def _graph_key(
     - **权限模式**漏了，用户刚收紧的闸门又被打开；
     - **能力清单**漏了，新装的能力模型看不见；
     - **模型**漏了，换了供应商还在用旧的；
-    - **工作区**漏了，文件工具指着别的目录。
+    - **工作区**漏了，文件工具指着别的目录；
+    - **自动积累的规则**漏了，复盘刚学到的准则看不见（旧图还在）。
     """
     return (
         thread_id,
@@ -911,6 +937,12 @@ def _graph_key(
         model_identity(model),
         memory_source,
         tuple(skill_sources),
+        # **规则的身份也要进键** —— 提示词是编进图的，规则变了不重建图
+        # 就还用着旧的那份。带更新时间是因为规则可能被改写（不只是增删）。
+        tuple(
+            (rule.id, str(rule.updated_at))
+            for rule in (prompt_rules or [])
+        ),
         tuple(
             (spec.key, spec.kind, bool(spec.enabled), str(spec.risk), spec.source_type)
             for spec in specs

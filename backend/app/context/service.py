@@ -17,10 +17,19 @@
 | 基准提示词 | `app/agents/prompts.py` | 0（必装） | 截断 |
 | 运行环境 | 工作区路径说明 | 10 | 丢 |
 | 策略说明 | 能力层（审批策略） | 20 | 丢（**会警告**） |
+| 自动积累的规则 | 复盘（`prompt_rule` 表） | 22 | 丢 |
 | 上传件 | 文件模块（`uploads/` 清单） | 25 | 丢 |
 | 工作区说明 | AGENTS.md | 30 | 截断 |
 | 反思记录 | agent 层（最近的失败） | 35 | 丢 |
 | 记忆目录 | 记忆模块 | 40 | 丢 |
+
+## 为什么自动积累的规则排在策略说明之后
+
+**代码里的准则永远在前、永远完整** —— 那是 agent 的安全底线。
+自动积累的规则（复盘学到的行为准则）是**补充**，排在后面。
+
+优先级 22：比上传件（25）高，比工作区说明（30）高。它短、而且直接影响
+agent 怎么做这件事 —— 装不下就丢太可惜了。
 
 ## 为什么反思记录比记忆目录更该保住
 
@@ -61,11 +70,14 @@ KEY_WORKSPACE = "workspace"
 KEY_MEMORY = "memory"
 KEY_UPLOADS = "uploads"
 KEY_REFLECTION = "reflection"
+KEY_PROMPT_RULES = "prompt_rules"
 
 # 优先级
 PRIORITY_BASE = 0
 PRIORITY_RUNTIME = 10
 PRIORITY_POLICY = 20
+# 自动积累的规则排在策略说明之后 —— 代码里的准则永远在前、永远完整
+PRIORITY_PROMPT_RULES = 22
 # 上传件比工作区说明更该保住 —— 它是**本轮的工作材料**，而 AGENTS.md
 # 里的项目规矩晚一轮再读也来得及。
 PRIORITY_UPLOADS = 25
@@ -86,6 +98,7 @@ class ContextRequest:
     - ``workspace`` —— 工作区路径，给模型解释路径该怎么用；
     - ``memory_catalog`` —— 记忆目录的正文（记忆模块给的）；
     - ``reflection_note`` —— 反思记录（agent 层给的：最近的失败）；
+    - ``prompt_rules`` —— 自动积累的提示词规则（复盘给的）；
     - ``policy_note`` —— 策略说明（能力层给的）；
     - ``context_window`` —— 模型窗口（token），0 = 未知。
     """
@@ -94,6 +107,7 @@ class ContextRequest:
     workspace: Path | None = None
     memory_catalog: str = ""
     reflection_note: str = ""
+    prompt_rules: str = ""
     policy_note: str = ""
     uploads_note: str = ""
     context_window: int = 0
@@ -176,6 +190,18 @@ class ContextService:
                     title="",
                     overflow=OVERFLOW_DROP,
                     required=False,
+                )
+            )
+
+        if request.prompt_rules.strip():
+            blocks.append(
+                ContextBlock(
+                    key=KEY_PROMPT_RULES,
+                    content=request.prompt_rules,
+                    priority=PRIORITY_PROMPT_RULES,
+                    # 自带 XML 标签（标签里写清了"只影响做事方式"）
+                    title="",
+                    overflow=OVERFLOW_DROP,
                 )
             )
 
@@ -278,6 +304,7 @@ __all__ = [
     "KEY_BASE_PROMPT",
     "KEY_MEMORY",
     "KEY_POLICY",
+    "KEY_PROMPT_RULES",
     "KEY_REFLECTION",
     "KEY_RUNTIME",
     "KEY_UPLOADS",
@@ -285,6 +312,7 @@ __all__ = [
     "PRIORITY_BASE",
     "PRIORITY_MEMORY",
     "PRIORITY_POLICY",
+    "PRIORITY_PROMPT_RULES",
     "PRIORITY_REFLECTION",
     "PRIORITY_RUNTIME",
     "PRIORITY_UPLOADS",

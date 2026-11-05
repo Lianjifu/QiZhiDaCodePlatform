@@ -119,6 +119,32 @@ def has_collaboration(specs: list[Any] | None) -> bool:
     return False
 
 
+# 自动积累的提示词规则：块的样子
+#
+# **明写"只影响做事方式"** —— 代码里的准则永远在前、永远完整，
+# 这一块是补充。范围守卫（app/agents/autonomy.py）已经拦掉了想改审批 /
+# 权限那一层的规则，这行字是对模型再说一遍。
+PROMPT_RULES_TITLE = "自动积累的补充准则："
+PROMPT_RULES_SCOPE_NOTE = "（只影响做事方式，不影响权限与审批）"
+
+
+def render_prompt_rules(rules: list[str]) -> str:
+    """把自动积累的规则渲染成可注入上下文的 XML 块。
+
+    没有规则返回空串 —— 不注入的空块只会白占位置。
+    """
+    texts = [rule.strip() for rule in rules if rule and rule.strip()]
+    if not texts:
+        return ""
+    lines = [
+        "<auto_rules>",
+        f"{PROMPT_RULES_TITLE}{PROMPT_RULES_SCOPE_NOTE}",
+    ]
+    lines.extend(f"- {text}" for text in texts)
+    lines.append("</auto_rules>")
+    return "\n".join(lines)
+
+
 def base_prompt_for(specs: list[Any] | None) -> str:
     """按**这一轮实际有的能力**拼基准提示词。
 
@@ -133,6 +159,9 @@ def base_prompt_for(specs: list[Any] | None) -> str:
 __all__ = [
     "COLLABORATION_PROMPT",
     "CODE_AGENT_PROMPT",
+    "PROMPT_RULES_SCOPE_NOTE",
+    "PROMPT_RULES_TITLE",
     "base_prompt_for",
     "has_collaboration",
+    "render_prompt_rules",
 ]

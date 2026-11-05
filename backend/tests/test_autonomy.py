@@ -31,6 +31,7 @@ from app.agents.autonomy import (
 from app.models.invocation import STATUS_FAILED, Invocation
 from app.models.retrospective import (
     REJECT_CONFLICT,
+    REJECT_LIMIT,
     REJECT_PARSE_FAILED,
     REJECT_SAFETY_SCOPE,
     STATUS_APPLIED,
@@ -426,3 +427,160 @@ def test_三种载体都认(carrier):
     proposal = normalize_proposal(data)
     assert proposal is not None
     assert proposal["carrier"] == carrier
+
+
+# ---------------------------------------------------------------- 技能与提示词落地
+
+
+async def test_技能改进会追加到已有技能(session):
+    """落到技能：**只动 knowledge**，不动工具集。"""
+    from app.schemas.skill import SkillCreate
+    from app.services.skill import SkillService
+
+    skill = await SkillService(session).create_skill(
+        SkillCreate(name="代码审查", knowledge="先看变更")
+    )
+    session.add(_failure())
+    await session.commit()
+
+    result = await RetrospectiveService(session).run(
+        thread_id="t1",
+        task="做点事",
+        model=FakeModel(
+            reply=_proposal(
+                carrier="skill",
+                target_skill_id=skill.id,
+                content="提交前记得先跑 lint",
+            )
+        ),
+    )
+    assert result is not None
+    assert result.status == STATUS_APPLIED
+    assert result.carrier == "skill"
+    assert result.appended_block, "要记下追加了哪一段 —— 撤销时靠它"
+
+    await session.refresh(skill)
+    assert "先看变更" in skill.knowledge, "原有内容不能被冲掉"
+    assert "先跑 lint" in skill.knowledge
+
+
+async def test_新建的技能不带任何工具(session):
+    """复盘**不能给 agent 加能力** —— 技能的工具集它碰不到。"""
+    from app.services.skill import SkillService
+
+    session.add(_failure())
+    await session.commit()
+
+    result = await RetrospectiveService(session).run(
+        thread_id="t1",
+        task="做点事",
+        model=FakeModel(
+            reply=_proposal(carrier="skill", content="先起 db 再起 api")
+        ),
+    )
+    assert result is not None
+    assert result.status == STATUS_APPLIED
+
+    service = SkillService(session)
+    skill = await service.get_skill(int(result.target_id))
+    assert await service.list_tool_ids(skill.id) == [], "自动建的技能不能带工具"
+
+
+async def test_技能knowledge满了就不追加(session):
+    """装不下就不追加 —— 宁可这条改进不落，也不把技能撑爆。"""
+    from app.schemas.skill import SkillCreate
+    from app.services.skill import SkillService
+
+    skill = await SkillService(session).create_skill(
+        SkillCreate(name="满的技能", knowledge="x" * 7990)
+    )
+    session.add(_failure())
+    await session.commit()
+
+    result = await RetrospectiveService(session).run(
+        thread_id="t1",
+        task="做点事",
+        model=FakeModel(
+            reply=_proposal(carrier="skill", target_skill_id=skill.id, content="再补一点")
+        ),
+    )
+    assert result is not None
+    assert result.status == STATUS_REJECTED
+    assert result.reject_reason == REJECT_LIMIT
+
+
+async def test_提示词改进会落成一条规则(session):
+    session.add(_failure())
+    await session.commit()
+
+    result = await RetrospectiveService(session).run(
+        thread_id="t1",
+        task="做点事",
+        model=FakeModel(
+            reply=_proposal(carrier="prompt", content="改完代码先跑 lint 再跑测试")
+        ),
+    )
+    assert result is not None
+    assert result.status == STATUS_APPLIED
+    assert result.carrier == "prompt"
+
+    from app.repositories.prompt_rule import PromptRuleRepository
+
+    rules = await PromptRuleRepository(session).list_enabled()
+    assert any("先跑 lint" in rule.rule for rule in rules)
+
+
+def test_规则渲染成带边界的块():
+    """块里要写清**只影响做事方式** —— 代码里的准则永远在前。"""
+    from app.agents.prompts import render_prompt_rules
+
+    text = render_prompt_rules(["先跑 lint"])
+    assert "<auto_rules>" in text
+    assert "先跑 lint" in text
+    assert "不影响权限与审批" in text
+    assert render_prompt_rules([]) == ""
+    assert render_prompt_rules(["  "]) == ""
+
+
+def test_规则进上下文块():
+    from app.agents.prompts import render_prompt_rules
+    from app.context.service import KEY_PROMPT_RULES, ContextRequest, build_context_service
+
+    result = build_context_service().assemble(
+        ContextRequest(
+            base_prompt="基准",
+            prompt_rules=render_prompt_rules(["先跑 lint"]),
+        )
+    )
+    assert KEY_PROMPT_RULES in [block.key for block in result.blocks]
+
+
+def test_图缓存键随规则变化():
+    """提示词是编进图的 —— 规则改了不重建图，agent 就还看着旧的那份。"""
+    from pathlib import Path
+
+    from app.agents.runner import _graph_key
+    from app.capabilities.execution.context import ExecutionContext
+
+    class _Rule:
+        def __init__(self, rid, updated):
+            self.id = rid
+            self.updated_at = updated
+
+    kwargs = {
+        "thread_id": "t1",
+        "workspace": Path("/tmp/ws"),
+        "session_root": Path("/tmp/ws"),
+        "specs": [],
+        "trust_mode": "auto",
+        "model": FakeModel(),
+        "skill_sources": [],
+        "memory_source": "/AGENTS.md",
+        "context": ExecutionContext.build("/tmp/ws"),
+    }
+    without = _graph_key(**kwargs, prompt_rules=[])
+    with_rule = _graph_key(**kwargs, prompt_rules=[_Rule(1, "2026-11-05 00:00:00")])
+    changed = _graph_key(**kwargs, prompt_rules=[_Rule(1, "2026-11-05 01:00:00")])
+
+    assert without != with_rule, "加了规则必须换一张图"
+    assert with_rule != changed, "规则被改写也要换图"
