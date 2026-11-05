@@ -16,6 +16,7 @@ from app.services.example import ExampleService
 from app.services.invocation import InvocationService
 from app.services.llm_provider import LLMProviderService
 from app.services.mcp_server import MCPServerService
+from app.services.retrospective import RetrospectiveService
 from app.services.skill import SkillService
 from app.services.tool import ToolService
 
@@ -81,3 +82,8 @@ def get_memory_service(session: DbSession) -> MemoryService:
         thread_id="",
         long_term_store=LongTermMemoryStore(session),
     )
+
+
+def get_retrospective_service(session: DbSession) -> RetrospectiveService:
+    """构造复盘服务实例。"""
+    return RetrospectiveService(session)

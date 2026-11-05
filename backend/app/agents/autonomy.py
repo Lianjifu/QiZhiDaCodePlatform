@@ -41,12 +41,9 @@ import json
 import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from app.models.retrospective import CARRIER_MEMORY, CARRIER_PROMPT, CARRIER_SKILL
 
-# 改进落在哪一层
-CARRIER_MEMORY = "memory"
-CARRIER_SKILL = "skill"
-CARRIER_PROMPT = "prompt"
+logger = logging.getLogger(__name__)
 
 _CARRIERS = (CARRIER_MEMORY, CARRIER_SKILL, CARRIER_PROMPT)
 

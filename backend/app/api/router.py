@@ -17,6 +17,7 @@ from app.api.v1 import (
     mcp_server,
     memory,
     rag,
+    retrospective,
     skill,
     tool,
 )
@@ -33,6 +34,7 @@ api_router.include_router(capability.router)
 api_router.include_router(invocation.router)
 api_router.include_router(rag.router)
 api_router.include_router(memory.router)
+api_router.include_router(retrospective.router)
 api_router.include_router(context.router)
 api_router.include_router(files.router)
 api_router.include_router(environments.router)

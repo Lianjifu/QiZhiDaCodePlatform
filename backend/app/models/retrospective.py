@@ -37,6 +37,7 @@ STATUS_RUNNING = "running"  # 正在跑（已抢占失败记录）
 STATUS_APPLIED = "applied"  # 改进已落地
 STATUS_NO_INSIGHT = "no_insight"  # 复盘了，但没发现值得改的
 STATUS_REJECTED = "rejected"  # 有改进，但没落地（看 reject_reason）
+STATUS_REVERTED = "reverted"  # 落地过，后来被撤销了
 STATUS_FAILED = "failed"  # 复盘本身没跑成
 
 # 被拒的原因
@@ -108,6 +109,7 @@ __all__ = [
     "STATUS_FAILED",
     "STATUS_NO_INSIGHT",
     "STATUS_REJECTED",
+    "STATUS_REVERTED",
     "STATUS_RUNNING",
     "Retrospective",
 ]

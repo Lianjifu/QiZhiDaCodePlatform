@@ -35,8 +35,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.autonomy import (
-    CARRIER_MEMORY,
-    CARRIER_SKILL,
     MAX_FAILURES,
     RETROSPECTIVE_PROMPT,
     build_input,
@@ -50,9 +48,9 @@ from app.core.locking import TaskLock
 from app.memory.models import SCOPE_LONG_TERM, SCOPE_SESSION, SOURCE_MODEL
 from app.memory.service import MemoryService
 from app.models.retrospective import (
-    CARRIER_MEMORY as CARRIER_MEMORY_MODEL,
-)
-from app.models.retrospective import (
+    CARRIER_MEMORY,
+    CARRIER_PROMPT,
+    CARRIER_SKILL,
     REJECT_CONFLICT,
     REJECT_LIMIT,
     REJECT_PARSE_FAILED,
@@ -62,6 +60,7 @@ from app.models.retrospective import (
     STATUS_FAILED,
     STATUS_NO_INSIGHT,
     STATUS_REJECTED,
+    STATUS_REVERTED,
     STATUS_RUNNING,
     Retrospective,
 )
@@ -231,7 +230,7 @@ class RetrospectiveService:
 
         if applied is None:
             return
-        target_id, appended_block = applied
+        target_id, appended_block, target_skill_id = applied
         await self.repo.set_status(
             record.id,
             STATUS_APPLIED,
@@ -242,6 +241,7 @@ class RetrospectiveService:
             kind=proposal["kind"],
             tags=proposal["tags"],
             target_id=target_id,
+            target_skill_id=target_skill_id,
             appended_block=appended_block,
             reason=proposal["reason"],
             capability_keys=proposal["capability_keys"],
@@ -254,7 +254,7 @@ class RetrospectiveService:
         self,
         record: Retrospective,
         proposal: dict[str, Any],
-    ) -> tuple[str, str] | None:
+    ) -> tuple[str, str, int | None] | None:
         """改进落到记忆里。
 
         写的是**长期**记忆（跨会话）—— 一次任务的经验下次也要能用。
@@ -278,7 +278,7 @@ class RetrospectiveService:
                         scope=scope,
                         source=SOURCE_MODEL,
                     )
-                return entry.id, ""
+                return entry.id, "", None
             except CapabilityError as exc:
                 if exc.code == ErrorCode.INVALID_ARGUMENTS:
                     # **冲突**（与已有记忆矛盾）—— 记下来，不硬写。
@@ -288,7 +288,7 @@ class RetrospectiveService:
                         record,
                         proposal,
                         REJECT_CONFLICT,
-                        carrier=CARRIER_MEMORY_MODEL,
+                        carrier=CARRIER_MEMORY,
                     )
                     return None
                 # 其余（集合不存在之类的）—— 换一个 scope 再试
@@ -299,7 +299,7 @@ class RetrospectiveService:
                     record.id,
                     STATUS_FAILED,
                     reject_reason=None,
-                    carrier=CARRIER_MEMORY_MODEL,
+                    carrier=CARRIER_MEMORY,
                     title=proposal["title"],
                     content=proposal["content"],
                     reason=proposal["reason"],
@@ -312,7 +312,7 @@ class RetrospectiveService:
             record,
             proposal,
             REJECT_TARGET_MISSING,
-            carrier=CARRIER_MEMORY_MODEL,
+            carrier=CARRIER_MEMORY,
         )
         return None
 
@@ -340,7 +340,7 @@ class RetrospectiveService:
         self,
         record: Retrospective,
         proposal: dict[str, Any],
-    ) -> tuple[str, str] | None:
+    ) -> tuple[str, str, int | None] | None:
         """改进落到技能里。
 
         **只动 ``knowledge``，不碰 ``tool_ids``** —— 技能是"一组工具 + 怎么用"，
@@ -385,7 +385,7 @@ class RetrospectiveService:
                 skill.id,
                 SkillUpdate(knowledge=(skill.knowledge or "") + block),
             )
-            return str(skill.id), block
+            return str(skill.id), block, skill.id
 
         # 没有指定技能 —— 新建一个
         # **tool_ids 留空**：复盘不给 agent 加能力
@@ -415,13 +415,13 @@ class RetrospectiveService:
             return None
         # 记下**实际写进去的那段**（新建时是去掉首尾空白的版本）——
         # 撤销时按它删回去
-        return str(skill.id), knowledge
+        return str(skill.id), knowledge, skill.id
 
     async def _apply_prompt(
         self,
         record: Retrospective,
         proposal: dict[str, Any],
-    ) -> tuple[str, str] | None:
+    ) -> tuple[str, str, int | None] | None:
         """改进落到提示词规则表里。
 
         规则**不是**直接进代码里的提示词 —— 它进的是上下文装配的一个独立块
@@ -432,7 +432,7 @@ class RetrospectiveService:
             enabled=True,
             retrospective_id=record.id,
         )
-        return str(rule.id), ""
+        return str(rule.id), "", None
 
     # ---------- 辅助 ----------
 
@@ -484,6 +484,95 @@ class RetrospectiveService:
             long_term_store=long_term,
             db_lock=self.lock,
         )
+
+    # ---------- 撤销 ----------
+
+    async def revert(self, record_id: int) -> tuple[bool, str]:
+        """撤销一次复盘做的改动。
+
+        **免审批的兜底** —— 平台不让人先看一眼再改，那事后就得能撤。
+        三层各撤各的：
+
+        - **记忆** —— 删掉那一条；
+        - **技能** —— 把追加的那段从 knowledge 里删回去；
+        - **提示词** —— 把那条规则停用（关掉就不进提示词）。
+
+        Args:
+            record_id: 复盘记录 id。
+
+        Returns:
+            ``(撤成功没有, 说明)``。
+        """
+        record = await self.repo.get(record_id)
+        if record is None:
+            return False, "复盘记录不存在"
+        if record.status != STATUS_APPLIED:
+            return False, f"这条复盘没有落地（{record.status}），没什么可撤"
+
+        if record.carrier == CARRIER_MEMORY:
+            ok = await self._revert_memory(record)
+        elif record.carrier == CARRIER_SKILL:
+            ok = await self._revert_skill(record)
+        elif record.carrier == CARRIER_PROMPT:
+            ok = await self._revert_prompt(record)
+        else:
+            return False, f"不知道这种载体怎么撤（{record.carrier}）"
+
+        if ok:
+            await self.repo.set_status(
+                record.id,
+                STATUS_REVERTED,
+                reject_reason=None,
+                applied_at=None,
+            )
+            await self.session.commit()
+            return True, "已撤销"
+        return False, "撤销失败：目标已经不在了"
+
+    async def _revert_memory(self, record: Retrospective) -> bool:
+        """删掉那条记忆。"""
+        from app.memory.service import MemoryService
+
+        if not record.target_id:
+            return False
+        service = MemoryService(session=self.session, thread_id=record.thread_id or "")
+        async with self.lock:
+            return await service.forget_any(record.target_id)
+
+    async def _revert_skill(self, record: Retrospective) -> bool:
+        """把追加的那段从 knowledge 里删回去。"""
+        from app.schemas.skill import SkillUpdate
+        from app.services.skill import SkillService
+
+        if not record.target_skill_id or not record.appended_block:
+            return False
+        service = SkillService(self.session)
+        skill = await service.repo.get(record.target_skill_id)
+        if skill is None:
+            return False
+        knowledge = skill.knowledge or ""
+        if record.appended_block not in knowledge:
+            # 别人后来改过这一段 —— 硬删会伤到别人的内容，不撤
+            return False
+        await service.update_skill(
+            skill.id,
+            SkillUpdate(knowledge=knowledge.replace(record.appended_block, "").strip()),
+        )
+        return True
+
+    async def _revert_prompt(self, record: Retrospective) -> bool:
+        """停用那条规则。"""
+        if not record.target_id:
+            return False
+        try:
+            rule_id = int(record.target_id)
+        except ValueError:
+            return False
+        rule = await self.rules.get(rule_id)
+        if rule is None:
+            return False
+        await self.rules.set_enabled(rule_id, False)
+        return True
 
     # ---------- 度量 ----------
 

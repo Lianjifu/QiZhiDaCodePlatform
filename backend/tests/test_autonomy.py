@@ -37,6 +37,7 @@ from app.models.retrospective import (
     STATUS_APPLIED,
     STATUS_NO_INSIGHT,
     STATUS_REJECTED,
+    STATUS_REVERTED,
 )
 from app.repositories.retrospective import RetrospectiveRepository
 from app.services.retrospective import RetrospectiveService
@@ -584,3 +585,116 @@ def test_图缓存键随规则变化():
 
     assert without != with_rule, "加了规则必须换一张图"
     assert with_rule != changed, "规则被改写也要换图"
+
+
+# ---------------------------------------------------------------- 撤销
+
+
+async def test_撤销会删掉那条记忆(session):
+    """免审批的兜底 —— 事后能撤。"""
+    from app.memory.service import MemoryService
+
+    session.add(_failure())
+    await session.commit()
+    service = RetrospectiveService(session)
+    result = await service.run(
+        thread_id="t1", task="做点事", model=FakeModel(reply=_proposal())
+    )
+    assert result is not None
+    assert result.status == STATUS_APPLIED
+
+    reverted, message = await service.revert(result.id)
+    assert reverted is True, message
+
+    memories = await MemoryService(session=session, thread_id="t1").list_all(scope="session")
+    assert not memories, "撤销之后那条记忆应该没了"
+
+    await session.refresh(result)
+    assert result.status == STATUS_REVERTED
+
+
+async def test_撤销会把技能那段删回去(session):
+    from app.schemas.skill import SkillCreate
+    from app.services.skill import SkillService
+
+    skill = await SkillService(session).create_skill(
+        SkillCreate(name="代码审查", knowledge="先看变更")
+    )
+    session.add(_failure())
+    await session.commit()
+    service = RetrospectiveService(session)
+    result = await service.run(
+        thread_id="t1",
+        task="做点事",
+        model=FakeModel(
+            reply=_proposal(carrier="skill", target_skill_id=skill.id, content="记得先跑 lint")
+        ),
+    )
+    assert result is not None
+
+    reverted, message = await service.revert(result.id)
+    assert reverted is True, message
+
+    await session.refresh(skill)
+    assert "先跑 lint" not in skill.knowledge
+    assert "先看变更" in skill.knowledge, "原有的内容不能被误删"
+
+
+async def test_撤销会停用那条提示词规则(session):
+    from app.repositories.prompt_rule import PromptRuleRepository
+
+    session.add(_failure())
+    await session.commit()
+    service = RetrospectiveService(session)
+    result = await service.run(
+        thread_id="t1",
+        task="做点事",
+        model=FakeModel(reply=_proposal(carrier="prompt", content="改完先跑 lint")),
+    )
+    assert result is not None
+
+    reverted, message = await service.revert(result.id)
+    assert reverted is True, message
+
+    rules = await PromptRuleRepository(session).list_enabled()
+    assert not rules, "撤销之后这条规则不该再进提示词"
+
+
+async def test_没落地的复盘撤不了(session):
+    session.add(_failure())
+    await session.commit()
+    service = RetrospectiveService(session)
+    result = await service.run(
+        thread_id="t1",
+        task="做点事",
+        model=FakeModel(reply='{"has_insight": false}'),
+    )
+    assert result is not None
+    reverted, message = await service.revert(result.id)
+    assert reverted is False
+    assert "没有落地" in message
+
+
+# ---------------------------------------------------------------- 接口
+
+
+async def test_接口能列出复盘记录(client):
+    response = await client.get("/api/v1/retrospectives")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["code"] == 0
+    assert "items" in body["data"]
+
+
+async def test_接口能给出度量(client):
+    response = await client.get("/api/v1/retrospectives/metrics")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["code"] == 0
+    assert "by_status" in body["data"]
+    assert "recurrence" in body["data"]
+
+
+async def test_接口查不存在的复盘报404(client):
+    response = await client.get("/api/v1/retrospectives/99999")
+    assert response.status_code == 404
