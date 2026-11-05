@@ -10,7 +10,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import {
   AutoIcon,
   BranchIcon,
-  ChatIcon,
+  ChevronIcon,
   FolderIcon,
   LayersIcon,
   MoonIcon,
@@ -25,6 +25,14 @@ import CommandPalette, { type PaletteCommand } from '../../features/commands/Com
 import SessionStatusPanel from '../../features/sessions/SessionStatusPanel'
 import { useSessions } from '../../features/sessions/store'
 import { useTheme } from '../../theme/ThemeProvider'
+import {
+  parseSections,
+  serializeSections,
+  toggleSection,
+  SECTIONS_KEY,
+  type SectionId,
+  type SectionState,
+} from './sidebarSections'
 
 interface NavItem {
   to: string
@@ -33,13 +41,13 @@ interface NavItem {
   icon: ReactNode
 }
 
+/**
+ * 模块入口。
+ *
+ * **这里没有「编码助手」**：新建会话就是进入对话，单独再放一个入口是重复的。
+ * 会话列表里点任意一条也能回到对话。
+ */
 const MODULES: NavItem[] = [
-  {
-    to: '/chat',
-    label: '编码助手',
-    hint: '对话 / 工具调用 / 审批',
-    icon: <ChatIcon className="h-4 w-4" />,
-  },
   {
     to: '/files',
     label: '文件',
@@ -93,6 +101,18 @@ export default function AppShell() {
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_KEY) === '1',
   )
+  /**
+   * 各分区（工作区 / 已置顶 / 对话和任务）折没折。
+   *
+   * 会话一多，会话列表能把模块入口整个顶出屏幕 —— 折起来只留标题，
+   * 想看再点开。跟整条侧栏的折叠是两回事，各自存各自的。
+   */
+  const [sections, setSections] = useState<SectionState>(
+    () => parseSections(localStorage.getItem(SECTIONS_KEY)),
+  )
+  const toggleSectionById = useCallback((id: SectionId) => {
+    setSections((state) => toggleSection(state, id))
+  }, [])
   /**
    * 窄屏上侧栏是抽屉 —— 屏幕就那么宽，固定占一栏就没地方放内容了。
    */
@@ -181,6 +201,11 @@ export default function AppShell() {
     localStorage.setItem(SIDEBAR_KEY, collapsed ? '1' : '0')
   }, [collapsed])
 
+  // 记住各分区的折叠状态
+  useEffect(() => {
+    localStorage.setItem(SECTIONS_KEY, serializeSections(sections))
+  }, [sections])
+
   /** 命令清单 —— 面板里按关键词过滤。 */
   const commands = useMemo<PaletteCommand[]>(
     () => [
@@ -193,13 +218,6 @@ export default function AppShell() {
           const threadId = create()
           go(`/chat/${threadId}`)
         },
-      },
-      {
-        id: 'go-chat',
-        title: '编码助手',
-        hint: '回到对话页',
-        icon: <ChatIcon className="h-3.5 w-3.5" />,
-        action: () => go('/chat'),
       },
       {
         id: 'go-files',
@@ -359,7 +377,7 @@ export default function AppShell() {
                 <NavLink
                   key={item.to}
                   to={moduleTo(item.to)}
-                  end={item.to === '/chat'}
+                  end
                   title={item.label}
                   onClick={() => setDrawerOpen(false)}
                   className={({ isActive }) =>
@@ -443,31 +461,37 @@ export default function AppShell() {
 
             {/* 模块入口 */}
             <nav className="px-3 pb-3">
-              <div className="mb-1 px-2.5 text-[11px] font-medium tracking-wide text-ink-faint">
-                工作区
-              </div>
-              {MODULES.map((item) => (
-                <NavLink
-                  key={item.to}
-                  // 文件是按会话隔离的 —— 从会话里点「文件」要把当前会话带过去，
-                  // 不然看到的是另一个会话的工作区
-                  to={moduleTo(item.to)}
-                  end={item.to === '/chat'}
-                  onClick={() => setDrawerOpen(false)}
-                  className={({ isActive }) =>
-                    [
-                      'flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors',
-                      isActive ? 'bg-hover text-ink' : 'text-ink-muted hover:bg-hover hover:text-ink',
-                    ].join(' ')
-                  }
-                >
-                  <span className="shrink-0 text-ink-faint">{item.icon}</span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-medium">{item.label}</span>
-                    <span className="block truncate text-[11px] text-ink-faint">{item.hint}</span>
-                  </span>
-                </NavLink>
-              ))}
+              <SectionHeader
+                title="工作区"
+                collapsed={Boolean(sections.workspace)}
+                onToggle={() => toggleSectionById('workspace')}
+              />
+              {sections.workspace ? null : (
+                <>
+                  {MODULES.map((item) => (
+                    <NavLink
+                      key={item.to}
+                      // 文件是按会话隔离的 —— 从会话里点「文件」要把当前会话带过去，
+                      // 不然看到的是另一个会话的工作区
+                      to={moduleTo(item.to)}
+                      end
+                      onClick={() => setDrawerOpen(false)}
+                      className={({ isActive }) =>
+                        [
+                          'flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors',
+                          isActive ? 'bg-hover text-ink' : 'text-ink-muted hover:bg-hover hover:text-ink',
+                        ].join(' ')
+                      }
+                    >
+                      <span className="shrink-0 text-ink-faint">{item.icon}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium">{item.label}</span>
+                        <span className="block truncate text-[11px] text-ink-faint">{item.hint}</span>
+                      </span>
+                    </NavLink>
+                  ))}
+                </>
+              )}
             </nav>
 
             {/* 会话列表 */}
@@ -475,6 +499,9 @@ export default function AppShell() {
               {pinnedShown.length > 0 && (
                 <SessionGroup
                   title="已置顶"
+                  id="pinned"
+                  collapsed={Boolean(sections.pinned)}
+                  onToggle={toggleSectionById}
                   items={pinnedShown}
                   activeThread={activeThread}
                   onSelect={(threadId) => go(`/chat/${threadId}`)}
@@ -484,6 +511,9 @@ export default function AppShell() {
               )}
               <SessionGroup
                 title="对话和任务"
+                id="sessions"
+                collapsed={Boolean(sections.sessions)}
+                onToggle={toggleSectionById}
                 items={othersShown}
                 activeThread={activeThread}
                 onSelect={(threadId) => go(`/chat/${threadId}`)}
@@ -549,8 +579,44 @@ export default function AppShell() {
   )
 }
 
+interface SectionHeaderProps {
+  title: string
+  collapsed: boolean
+  onToggle: () => void
+}
+
+/**
+ * 分区标题 —— 点一下折起 / 展开。
+ *
+ * **为什么标题要能点**：侧栏里最占地方的是会话列表和模块入口，
+ * 分区折起来以后只剩一行标题，想看再点开。
+ */
+function SectionHeader({ title, collapsed, onToggle }: SectionHeaderProps) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      className="mb-1 flex w-full items-center gap-1 px-2.5 text-left text-[11px] font-medium tracking-wide text-ink-faint transition-colors hover:text-ink-muted"
+    >
+      <ChevronIcon
+        className={[
+          'h-3 w-3 shrink-0 transition-transform',
+          // 图标本身朝下 —— 折起来时转成朝右
+          collapsed ? '-rotate-90' : '',
+        ].join(' ')}
+      />
+      <span className="flex-1">{title}</span>
+    </button>
+  )
+}
+
 interface SessionGroupProps {
   title: string
+  /** 分区 id —— 折叠状态记在它名下 */
+  id: SectionId
+  collapsed: boolean
+  onToggle: (id: SectionId) => void
   items: { threadId: string; title: string; pinned: boolean }[]
   activeThread: string | null
   onSelect: (threadId: string) => void
@@ -560,6 +626,9 @@ interface SessionGroupProps {
 
 function SessionGroup({
   title,
+  id,
+  collapsed,
+  onToggle,
   items,
   activeThread,
   onSelect,
@@ -568,8 +637,8 @@ function SessionGroup({
 }: SessionGroupProps) {
   return (
     <div className="mb-3">
-      <div className="mb-1 px-2.5 text-[11px] font-medium tracking-wide text-ink-faint">{title}</div>
-      {items.length === 0 ? (
+      <SectionHeader title={title} collapsed={collapsed} onToggle={() => onToggle(id)} />
+      {collapsed ? null : items.length === 0 ? (
         <div className="px-2.5 py-1 text-xs text-ink-faint">（空）</div>
       ) : (
         items.map((item) => {
