@@ -74,5 +74,6 @@
 | | |
 | --- | --- |
 | [../README.md](../README.md) | 仓库总览：起服务、目录结构、两条要记住的坑 |
+| [deployment.md](deployment.md) | **Docker 部署**：两个容器、工作区路径的硬约束、docker socket 的安全边界、常见问题 |
 | [../backend/README.md](../backend/README.md) | 后端：分层、目录、配置、迁移、风险 |
 | [../frontend/README.md](../frontend/README.md) | 前端：起服务、主题、组件、约定 |

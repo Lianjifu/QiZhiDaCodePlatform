@@ -28,6 +28,20 @@ npm run dev
 前端通过 Vite 代理把 `/api` 转发到后端，所以**不用配 CORS**，生产同域部署时
 前端代码一行都不用改。代理目标自动取后端 `.env` 里的 `PORT`。
 
+## Docker 部署
+
+```bash
+cp .env.docker.example .env    # 填 WORKSPACE_ROOT 与 API_KEY_ENCRYPTION_KEY
+docker compose up -d --build
+```
+
+控制台在 <http://localhost:8080>。两个容器：nginx 托管前端并反代 `/api`，
+FastAPI 跑 API 与 agent。
+
+**工作区路径必须宿主与容器一致**（沙箱容器的挂载参数按宿主路径解释），
+**后端要挂 docker socket**（沙箱是兄弟容器）—— 两条细节见
+[docs/deployment.md](docs/deployment.md)。
+
 ## 前端
 
 React + TypeScript + Vite + Tailwind，深浅两套主题（跟随系统 / 浅色 / 深色）。

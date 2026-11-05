@@ -1,0 +1,20 @@
+# 前端镜像不需要的东西。
+
+node_modules/
+dist/
+.vite/
+
+# 本地配置
+.env
+.env.*
+!.env.example
+
+# 测试
+scripts/
+
+# 编辑器
+.DS_Store
+.idea/
+.vscode/
+.git/
+.gitignore

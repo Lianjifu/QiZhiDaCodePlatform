@@ -1,0 +1,77 @@
+# Docker 部署：两个服务。
+#
+#   frontend (nginx)  →  静态资源 + 把 /api 转给 backend
+#   backend  (FastAPI) →  API + agent
+#
+# **后端端口不映射到宿主机** —— 只有一个入口（nginx），少一个暴露面。
+# 平台目前没有鉴权，多一个端口就多一份风险。
+
+name: qizhidacode
+
+services:
+  backend:
+    build:
+      context: ./backend
+    image: qzd-backend:latest
+    restart: unless-stopped
+
+    # 仓库根的 .env —— 里面既有容器要的环境变量，也有 compose 插值用的
+    # （同一个文件两用，见 .env.docker.example 的说明）
+    env_file:
+      - .env
+
+    environment:
+      # **容器里由 alembic 建表**，不要再 create_all ——
+      # create_all 不知道迁移版本，回滚不了。
+      DB_AUTO_CREATE_TABLES: "false"
+      # 部署不是开发：别把异常栈直接甩给客户端
+      DEBUG: "false"
+      # 数据库与 checkpoint 落在数据卷里（不是容器可写层）
+      DATABASE_URL: "sqlite+aiosqlite:////data/app.db"
+      DATABASE_SYNC_URL: "sqlite:////data/app.db"
+      AGENT_CHECKPOINTER_DB: "/data/agent_checkpoints.db"
+
+    volumes:
+      # **docker socket**：agent 跑命令的沙箱容器是这台机器的**兄弟容器**
+      # （`docker run -v <工作区>:/workspace`），平台靠这个 socket 建它们。
+      # ⚠️ 挂了它等于把宿主机的 root 权限给了容器 —— 只在可信机器上这么做。
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      # **工作区：宿主与容器必须是同一个路径字符串。**
+      #
+      # 沙箱容器的挂载参数 `-v <路径>:/workspace` 里的 <路径> 是**宿主机的
+      # 路径**（docker daemon 解释的）。平台还会用
+      # `Path(挂载源).resolve() == workspace` 校验挂对了没有 —— 两边路径
+      # 字面不同就会判成"挂错了"并重建容器。
+      #
+      # macOS 上还要在 `$HOME` 下面（Docker Desktop / Colima 的文件共享范围）。
+      - ${WORKSPACE_ROOT}:${WORKSPACE_ROOT}
+
+      # 数据库与 checkpoint
+      - qzd-data:/data
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+  frontend:
+    build:
+      context: ./frontend
+    image: qzd-frontend:latest
+    restart: unless-stopped
+
+    ports:
+      # 控制台入口。默认 8080 → 宿主 8080。
+      - "${FRONTEND_PORT:-8080}:80"
+
+    depends_on:
+      backend:
+        # 等后端真的能回健康检查再起 nginx —— 后端没就绪时，
+        # 前端的首个请求会拿到 502，用户看到的是"控制台打开了但什么都是坏的"。
+        condition: service_healthy
+
+volumes:
+  qzd-data:

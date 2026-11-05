@@ -1,0 +1,36 @@
+# 后端镜像不需要的东西 —— 每一项都是镜像体积或构建时间。
+
+# 本地配置与密钥：**绝不能进镜像**（compose 用 env_file 注入）
+.env
+.env.*
+!.env.example
+
+# 数据库与工作区（运行时挂载）
+*.db
+workspace/
+backend/workspace/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 测试与临时脚本
+tests/
+scripts/p*_spike.py
+scripts/check_syntax.py
+
+# 前端（后端镜像里没有）
+frontend/
+
+# 编辑器
+.DS_Store
+.idea/
+.vscode/
+.git/
+.gitignore
