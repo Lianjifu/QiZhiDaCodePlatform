@@ -16,6 +16,13 @@ LangChain 的 provider 名字和国内实际在用的服务对不上：DeepSeek�
 没装就直接报 "Initializing ChatDeepSeek requires the langchain-deepseek
 package"。所以国产模型一律填 ``openai`` + 自定义 ``base_url``。
 
+**正因为如此，``.env`` 里的 ``LLM_PROVIDER`` 走的是这张表而不是
+``langchain_provider``** —— 写 ``deepseek``（我们的 key），平台自动翻译成
+``openai`` + 预设的地址。写 ``langchain_provider`` 的值（``openai`` /
+``anthropic`` / ``ollama`` …）在多数情况下结果一样，因为那些 key 恰好也是
+provider 名；不一样的是 ``deepseek`` 这类国产厂商 —— 直接当 provider 名用
+就会去找没装的集成包。见 ``app/agents/llm.py::get_chat_model()``。
+
 **二、base_url 要按厂商官方文档写。** 带不带 ``/v1`` 各家不一样
 （DeepSeek 官方写的是 ``https://api.deepseek.com``，OpenAI 是
 ``https://api.openai.com/v1``），这里照抄文档，不要凭印象加后缀。

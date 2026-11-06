@@ -189,6 +189,18 @@ curl 'http://127.0.0.1:8000/api/v1/context/preview?query=pnpm&workspace=/tmp/ws'
 - **整个请求的上限是 `TOTAL_REQUEST_FRACTION = 0.85`**。压缩中间件拿厂商报回来
   的 `total_tokens`（整个请求的真实大小）跟它比。
 
+**窗口从哪来 —— 两条路同一个口径**：
+
+| 来源 | 窗口怎么定 |
+| --- | --- |
+| 数据库供应商配置 | 配置上的 `context_window`，没填就取厂商预设的 |
+| `.env` 兜底 | `LLM_CONTEXT_WINDOW`，没写（0）就取厂商预设的 |
+
+两条路的"有效窗口"都由 `app/agents/llm.py::env_context_window()`（兜底那条）
+与模型对象上的 `profile["max_input_tokens"]` 给出，**上下文预览接口算预算时
+调的是同一个函数** —— 预览报的字符预算跟模型实际挂着的窗口永远是同一个数。
+预览说 17 万 token 而模型其实有 100 万，排查时会被带偏。
+
 **预算一律按字符算**，不按 token。token 数要分词器，而不同厂商的分词粒度差
 好几倍；用字符更可预测，也更好解释。
 

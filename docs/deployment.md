@@ -173,9 +173,13 @@ nginx 的缓冲没关。`frontend/nginx.conf` 里 `proxy_buffering off` 就在
 `docker compose exec backend docker ps` 看得到吗？
 
 **对话报 "Initializing ChatDeepSeek requires the langchain-deepseek package"**
-`.env` 里的 `LLM_PROVIDER` 写成了 `deepseek`。**国产模型要写 `openai`**，
-把 `LLM_BASE_URL` 指到厂商的 OpenAI 兼容端点 —— 平台没装、也不需要
-`langchain-deepseek` 那个包（`llm.py` 里的注释写着同一件事）。
+`.env` 里的 `LLM_PROVIDER` 写成了 `deepseek`，而平台**没按预设映射**它 ——
+`init_chat_model("deepseek:xxx")` 会去找没装的 `langchain-deepseek` 包。
+
+现在 `LLM_PROVIDER` **直接写厂商名就行**（`deepseek` / `qwen` / `moonshot` /
+`openai` / `anthropic` / `ollama` …），平台自动映射成 OpenAI 兼容端点并带上
+该厂商的默认地址与上下文窗口，**不用自己拼 `base_url`，也不用装任何厂商
+集成包**。确认一下镜像里的 `app/agents/llm.py` 是新版（`get_preset` 映射那一段）。
 
 **前端页面打开了，但接口报 502**
 后端容器被重建后 IP 变了，而 nginx 还指着旧的。本平台的 nginx 配了

@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.agents.providers import get_preset
 from app.api.router import api_router
 from app.capabilities.backends.container_pool import cleanup_stale_containers, get_pool
 from app.core.config import settings
@@ -28,6 +29,23 @@ from app.services.invocation import expire_stale_approvals
 logger = logging.getLogger(__name__)
 
 
+def _should_warn_missing_api_key() -> bool:
+    """要不要警告「没配 API Key」。
+
+    两个条件都满足才警告：Key 确实没配，**而且**这条配置确实需要 Key。
+
+    **按供应商预设判断，别按 provider 名字硬编码** —— 本地推理
+    （ollama / vllm）与自定义端点都不需要 Key，缺了 Key 也不该报警。
+    """
+    if settings.llm_api_key:
+        return False
+    preset = get_preset(settings.llm_provider)
+    if preset is not None:
+        return preset.api_key_required
+    # 不在预设表里的名字（langchain 自己的 provider 名）—— 一律要求 Key
+    return True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """应用启动/关闭钩子。"""
@@ -38,7 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 第一个打开「工作目录」的人就不用干等。
     warm_environment_cache()
     logger.info("%s v%s 已启动", settings.app_name, settings.app_version)
-    if not settings.llm_api_key and settings.llm_provider != "ollama":
+    if _should_warn_missing_api_key():
         logger.warning("未配置 LLM_API_KEY，调用编码助手接口会失败（请在 .env 中设置）")
     try:
         reaper = asyncio.create_task(_reap_idle_sandboxes())

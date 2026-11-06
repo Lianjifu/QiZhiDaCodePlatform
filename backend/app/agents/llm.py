@@ -10,6 +10,10 @@
 两条路的差别只在**配置从哪来**，构造出来的模型对象是一样的，
 LangChain 的接口也是一样的，所以换来源不需要改任何调用方。
 
+**两条路共用同一个预设映射** —— `.env` 里写 `LLM_PROVIDER="deepseek"`
+跟数据库里配 `provider="deepseek"` 是一回事：都翻译成 langchain 认识的
+`openai` + 该厂商的默认地址。真正建模型的方式共用 :func:`_init_model`。
+
 ## 配置错误为什么不吞
 
 两个函数都**不捕获** ``init_chat_model()`` 抛的异常。理由：
@@ -23,8 +27,14 @@ LangChain 的接口也是一样的，所以换来源不需要改任何调用方�
 
 国内绝大多数厂商都提供 OpenAI 兼容端点，所以预设里 ``langchain_provider``
 统一是 ``"openai"``，靠 ``base_url`` 区分；只有 Anthropic、Azure 这类原生协议的
-才用别的 provider 名（Azure 的参数名还不一样，见 :func:`build_model_for_provider`
+才用别的 provider 名（Azure 的参数名还不一样，见 :func:`_init_model`
 里的特判）。
+
+**这也意味着 `deepseek` 不能直接当 langchain provider 名** ——
+`init_chat_model("deepseek:xxx")` 会去找没装的 `langchain-deepseek` 包，
+报 "Initializing ChatDeepSeek requires the langchain-deepseek package"。
+所以 :func:`get_chat_model` 先查预设表：认得就取预设的 `langchain_provider`，
+认不出来的才当 langchain provider 名用。
 """
 
 from __future__ import annotations
@@ -34,7 +44,7 @@ from typing import Any
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
-from app.agents.providers import resolve_preset
+from app.agents.providers import get_preset, resolve_preset
 from app.core.config import settings
 from app.core.crypto import decrypt_secret
 from app.models.llm_provider import LLMProvider
@@ -107,40 +117,124 @@ def _apply_context_window(model: BaseChatModel, context_window: int) -> BaseChat
     return model
 
 
+def _init_model(
+    *,
+    langchain_provider: str,
+    model_name: str,
+    base_url: str | None,
+    api_key: str | None,
+    temperature: float,
+    max_tokens: int,
+    timeout: int | None = None,
+) -> BaseChatModel:
+    """按 langchain provider 名与参数建模型对象。
+
+    **两条来源共用这一段** —— 环境变量那条与数据库那条，差别只在配置从哪来，
+    真正建模型的方式必须一致（尤其 Azure 那套不一样的参数名）。
+    """
+    kwargs: dict[str, Any] = {
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    if api_key:
+        kwargs["api_key"] = api_key
+    if base_url:
+        kwargs["base_url"] = base_url
+
+    if langchain_provider == "azure_openai":
+        # Azure 的参数名不一样：azure_endpoint + api_version
+        kwargs.pop("base_url", None)
+        if base_url:
+            kwargs["azure_endpoint"] = base_url
+        kwargs["api_version"] = settings.azure_openai_api_version
+
+    return init_chat_model(f"{langchain_provider}:{model_name}", **kwargs)
+
+
+def env_context_window() -> int:
+    """`.env` 这条路的**有效**上下文窗口。
+
+    环境变量写了就用它，没写就退到供应商预设的（库里那条路同样会退到预设）。
+
+    **为什么要单独一个函数**：上下文预览接口要报"这次给模型看多少字符"，
+    它得跟模型对象上挂的窗口是**同一个数** —— 预览说 17 万 token 而模型
+    其实有 100 万，排查时会被带偏。
+    """
+    preset = get_preset(settings.llm_provider)
+    return settings.llm_context_window or (preset.context_window if preset else 0)
+
+
+def env_vision_enabled() -> bool:
+    """`.env` 这条路的**有效**视觉能力。
+
+    跟窗口一样，**没写就退到供应商预设的**（库里那条路也是：配置上没填就取
+    预设的值）。
+
+    **怎么分"没写"和"显式写了 false"** —— ``llm_vision_enabled`` 的类型是
+    ``bool | None``，``None`` 就是"没写"（显式写 ``false`` 才算关掉）。
+    """
+    if settings.llm_vision_enabled is not None:
+        return settings.llm_vision_enabled
+    preset = get_preset(settings.llm_provider)
+    return preset.vision_enabled if preset else False
+
+
 def get_chat_model() -> BaseChatModel:
     """按环境变量配置构造对话模型（不走数据库）。
 
-    刻意不在这里吞异常：配置缺失（缺 api_key、厂商没装集成包）应该在启动阶段
-    就暴露出来，而不是等到 agent 跑一半才失败。
-    """
-    kwargs: dict[str, Any] = {
-        "temperature": settings.llm_temperature,
-        "max_tokens": settings.llm_max_tokens,
-    }
-    if settings.llm_api_key:
-        kwargs["api_key"] = settings.llm_api_key
-    if settings.llm_base_url:
-        kwargs["base_url"] = settings.llm_base_url
+    ``LLM_PROVIDER`` 可以写**我们的预设 key**（``deepseek`` / ``qwen`` /
+    ``moonshot`` …），也可以写 langchain 认识的 provider 名（``openai`` /
+    ``anthropic`` / ``ollama`` …）。认得预设 key 就走预设 —— 拿它的
+    ``langchain_provider`` 与默认地址；认不出来的当 langchain provider 名用。
 
-    # 厂商名来自环境变量。国产模型要写 `openai`（配 base_url 指到厂商），
-    # 写 `deepseek` 会去找没装的 langchain-deepseek 包。
+    **为什么不能让 ``deepseek`` 直接当 langchain provider 名** ——
+    ``init_chat_model("deepseek:xxx")`` 会去找 ``langchain-deepseek`` 这个包，
+    没装就报 "Initializing ChatDeepSeek requires the langchain-deepseek
+    package"。数据库那条路（:func:`build_model_for_provider`）一直是走预设
+    映射的，``.env`` 这条也得走一样的，不然同一个厂商两条路配法不一样。
+
+    窗口与视觉没写就退到预设的（见 :func:`env_context_window` /
+    :func:`env_vision_enabled`）—— 跟数据库那条路同一个口径。
+    """
+    preset = get_preset(settings.llm_provider)
+    langchain_provider = preset.langchain_provider if preset else settings.llm_provider
+    default_base_url = preset.default_base_url if preset else ""
+
+    # 环境变量里显式写的地址优先于预设的默认地址（跟数据库那条路一个口径）
+    base_url = settings.llm_base_url or default_base_url or None
+    # 身份里放**有效**窗口与视觉 —— 两个配置算出同一个结果就是同一个模型
+    context_window = env_context_window()
+    vision_enabled = env_vision_enabled()
+
     identity = "env:" + "|".join(
         [
-            settings.llm_provider,
+            langchain_provider,
             settings.llm_model,
-            str(settings.llm_base_url),
+            str(base_url),
             str(settings.llm_temperature),
             str(settings.llm_max_tokens),
-            str(settings.llm_context_window),
+            str(context_window),
+            str(vision_enabled),
         ]
     )
     cached = _MODEL_CACHE.get(identity)
     if cached is not None:
         return cached
 
-    model = init_chat_model(f"{settings.llm_provider}:{settings.llm_model}", **kwargs)
-    model = _apply_context_window(model, settings.llm_context_window)
-    model = _apply_vision(model, settings.llm_vision_enabled)
+    model = _init_model(
+        langchain_provider=langchain_provider,
+        model_name=settings.llm_model,
+        base_url=base_url,
+        api_key=settings.llm_api_key or None,
+        temperature=settings.llm_temperature,
+        max_tokens=settings.llm_max_tokens,
+    )
+    # 上下文窗口：环境变量写了就用它，没写就退到预设的（库里那条路同样会
+    # 退到预设）—— 国产模型的大窗口不给，摘要会提前太多触发
+    model = _apply_context_window(model, context_window)
+    model = _apply_vision(model, vision_enabled)
     return _remember(model, identity)
 
 
@@ -181,27 +275,18 @@ def build_model_for_provider(provider: LLMProvider) -> BaseChatModel:
     if cached is not None:
         return cached
 
-    kwargs: dict[str, Any] = {
-        "temperature": provider.temperature,
-        "max_tokens": provider.max_tokens,
-        "timeout": provider.timeout,
-    }
-    if api_key:
-        kwargs["api_key"] = api_key
-    if base_url:
-        kwargs["base_url"] = base_url
-
-    if preset.langchain_provider == "azure_openai":
-        # Azure 的参数名不一样：azure_endpoint + api_version
-        kwargs.pop("base_url", None)
-        if base_url:
-            kwargs["azure_endpoint"] = base_url
-        kwargs["api_version"] = settings.azure_openai_api_version
-
     if not provider.default_model:
         raise ValueError(f"供应商配置 {provider.name} 没有设置默认模型")
 
-    model = init_chat_model(f"{preset.langchain_provider}:{provider.default_model}", **kwargs)
+    model = _init_model(
+        langchain_provider=preset.langchain_provider,
+        model_name=provider.default_model,
+        base_url=base_url,
+        api_key=api_key or None,
+        temperature=provider.temperature,
+        max_tokens=provider.max_tokens,
+        timeout=provider.timeout,
+    )
     model = _apply_context_window(model, provider.context_window or preset.context_window)
     model = _apply_vision(model, provider.vision_enabled)
     return _remember(model, identity)
@@ -244,6 +329,8 @@ def model_identity(model: Any) -> str:
 __all__ = [
     "VISION_PROFILE_KEY",
     "build_model_for_provider",
+    "env_context_window",
+    "env_vision_enabled",
     "get_chat_model",
     "model_identity",
     "supports_vision",

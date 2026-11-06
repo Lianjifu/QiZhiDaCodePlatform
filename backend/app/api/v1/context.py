@@ -11,6 +11,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 
+from app.agents.llm import env_context_window
 from app.agents.prompts import CODE_AGENT_PROMPT
 from app.api.deps import get_db
 from app.context.service import ContextRequest, build_context_service
@@ -50,7 +51,9 @@ async def preview_context(
             reflection_note=reflection_note,
             policy_note=policy_note,
             uploads_note=uploads_note,
-            context_window=settings.llm_context_window,
+            # 窗口跟模型对象上挂的是同一个数（环境变量没写就退到供应商预设）——
+            # 预览报的预算必须跟模型实际收到的对得上
+            context_window=env_context_window(),
         )
     )
     return ResponseModel[ContextPreviewOut](

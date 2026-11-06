@@ -117,6 +117,44 @@ kwargs 含 `temperature` / `max_tokens` / `timeout`，有密钥才放 `api_key`�
 `init_chat_model()` 的异常**不吞**。缺 Key、集成包没装、模型名写错都是配置错误，
 当场炸出来比漂移到「agent 什么都不干」好查得多。
 
+### 3.2.1 `.env` 那条兜底路走同一套预设映射
+
+没有数据库配置时退回 `get_chat_model()`（读 `.env` 的 `LLM_*`）。**这条路的
+`LLM_PROVIDER` 现在认预设 key** —— 写 `deepseek` 会自动映射成
+`openai` + DeepSeek 的默认地址 + 预设的上下文窗口，跟数据库那条路同一个口径。
+
+**为什么不能把 `deepseek` 直接当 langchain provider 名** ——
+`init_chat_model("deepseek:xxx")` 会去找 `langchain-deepseek` 这个包，没装就报
+"Initializing ChatDeepSeek requires the langchain-deepseek package"。国产模型
+一律是 OpenAI 兼容端点，写 `openai` + 自定义 `base_url` 就行。
+
+配法有三种，优先级从上到下：
+
+| `LLM_PROVIDER` 写的 | 怎么处理 |
+| --- | --- |
+| 预设 key（`deepseek` / `qwen` / `moonshot` / `ollama` …） | 走预设：拿它的 `langchain_provider`、默认地址、上下文窗口 |
+| langchain 认识的名字（`fireworks` 之类，预设表没收录的） | 原样当 provider 名用，地址要自己配 `LLM_BASE_URL` |
+| 两者都不是 | 原样传下去，由 langchain 自己报错（不吞异常） |
+
+`LLM_BASE_URL` 显式写了就盖过预设的默认地址 —— 用户改过就听用户的，跟数据库
+那条路一个口径。
+
+**窗口与视觉也是同一个口径** —— 没写就退到预设的：
+
+| 环境变量 | 没写时 | 显式写了 |
+| --- | --- | --- |
+| `LLM_CONTEXT_WINDOW` | 退到预设的窗口（0 明确表示"未知"，所以能安全地退） | 用写的 |
+| `LLM_VISION_ENABLED` | 退到预设的视觉能力（类型是 `bool \| None`，`None` 就是"没写"） | 用写的（`false` 是显式关掉） |
+
+两个"有效值"由 `app/agents/llm.py::env_context_window()` /
+`env_vision_enabled()` 算出来 —— **上下文预览接口也调它们**，所以预览报的预算
+跟模型实际挂着的窗口永远是同一个数。预览说 17 万 token 而模型其实有 100 万，
+排查时会被带偏。
+
+两条路建模型的方式共用 `app/agents/llm.py::_init_model()` —— 差别只在配置从哪来，
+**Azure 那套不一样的参数名（`azure_endpoint` + `api_version`）只有一处**，
+不会出现"环境变量这条路 Azure 配错了、数据库那条路是对的"这种分叉。
+
 ### 3.3 模型对象缓存与「换模型要重建图」
 
 `app/agents/llm.py` 里两个全局表：

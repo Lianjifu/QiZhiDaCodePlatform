@@ -304,10 +304,10 @@ sqlalchemy.exc.InvalidRequestError: Session is already flushing
 配置（`.env`）：
 
 ```bash
-LLM_PROVIDER="openai"        # openai | anthropic | ollama
+LLM_PROVIDER="openai"        # 厂商名：openai | deepseek | anthropic | qwen | moonshot | ollama …
 LLM_MODEL="gpt-4o-mini"
 LLM_API_KEY="sk-..."
-LLM_BASE_URL=""              # 国产模型走这个：https://api.deepseek.com
+LLM_BASE_URL=""              # 厂商预设表里没有的名字才需要自己写地址
 SANDBOX_TYPE="docker"        # docker（默认，有隔离）| local（开发用，无隔离）
 WORKSPACE_ROOT="./workspace"
 

@@ -62,10 +62,14 @@ class Settings(BaseSettings):
     llm_context_window: int = 0
     # 这个模型能不能看图。
     #
-    # 走 .env 配置（没建数据库供应商配置）时，视觉能力只能在这里声明 ——
-    # 对话里上传的图片是直接内联进消息发给模型的，模型不认就会报错。
+    # 对话里上传的图片是直接内联进消息发给模型的，模型不认就会报错 ——
+    # 所以视觉能力必须跟模型走。
+    #
+    # **None = 没写** —— 这时退到 LLM_PROVIDER 对应的厂商预设（跟数据库那条路
+    # 一个口径：配置上没填就取预设的值）。写 false 才是显式关掉看图。
+    #
     # 走数据库供应商配置时，用那条配置上的 vision_enabled 列。
-    llm_vision_enabled: bool = False
+    llm_vision_enabled: bool | None = None
     # agent 一轮里最多走多少个「模型 ↔ 工具」往返（**轮**，不是 token）。
     #
     # **这个值是怎么变成 LangGraph 的 recursion_limit 的**：一轮往返 = 两个

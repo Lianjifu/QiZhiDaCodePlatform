@@ -14,7 +14,7 @@
 [![Quick Start](https://img.shields.io/badge/Quick_Start-docker%20compose-7c3aed?style=flat-square)](#-快速开始)
 [![Modules](https://img.shields.io/badge/10_模块-f97316?style=flat-square)](#-功能模块)
 [![Capabilities](https://img.shields.io/badge/17_出厂能力-2563eb?style=flat-square)](#-功能模块)
-[![Tests](https://img.shields.io/badge/547_tests-10b981?style=flat-square)](#-已知边界)
+[![Tests](https://img.shields.io/badge/566_tests-10b981?style=flat-square)](#-已知边界)
 [![Auth](https://img.shields.io/badge/鉴权-暂未开启-eab308?style=flat-square)](#-已知边界)
 
 [项目介绍](#-项目介绍) · [产品价值](#-产品价值) · [重点能力](#-重点能力讲解) · [快速开始](#-快速开始) · [控制台一览](#-控制台一览) · [功能模块](#-功能模块) · [技术架构](#-技术架构) · [部署](#-部署) · [文档索引](#-文档索引)
@@ -391,7 +391,7 @@ sequenceDiagram
 │   │   ├── services/  api/       业务服务 · HTTP 接口
 │   │   └── db/  models/          会话 · 数据模型
 │   ├── alembic/                  迁移链
-│   ├── tests/                    547 项回归测试
+│   ├── tests/                    566 项回归测试
 │   ├── scripts/                  冒烟脚本 · 密钥生成
 │   └── Dockerfile                后端镜像
 ├── frontend/                     React 控制台
@@ -478,7 +478,7 @@ sequenceDiagram
 <summary><b>Q: 改了代码怎么验？</b></summary>
 
 ```bash
-cd backend && ../.venv/bin/python -m pytest -q   # 547 项回归测试
+cd backend && ../.venv/bin/python -m pytest -q   # 566 项回归测试
 cd frontend && npm run lint && npm test && npm run build
 ```
 
