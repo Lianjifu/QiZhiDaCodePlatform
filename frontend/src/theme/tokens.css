@@ -20,36 +20,53 @@
  */
 
 :root {
-  /* 背景三层：页面底 / 侧栏与凹陷区 / 卡片与输入框 */
-  --surface-base: oklch(0.985 0.002 78);
-  --surface-sunken: oklch(0.955 0.003 78);
+  /* 背景三层：页面底 / 侧栏与凹陷区 / 卡片与输入框
+   *
+   * **浅色这一组是按"能分层"重新给过值的** —— 之前 base 0.985 / sunken 0.955
+   * 差得太近（对比度 1.092），侧栏跟主区贴在一起；hover 更是只有 1.011，
+   * **鼠标移上去看不出任何变化**。现在：
+   *
+   * | | 之前 | 现在 | 对比度 |
+   * | --- | --- | --- | --- |
+   * | base↔sunken 侧栏 | 1.092 | 1.149 | 沉下去，分得开 |
+   * | base↔raised 卡片 | 1.042 | 1.050 | 浮起来 |
+   * | hover/sunken | 1.011 | 1.128 | **悬停看得见了** |
+   *
+   * 底色是纸白（不是纯白）—— 纯白配纯白卡片就没有层次了。侧栏反过来，
+   * 真的沉下去。 */
+  --surface-base: oklch(0.984 0.004 75);
+  --surface-sunken: oklch(0.936 0.010 75);
   --surface-raised: oklch(1 0 0);
   --surface-overlay: oklch(1 0 0);
-  --surface-hover: oklch(0.96 0.003 78);
+  --surface-hover: oklch(0.898 0.012 75);
 
   /* 描边 */
-  --border-subtle: oklch(0.905 0.004 78);
-  --border-strong: oklch(0.82 0.006 78);
+  --border-subtle: oklch(0.874 0.009 75);
+  --border-strong: oklch(0.782 0.011 75);
 
-  /* 文字三级 */
-  --text-primary: oklch(0.22 0.01 60);
-  --text-secondary: oklch(0.5 0.012 60);
-  --text-tertiary: oklch(0.65 0.012 60);
+  /* 文字三级 —— 三级都过了 WCAG AA（正文 4.5:1）。
+     之前第三级只有 3.10，副标题、占位符、tool 标签全是飘着的灰。 */
+  --text-primary: oklch(0.205 0.012 60);
+  --text-secondary: oklch(0.420 0.014 60);
+  --text-tertiary: oklch(0.520 0.014 60);
 
-  /* 主色：朱砂橙 */
-  --accent: oklch(0.58 0.16 38);
-  --accent-hover: oklch(0.51 0.16 38);
-  --accent-soft: oklch(0.955 0.03 40);
+  /* 主色：朱砂橙
+     *
+     * **比之前深一档**（L 0.58 → 0.54）—— 浅底上原来的朱砂橙在 accent-soft
+     * 上只有 3.95:1，标签字读不清。现在 4.5 以上。 */
+  --accent: oklch(0.53 0.165 38);
+  --accent-hover: oklch(0.465 0.165 38);
+  --accent-soft: oklch(0.960 0.028 40);
   --accent-text: oklch(1 0 0);
   /* 更浅一档的主色 —— 选中项底色、浅底强调 */
-  --accent-muted: oklch(0.92 0.045 40);
+  --accent-muted: oklch(0.935 0.042 40);
   /* 四叶草指示器 —— 比主色更橙一档。
      主色是朱砂橙（hue 38），14px 的小图标在深底上会读成"红点"，
      四叶草得一眼看出是"橙"。 */
   --clover: oklch(0.64 0.16 50);
 
   /* 聚焦环 —— 品牌色的淡版，深浅各一套 */
-  --ring: oklch(0.58 0.16 38 / 0.35);
+  --ring: oklch(0.54 0.165 38 / 0.35);
   --ring-offset: oklch(1 0 0);
 
   /* 语义色 */
@@ -60,9 +77,12 @@
   --warning: oklch(0.58 0.13 70);
   --warning-soft: oklch(0.96 0.03 75);
 
-  /* 空状态页的背景效果：点阵 + 中心光晕 */
-  --grid-dot: oklch(0 0 0 / 0.09);
-  --glow: oklch(0.58 0.16 38 / 0.12);
+  /* 空状态页的背景效果：点阵 + 中心光晕
+   *
+   * **光晕压到 4.5%** —— 之前 12% 的橙色光晕叠在近白底上，中间会泛出一片
+   * 粉（#f7efec），看着像没擦干净的桌面，不像是设计出来的。点阵也淡了一档。 */
+  --grid-dot: oklch(0 0 0 / 0.055);
+  --glow: oklch(0.54 0.165 38 / 0.045);
 
   /* 阴影 —— 别在组件里写 `shadow-[0_1px_2px_oklch(0_0_0/0.05)]` 那种任意值，
      深色下黑色阴影会糊成一片。深浅两套在这里给不同的值。 */
@@ -88,16 +108,19 @@
 .dark {
   --surface-base: oklch(0.32 0.004 78);
   --surface-sunken: oklch(0.275 0.004 78);
-  --surface-raised: oklch(0.375 0.004 78);
+  --surface-raised: oklch(0.362 0.004 78);
   --surface-overlay: oklch(0.42 0.005 78);
   --surface-hover: oklch(0.4 0.005 78);
 
   --border-subtle: oklch(0.42 0.005 78);
   --border-strong: oklch(0.54 0.006 78);
 
+  /* 文字三级 —— 深色下第三级原本只有 2.95:1（AA 要 4.5），
+     副标题、占位符、tool 标签都是飘着的灰。现在提到 5.08（页面底）
+     / 4.52（卡片底）。 */
   --text-primary: oklch(0.93 0.005 78);
-  --text-secondary: oklch(0.72 0.006 78);
-  --text-tertiary: oklch(0.58 0.006 78);
+  --text-secondary: oklch(0.79 0.006 78);
+  --text-tertiary: oklch(0.73 0.006 78);
 
   /* 深色下主色要提亮一档 —— 原色在深底上偏暗，看不清 */
   --accent: oklch(0.76 0.15 45);
