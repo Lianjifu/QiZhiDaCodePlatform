@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/images/brand/logo-wordmark.svg" alt="企智搭 · QIZHIDA Code Platform" width="320" />
+<img src="docs/images/brand/favicon.svg" alt="企智搭 · QIZHIDA Code Platform" width="128" />
 
 # 企智搭 · 代码平台
 
