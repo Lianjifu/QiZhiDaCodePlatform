@@ -1,11 +1,7 @@
 """会话级权限模式 —— 「这一轮/这个会话怎么决定要不要人批」。
 
-**为什么要有会话级**：全局只有一个 ``CAPABILITY_TRUST_MODE``，要改就得改配置、
-重启服务。可实际需要的是随手切换：读代码时想自动放行，改代码时想逐个确认，
-只想看方案时想只读。
-
-模式是**会话级**的（存在文件里），全局配置只是默认值。语义对齐 Claude Code
-的权限模式（见 ``app/capabilities/registration/policy.py::PermissionMode``）：
+为什么要有会话级：全局只有一个 ``CAPABILITY_TRUST_MODE``，要改就得改配置、重启服务。
+可实际需要的是随手切换：读代码时想自动放行，改代码时想逐个确认，只想看方案时想只读。
 
 ======================  ====================================================
 模式                    行为
@@ -16,12 +12,6 @@
 ``plan``                只读：写类与执行类工具不暴露给模型
 ``bypass``              跳过人工确认（含破坏性）
 ======================  ====================================================
-
-**存文件而不是建表**：跟绑定关系同一个理由（``app/environments/store.py``）——
-一个会话一条，跨进程可见（审批恢复可能落在另一个进程上），不用迁移。
-
-文件放在 ``<workspace_root>/.qzd/permissions/<会话目录名>.json``，目录名用
-``workspace_dir_name(thread_id)`` —— 与工作区目录同名，一眼能对上。
 """
 
 from __future__ import annotations
@@ -86,9 +76,7 @@ def _global_mode() -> str:
     """
     mode = normalize_mode(settings.capability_trust_mode)
     if mode == PermissionMode.BYPASS and not settings.capability_allow_bypass:
-        logger.warning(
-            "全局配置要求 bypass，但 capability_allow_bypass 是关的 —— 退回 auto"
-        )
+        logger.warning("全局配置要求 bypass，但 capability_allow_bypass 是关的 —— 退回 auto")
         return PermissionMode.AUTO
     return mode
 

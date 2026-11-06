@@ -63,14 +63,12 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# 工作区说明进提示词用的模板（**同名替换**框架那份记忆中间件时用）。
+# 工作区说明进提示词用的模板。
 #
-# 只放内容，不放"怎么用记忆"的指南 —— 框架默认那份有四千多字符，每次请求
-# 都带着走；而且它教模型用 edit_file 写记忆，跟我们自己的 memory_write
-# 规则冲突。工作区说明本身（AGENTS.md）是要的 —— 那是项目规矩。
-WORKSPACE_RULES_PROMPT = """<workspace_rules>
-{agent_memory}
-</workspace_rules>"""
+# 只放内容，不放"怎么用记忆"的指南 —— 框架默认那份有四千多字符，每次请求都带着走；
+# 而且它教模型用 edit_file 写记忆，跟我们自己的 memory_write 规则冲突。
+# 工作区说明本身（AGENTS.md）是要的 —— 那是项目规矩。
+WORKSPACE_RULES_PROMPT = """<workspace_rules>{agent_memory}</workspace_rules>"""
 
 # `write_todos` 的说明 —— **比框架默认那份短得多**。
 #
