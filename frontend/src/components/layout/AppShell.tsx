@@ -20,6 +20,7 @@ import {
   SearchIcon,
   SunIcon,
 } from '../../components/icons'
+import { BrandMark } from '../../components/BrandMark'
 import ThemeToggle from './ThemeToggle'
 import CommandPalette, { type PaletteCommand } from '../../features/commands/CommandPalette'
 import SessionStatusPanel from '../../features/sessions/SessionStatusPanel'
@@ -312,12 +313,7 @@ export default function AppShell() {
         >
           <PanelLeftIcon className="h-4.5 w-4.5" />
         </button>
-        <span
-          className="flex h-6 w-6 items-center justify-center rounded-md text-xs font-semibold text-accent-text"
-          style={{ background: 'var(--brand-gradient)' }}
-        >
-          智
-        </span>
+        <BrandMark className="h-6 w-6 shrink-0 rounded-md" />
         <span className="truncate text-sm font-medium text-ink">企智搭·代码平台</span>
       </div>
 
@@ -399,12 +395,7 @@ export default function AppShell() {
           <div className="flex min-h-0 flex-1 flex-col">
             {/* 产品头 */}
             <div className="flex items-center gap-2.5 px-4 pb-2 pt-4">
-              <div
-                className="flex h-7 w-7 items-center justify-center rounded-lg text-sm font-semibold text-accent-text"
-                style={{ background: 'var(--brand-gradient)' }}
-              >
-                智
-              </div>
+              <BrandMark className="h-7 w-7 shrink-0 rounded-lg" />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium text-ink">企智搭·代码平台</div>
               </div>
