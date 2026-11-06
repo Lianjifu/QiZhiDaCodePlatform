@@ -37,7 +37,7 @@ services:
       # ⚠️ 挂了它等于把宿主机的 root 权限给了容器 —— 只在可信机器上这么做。
       - /var/run/docker.sock:/var/run/docker.sock
 
-      # **工作区：宿主与容器必须是同一个路径字符串。**
+      # **工作区：宿主与容器必须是同一个路径。**
       #
       # 沙箱容器的挂载参数 `-v <路径>:/workspace` 里的 <路径> 是**宿主机的
       # 路径**（docker daemon 解释的）。平台还会用
@@ -46,6 +46,11 @@ services:
       #
       # macOS 上还要在 `$HOME` 下面（Docker Desktop / Colima 的文件共享范围）。
       - ${WORKSPACE_ROOT}:${WORKSPACE_ROOT}
+
+      # **工作目录白名单里的仓库目录也要挂进来**，路径同样要一致 ——
+      # 白名单（`REPO_ROOTS`）是平台没有鉴权时唯一的闸门，但容器看不见
+      # 没挂进来的目录，那份白名单就是空的。
+      - ${REPOS_ROOT}:${REPOS_ROOT}
 
       # 数据库与 checkpoint
       - qzd-data:/data

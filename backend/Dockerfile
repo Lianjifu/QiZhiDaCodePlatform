@@ -20,9 +20,11 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PORT=8000
 
-# curl 供健康检查用；ca-certificates 供 httpx 访问 https 端点
+# curl 供健康检查用；ca-certificates 供 httpx 访问 https 端点；
+# git —— 平台的 git 能力（status / commit / merge / worktree）靠它，
+# 少了它那一族能力在容器里直接不可用。
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends curl ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
 # 沙箱容器的前提：平台要拿 docker CLI 去建/复用兄弟容器
