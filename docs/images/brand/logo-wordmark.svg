@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" role="img" aria-label="企智搭 QIZHIDA">
+  <g transform="translate(120 4)">
+    <rect x="6" y="26" width="44" height="44" rx="13" fill="#6828D8"/>
+    <rect x="26.5" y="2.5" width="51" height="51" rx="15.5" fill="#fff"/>
+    <rect x="30" y="6" width="44" height="44" rx="13" fill="#F87818"/>
+  </g>
+  <text x="160" y="118" text-anchor="middle" font-family="'PingFang SC','Microsoft YaHei','Noto Sans CJK SC',sans-serif" font-weight="700" font-size="42" fill="#6828D8">企智搭</text>
+  <text x="160" y="152" text-anchor="middle" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-weight="600" font-size="14" letter-spacing="6" fill="#F87818">QIZHIDA</text>
+</svg>
